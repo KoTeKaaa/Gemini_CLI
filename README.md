@@ -127,4 +127,3 @@ pyinstaller --onefile --icon={YOUR_ICON}.png -n {APP_NAME} main.py
 ## Лицензия
 
 Лицензия не указана.
-
