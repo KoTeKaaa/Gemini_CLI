@@ -597,9 +597,8 @@ def main():
                 if response.status_code == 200:
                     full_response = ""
                     tool_call_received = None
-                    tool_name = None
 
-                    status_text = f"[bold yellow]⚙️  {tool_name}...[/bold yellow]" if has_pending_tool else "[bold green]✨ Gemini думает...[/bold green]"
+                    status_text = f"[bold yellow]⚙️  Выполнение...[/bold yellow]" if has_pending_tool else "[bold green]✨ Gemini думает...[/bold green]"
                     with console.status(status_text, spinner="dots"):
 
                         for raw_line in response.iter_lines():
