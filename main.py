@@ -3,6 +3,7 @@ import sys
 import time
 import json
 import ipaddress
+import tempfile
 from typing import Optional, Dict, List, Any
 from urllib.parse import urlsplit
 
@@ -24,7 +25,15 @@ from datetime import datetime
 
 
 LOG_FILE = os.path.join(os.path.expanduser("~"), ".gemini_cli", "gemini_cli.log")
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
+
+def ensure_private_directory(path: str) -> None:
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    if os.name == "posix":
+        os.chmod(path, 0o700)
+
+
+ensure_private_directory(os.path.dirname(LOG_FILE))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,7 +70,20 @@ CONFIG_DIR = APP_DIR
 SESSION_FILE = os.path.join(CONFIG_DIR, "session.json")
 SERVER_FILE = os.path.join(CONFIG_DIR, "server_config.json")
 
-os.makedirs(CONFIG_DIR, exist_ok=True)
+
+def save_session(data: dict) -> None:
+    directory = os.path.dirname(SESSION_FILE)
+    ensure_private_directory(directory)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
+                                         prefix=".session-", delete=False) as file:
+            temporary_path = file.name
+            json.dump(data, file, ensure_ascii=False, indent=4)
+        os.replace(temporary_path, SESSION_FILE)
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
 
 
 def normalize_server_url(value: str) -> str:
@@ -306,8 +328,7 @@ class GeminiAPIClient:
                         console.print("[red]Сервер не вернул access_token[/red]")
                         continue
 
-                    with open(SESSION_FILE, "w", encoding="utf-8") as f:
-                        json.dump(res_data, f, ensure_ascii=False, indent=4)
+                    save_session(res_data)
 
                     self.set_token(token)
                     console.print("[green]Вход выполнен успешно.[/green]")
@@ -330,8 +351,7 @@ class GeminiAPIClient:
 
                                 token = data.get("access_token") or (data.get("session") or {}).get("access_token")
                                 if token:
-                                    with open(SESSION_FILE, "w", encoding="utf-8") as f:
-                                        json.dump(data, f, ensure_ascii=False, indent=4)
+                                    save_session(data)
                                     self.set_token(token)
                                     console.print("[green]Аккаунт создан и вход выполнен.[/green]")
                                     logger.info("Новый аккаунт создан и авторизован")
