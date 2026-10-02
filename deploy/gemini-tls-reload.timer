@@ -1,0 +1,10 @@
+[Unit]
+Description=Reload renewed Gemini CLI TLS certificate hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=gemini-tls-reload.service
+
+[Install]
+WantedBy=timers.target

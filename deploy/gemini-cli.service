@@ -1,0 +1,22 @@
+[Unit]
+Description=Gemini CLI API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=gemini-cli
+Group=gemini-cli
+WorkingDirectory=/opt/gemini-cli
+EnvironmentFile=/etc/gemini-cli/server.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/gemini-cli/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target
