@@ -386,6 +386,12 @@ def stream_chat(
     if not payload.message.strip():
         raise HTTPException(status_code=400, detail="Сообщение не может быть пустым")
 
+    if payload.chat_id:
+        chat = user.db.table("chats").select("id") \
+            .eq("id", payload.chat_id).eq("user_id", user.user_id).execute()
+        if not chat.data:
+            raise HTTPException(status_code=404, detail="Чат не найден")
+
     if payload.chat_id and payload.message != "Продолжай работу на основе ответов инструментов.":
         background_tasks.add_task(
             save_message_to_db,
