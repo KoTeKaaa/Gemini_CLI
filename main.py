@@ -89,10 +89,15 @@ def get_server_url() -> str:
     return url
 
 
-def is_safe_path(base_dir: str, path: str) -> bool:
-    absolute_base = os.path.abspath(base_dir)
-    absolute_target = os.path.abspath(os.path.join(base_dir, path))
-    return absolute_target.startswith(absolute_base)
+def resolve_safe_path(base_dir: str, path: str) -> Optional[str]:
+    resolved_base = os.path.realpath(base_dir)
+    resolved_target = os.path.realpath(os.path.join(base_dir, path))
+    try:
+        if os.path.commonpath((resolved_base, resolved_target)) == resolved_base:
+            return resolved_target
+    except ValueError:
+        pass
+    return None
 
 
 def handle_read_files(args: dict, current_dir: str) -> str:
@@ -104,11 +109,11 @@ def handle_read_files(args: dict, current_dir: str) -> str:
 
     results = {}
     for path in filepaths:
-        if not is_safe_path(current_dir, path):
+        full_path = resolve_safe_path(current_dir, path)
+        if full_path is None:
             results[path] = "Ошибка: Доступ заблокирован песочницей"
             continue
 
-        full_path = os.path.normpath(os.path.join(current_dir, path))
         if not os.path.exists(full_path):
             results[path] = "Ошибка: Файл не найден"
             continue
@@ -155,11 +160,11 @@ def handle_write_files(args: dict, current_dir: str) -> str:
         rel_path = f.get("filepath", "")
         content = f.get("content", "")
 
-        if not is_safe_path(current_dir, rel_path):
+        full_path = resolve_safe_path(current_dir, rel_path)
+        if full_path is None:
             results.append({"filepath": rel_path, "status": "Заблокировано песочницей"})
             continue
 
-        full_path = os.path.normpath(os.path.join(current_dir, rel_path))
         try:
             os.makedirs(os.path.dirname(full_path), exist_ok=True)
             with open(full_path, "w", encoding="utf-8") as file_obj:
