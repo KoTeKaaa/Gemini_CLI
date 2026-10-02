@@ -1,6 +1,7 @@
 import os
 from typing import List, Optional, Literal, Dict, Any
 import json
+from dataclasses import dataclass
 from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -8,6 +9,7 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from supabase.lib.client_options import SyncClientOptions
 
 load_dotenv()
 
@@ -21,10 +23,14 @@ supabase_key = os.getenv("SUPABASE_ANON_KEY")
 if not supabase_url or not supabase_key:
     raise RuntimeError("Данные Supabase (URL/KEY) не найдены в переменных окружения")
 
-supabase: Client = create_client(supabase_url, supabase_key)
-
 app = FastAPI()
 client = genai.Client(api_key=api)
+
+
+@dataclass(frozen=True)
+class UserContext:
+    user_id: str
+    db: Client
 
 
 async def get_current_user(authorization: Optional[str] = Header(None)):
@@ -39,10 +45,15 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Неверный формат заголовка Authorization")
 
     try:
-        user_response = supabase.auth.get_user(token)
+        db = create_client(
+            supabase_url,
+            supabase_key,
+            options=SyncClientOptions(headers={"Authorization": f"Bearer {token}"}),
+        )
+        user_response = db.auth.get_user(token)
         if not user_response or not user_response.user:
             raise HTTPException(status_code=401, detail="Неверный токен сессии")
-        return user_response.user.id
+        return UserContext(user_id=user_response.user.id, db=db)
     except Exception as e:
         print(f"[AUTH ERROR] Ошибка валидации токена: {e}")
         raise HTTPException(status_code=401, detail="Ошибка авторизации")
@@ -85,7 +96,7 @@ def signup_user(payload: LoginPayload):
         raise HTTPException(status_code=400, detail="Email и пароль обязательны")
 
     try:
-        resp = supabase.auth.sign_up({
+        resp = create_client(supabase_url, supabase_key).auth.sign_up({
             "email": payload.email.strip(),
             "password": payload.password.strip(),
         })
@@ -105,7 +116,7 @@ def login_user(payload: LoginPayload):
         raise HTTPException(status_code=400, detail="Email и пароль обязательны")
 
     try:
-        auth_response = supabase.auth.sign_in_with_password({
+        auth_response = create_client(supabase_url, supabase_key).auth.sign_in_with_password({
             "email": payload.email.strip(),
             "password": payload.password.strip(),
         })
@@ -121,11 +132,11 @@ def login_user(payload: LoginPayload):
 
 
 @app.get("/chats", response_model=List[ChatResponse])
-async def get_chats(user_id: str = Depends(get_current_user)):
+async def get_chats(user: UserContext = Depends(get_current_user)):
     try:
-        response = supabase.table("chats") \
+        response = user.db.table("chats") \
             .select("id, title, created_at") \
-            .eq("user_id", user_id) \
+            .eq("user_id", user.user_id) \
             .order("created_at", desc=True) \
             .execute()
 
@@ -144,13 +155,13 @@ async def get_chats(user_id: str = Depends(get_current_user)):
 
 
 @app.post("/chats", response_model=ChatResponse)
-async def create_chat(payload: ChatCreate, user_id: str = Depends(get_current_user)):
+async def create_chat(payload: ChatCreate, user: UserContext = Depends(get_current_user)):
     if not payload.title.strip():
         raise HTTPException(status_code=400, detail="Название чата не может быть пустым")
 
     try:
-        response = supabase.table("chats") \
-            .insert({"user_id": user_id, "title": payload.title.strip()}) \
+        response = user.db.table("chats") \
+            .insert({"user_id": user.user_id, "title": payload.title.strip()}) \
             .execute()
 
         if not response or not response.data:
@@ -169,16 +180,17 @@ async def create_chat(payload: ChatCreate, user_id: str = Depends(get_current_us
 
 
 @app.delete("/chats/{chat_id}")
-async def delete_chat(chat_id: str, user_id: str = Depends(get_current_user)):
+async def delete_chat(chat_id: str, user: UserContext = Depends(get_current_user)):
     try:
-        supabase.table("messages").delete().eq("chat_id", chat_id).execute()
-        supabase.table("chats").delete().eq("id", chat_id).eq("user_id", user_id).execute()
+        user.db.table("messages").delete().eq("chat_id", chat_id).execute()
+        user.db.table("chats").delete().eq("id", chat_id).eq("user_id", user.user_id).execute()
         return {"status": "deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 async def save_message_to_db(
+        db: Client,
         chat_id: str,
         role: Literal["user", "model", "tool"],
         content: str,
@@ -193,16 +205,16 @@ async def save_message_to_db(
             "name": name,
             "args": args,
         }
-        supabase.table("messages").insert(data).execute()
+        db.table("messages").insert(data).execute()
 
     except Exception as e:
         print(f"[BD ERROR] Не удалось сохранить сообщения в БД: {e}")
 
 
-def build_history_from_db(chat_id: str) -> List[types.Content]:
+def build_history_from_db(db: Client, chat_id: str) -> List[types.Content]:
     history_content: List[types.Content] = []
     try:
-        response = supabase.table("messages").select("*").eq("chat_id", chat_id).order("created_at").execute()
+        response = db.table("messages").select("*").eq("chat_id", chat_id).order("created_at").execute()
         messages = response.data
 
         for msg in messages[-20:]:
@@ -369,7 +381,7 @@ def execute_command(command: str) -> str:
 def stream_chat(
         payload: StreamChatPayload,
         background_tasks: BackgroundTasks,
-        user_id: str = Depends(get_current_user),
+        user: UserContext = Depends(get_current_user),
 ):
     if not payload.message.strip():
         raise HTTPException(status_code=400, detail="Сообщение не может быть пустым")
@@ -377,6 +389,7 @@ def stream_chat(
     if payload.chat_id and payload.message != "Продолжай работу на основе ответов инструментов.":
         background_tasks.add_task(
             save_message_to_db,
+            user.db,
             payload.chat_id,
             "user",
             payload.message.strip()
@@ -385,7 +398,7 @@ def stream_chat(
     if payload.history:
         history_content = build_history_from_client(payload.history)
     elif payload.chat_id:
-        history_content = build_history_from_db(payload.chat_id)
+        history_content = build_history_from_db(user.db, payload.chat_id)
     else:
         history_content = []
 
@@ -420,6 +433,7 @@ def stream_chat(
                     if last_client_msg.role == "tool":
                         background_tasks.add_task(
                             save_message_to_db,
+                            user.db,
                             payload.chat_id,
                             "tool",
                             last_client_msg.content,
@@ -454,6 +468,7 @@ def stream_chat(
                         if payload.chat_id:
                             background_tasks.add_task(
                                 save_message_to_db,
+                                user.db,
                                 payload.chat_id,
                                 "model",
                                 f"[Вызов локального инструмента: {call.name}]",
@@ -475,6 +490,7 @@ def stream_chat(
             if payload.chat_id and full_response:
                 background_tasks.add_task(
                     save_message_to_db,
+                    user.db,
                     payload.chat_id,
                     "model",
                     full_response
