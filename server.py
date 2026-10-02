@@ -223,11 +223,18 @@ async def save_message_to_db(
         print(f"[BD ERROR] Не удалось сохранить сообщения в БД: {e}")
 
 
-def build_history_from_db(db: Client, chat_id: str) -> List[types.Content]:
+def build_history_from_db(db: Client, chat_id: str,
+                          before_user_content: Optional[str] = None) -> List[types.Content]:
     history_content: List[types.Content] = []
     try:
         response = db.table("messages").select("*").eq("chat_id", chat_id).order("created_at").execute()
         messages = response.data
+
+        if before_user_content is not None:
+            for index in range(len(messages) - 1, -1, -1):
+                if messages[index].get("role") == "user" and messages[index].get("content") == before_user_content:
+                    messages = messages[:index]
+                    break
 
         for msg in messages[-20:]:
             role = msg.get("role")
@@ -416,7 +423,18 @@ def stream_chat(
             payload.message.strip()
         )
 
-    if payload.history:
+    if payload.chat_id and payload.continue_after_tool:
+        current_turn_start = next(
+            (index for index in range(len(payload.history) - 1, -1, -1)
+             if payload.history[index].role == "user"), None
+        )
+        if current_turn_start is None:
+            raise HTTPException(status_code=400, detail="Ожидается исходный запрос перед результатом инструмента")
+        current_turn = payload.history[current_turn_start:]
+        history_content = build_history_from_db(
+            user.db, payload.chat_id, before_user_content=current_turn[0].content
+        ) + build_history_from_client(current_turn)
+    elif payload.history:
         history_content = build_history_from_client(payload.history)
     elif payload.chat_id:
         history_content = build_history_from_db(user.db, payload.chat_id)

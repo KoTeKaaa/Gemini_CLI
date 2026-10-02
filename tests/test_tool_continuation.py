@@ -131,6 +131,55 @@ class ToolContinuationTest(unittest.TestCase):
                 self.send(data, user)
             self.assertEqual(error.exception.status_code, 400)
 
+    def test_reopened_chat_keeps_older_db_context_after_tool(self):
+        db = FakeDb()
+        db.messages.extend([
+            {"chat_id": "chat-1", "role": "user", "content": "Remember amber"},
+            {"chat_id": "chat-1", "role": "model", "content": "I will remember amber"},
+        ])
+        user = self.server.UserContext("user-1", db)
+        seen_contents = []
+
+        def generate_content_stream(**kwargs):
+            seen_contents.append(kwargs["contents"])
+            if len(seen_contents) == 1:
+                yield SimpleNamespace(function_calls=[SimpleNamespace(
+                    name="execute_command", args={"command": "pwd"}, id="call-1"
+                )], text=None)
+            else:
+                yield SimpleNamespace(function_calls=None, text="Done")
+
+        model = SimpleNamespace(models=SimpleNamespace(
+            generate_content_stream=generate_content_stream))
+        with patch.object(self.server, "client", model), patch.object(
+            self.server, "StreamingResponse",
+            side_effect=lambda generator, **_kwargs: SimpleNamespace(body_iterator=generator),
+        ):
+            # A reopened client has no local copy of the older exchange.
+            history = [{"role": "user", "content": "Run pwd"}]
+            response, tasks = self.send(
+                self.main.build_stream_payload(history, "chat-1", "test-model", False), user
+            )
+            list(response.body_iterator)
+            asyncio.run(tasks())
+            history.extend([
+                {"role": "model", "content": "[tool call]", "name": "execute_command",
+                 "args": {"command": "pwd"}},
+                {"role": "tool", "content": '{"output":"/work"}',
+                 "name": "execute_command"},
+            ])
+            response, tasks = self.send(
+                self.main.build_stream_payload(history, "chat-1", "test-model", False), user
+            )
+            list(response.body_iterator)
+            asyncio.run(tasks())
+
+        parts = [part for item in seen_contents[1] for part in item.parts]
+        texts = [part.text for part in parts if part.text is not None]
+        self.assertEqual(texts, ["Remember amber", "I will remember amber", "Run pwd"])
+        self.assertEqual(len([part for part in parts if part.function_call is not None]), 1)
+        self.assertEqual(len([part for part in parts if part.function_response is not None]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
