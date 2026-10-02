@@ -182,11 +182,22 @@ async def create_chat(payload: ChatCreate, user: UserContext = Depends(get_curre
 @app.delete("/chats/{chat_id}")
 async def delete_chat(chat_id: str, user: UserContext = Depends(get_current_user)):
     try:
-        user.db.table("messages").delete().eq("chat_id", chat_id).execute()
-        user.db.table("chats").delete().eq("id", chat_id).eq("user_id", user.user_id).execute()
+        chat = user.db.table("chats").select("id") \
+            .eq("id", chat_id).eq("user_id", user.user_id).execute()
+        if not chat.data:
+            raise HTTPException(status_code=404, detail="Чат не найден")
+
+        # messages.chat_id has ON DELETE CASCADE; one database request is atomic.
+        deleted = user.db.table("chats").delete() \
+            .eq("id", chat_id).eq("user_id", user.user_id).execute()
+        if not deleted.data:
+            raise HTTPException(status_code=404, detail="Чат не найден")
         return {"status": "deleted"}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[SERVER ERROR] Ошибка удаления чата: {e}")
+        raise HTTPException(status_code=500, detail="Не удалось удалить чат")
 
 
 async def save_message_to_db(
