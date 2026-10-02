@@ -226,7 +226,6 @@ async def save_message_to_db(
 
 def build_history_from_db(db: Client, chat_id: str,
                           before_user_content: Optional[str] = None) -> List[types.Content]:
-    history_content: List[types.Content] = []
     try:
         response = db.table("messages").select("*").eq("chat_id", chat_id).order("created_at").execute()
         messages = response.data
@@ -237,41 +236,17 @@ def build_history_from_db(db: Client, chat_id: str,
                     messages = messages[:index]
                     break
 
-        for msg in messages[-20:]:
-            role = msg.get("role")
-            content = msg.get("content", "")
-            tool_name = msg.get("name")
-
-            if role in ["user", "model"]:
-                history_content.append(
-                    types.Content(
-                        role=role,
-                        parts=[types.Part.from_text(text=content)],
-                    )
-                )
-            elif role == "tool":
-                try:
-                    parsed_result = json.loads(content)
-                    if not isinstance(parsed_result, dict):
-                        parsed_result = {"output": parsed_result}
-
-                except Exception:
-                    parsed_result = {"output": content}
-
-                history_content.append(
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part.from_function_response(
-                                name=tool_name or "unknown_tool",
-                                response=parsed_result
-                            )
-                        ],
-                    )
-                )
+        return build_history_from_client([
+            MessageItem(
+                role=msg["role"], content=msg.get("content") or "",
+                name=msg.get("name"), args=msg.get("args"),
+                call_id=msg.get("call_id"),
+            )
+            for msg in messages
+        ])
     except Exception as e:
         print(f"[DB ERROR] Ошибка загрузки истории: {e}")
-    return history_content
+        return []
 
 
 def build_history_from_client(history: Optional[List[MessageItem]]) -> List[types.Content]:

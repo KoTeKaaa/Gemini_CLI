@@ -257,6 +257,54 @@ class ToolContinuationTest(unittest.TestCase):
         self.assertEqual(contents[2].parts[-1].function_response.response,
                          {"output": "20"})
 
+    def test_reopened_chat_restores_saved_tool_calls_and_responses(self):
+        db = FakeDb()
+        db.messages.extend([
+            {"chat_id": "chat-1", "role": "user", "content": "Run both"},
+            {"chat_id": "chat-1", "role": "model", "content": "[tool call]",
+             "name": "execute_command", "args": {"command": "pwd"}},
+            {"chat_id": "chat-1", "role": "model", "content": "[tool call]",
+             "name": "read_local_files", "args": {"filepaths": ["a.txt"]}},
+            {"chat_id": "chat-1", "role": "tool", "content": '{"output":"/work"}',
+             "name": "execute_command"},
+            {"chat_id": "chat-1", "role": "tool", "content": '{"files":{"a.txt":"hello"}}',
+             "name": "read_local_files"},
+            {"chat_id": "chat-1", "role": "model", "content": "Both done"},
+        ])
+        seen_contents = []
+
+        def generate_content_stream(**kwargs):
+            seen_contents.append(kwargs["contents"])
+            yield SimpleNamespace(function_calls=None, text="Next answer")
+
+        model = SimpleNamespace(models=SimpleNamespace(
+            generate_content_stream=generate_content_stream))
+        user = self.server.UserContext("user-1", db)
+        with patch.object(self.server, "client", model), patch.object(
+            self.server, "StreamingResponse",
+            side_effect=lambda generator, **_kwargs: SimpleNamespace(body_iterator=generator),
+        ):
+            response, tasks = self.send({
+                "chat_id": "chat-1", "message": "What happened?", "model_name": "test-model"
+            }, user)
+            self.assertIn(b"Next answer", b"".join(response.body_iterator))
+            asyncio.run(tasks())
+
+        contents = seen_contents[0]
+        self.assertEqual([content.role for content in contents],
+                         ["user", "model", "user", "model", "user"])
+        calls = [part.function_call for part in contents[1].parts]
+        results = [part.function_response for part in contents[2].parts]
+        self.assertEqual([(call.name, call.args) for call in calls], [
+            ("execute_command", {"command": "pwd"}),
+            ("read_local_files", {"filepaths": ["a.txt"]}),
+        ])
+        self.assertEqual([(result.name, result.response) for result in results], [
+            ("execute_command", {"output": "/work"}),
+            ("read_local_files", {"files": {"a.txt": "hello"}}),
+        ])
+        self.assertEqual(contents[-1].parts[0].text, "What happened?")
+
 
 if __name__ == "__main__":
     unittest.main()
