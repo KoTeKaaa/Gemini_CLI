@@ -2,7 +2,9 @@ import os
 import sys
 import time
 import json
+import ipaddress
 from typing import Optional, Dict, List, Any
+from urllib.parse import urlsplit
 
 import requests
 from prompt_toolkit import PromptSession
@@ -62,6 +64,41 @@ SERVER_FILE = os.path.join(CONFIG_DIR, "server_config.json")
 os.makedirs(CONFIG_DIR, exist_ok=True)
 
 
+def normalize_server_url(value: str) -> str:
+    url = value.strip() or "http://127.0.0.1:8000"
+    if any(char.isspace() or ord(char) < 32 or char == "\\" for char in url):
+        raise ValueError("Адрес сервера содержит недопустимые символы")
+    if "://" not in url:
+        url = f"//{url}"
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        if not host:
+            raise ValueError("Укажите адрес сервера")
+        scheme = "http" if is_loopback_host(host) else "https"
+        port = "" if parsed.port is not None else ":8000"
+        url = f"{scheme}:{url}{port}"
+
+    parsed = urlsplit(url)
+    if (parsed.scheme not in ("http", "https") or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+        raise ValueError("Укажите URL сервера без пути и учётных данных (HTTP или HTTPS)")
+    if parsed.port is not None and not 1 <= parsed.port <= 65535:
+        raise ValueError("Некорректный порт сервера")
+    if parsed.scheme == "http" and not is_loopback_host(parsed.hostname):
+        raise ValueError("Для удалённого сервера требуется HTTPS")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def is_loopback_host(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def get_server_url() -> str:
     if os.path.exists(SERVER_FILE):
         try:
@@ -69,19 +106,19 @@ def get_server_url() -> str:
                 data = json.load(f)
                 url = data.get("server_url", "http://127.0.0.1:8000")
                 if url:
-                    return url
+                    return normalize_server_url(url)
+        except ValueError as e:
+            console.print(f"[yellow]Сохранённый адрес сервера отклонён: {e}[/yellow]")
         except Exception as e:
             logger.exception(f"Необработанное исключение: {e}")
 
     console.print("[yellow]Конфигурация сервера не найдена.[/yellow]")
-    url = input("Введите URL или IP вашего сервера (например, https://YOUR_VPS_IP:8000): ").strip()
-    if not url:
-        url = "http://127.0.0.1:8000"
-    if not url.startswith("http://") and not url.startswith("https://"):
-        if ":" in url:
-            url = f"http://{url}"
-        else:
-            url = f"http://{url}:8000"
+    while True:
+        try:
+            url = normalize_server_url(input("Введите URL или IP вашего сервера (например, https://YOUR_VPS_IP:8000): "))
+            break
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
 
     with open(SERVER_FILE, "w", encoding="utf-8") as f:
         json.dump({"server_url": url}, f, ensure_ascii=False, indent=4)
@@ -220,7 +257,7 @@ def handle_execute_command(args: dict, current_dir: str) -> str:
 
 class GeminiAPIClient:
     def __init__(self, base_url: str):
-        self.base_url = base_url
+        self.base_url = normalize_server_url(base_url)
         self.token: Optional[str] = None
 
     def set_token(self, token: str):
@@ -260,7 +297,7 @@ class GeminiAPIClient:
             try:
                 url = f"{self.base_url}/auth/login"
                 payload = {"email": email, "password": password}
-                r = requests.post(url, json=payload, timeout=30)
+                r = requests.post(url, json=payload, timeout=30, allow_redirects=False)
 
                 if r.status_code == 200:
                     res_data = r.json()
@@ -282,7 +319,8 @@ class GeminiAPIClient:
                             "[yellow]Не удалось войти: проверьте email, пароль или подтверждение на почте.[/yellow]")
                         ans = input("Создать новый аккаунт? (y/n): ").strip().lower()
                         if ans == "y":
-                            s = requests.post(f"{self.base_url}/auth/signup", json=payload, timeout=30)
+                            s = requests.post(f"{self.base_url}/auth/signup", json=payload, timeout=30,
+                                              allow_redirects=False)
                             if s.status_code in (200, 201):
                                 try:
                                     data = s.json()
@@ -315,7 +353,8 @@ class GeminiAPIClient:
 
     def get_chats(self) -> List[Dict[str, Any]]:
         try:
-            r = requests.get(f"{self.base_url}/chats", headers=self.headers, timeout=30)
+            r = requests.get(f"{self.base_url}/chats", headers=self.headers, timeout=30,
+                             allow_redirects=False)
             if r.status_code == 200:
                 return r.json()
             return []
@@ -331,6 +370,7 @@ class GeminiAPIClient:
                 json={"title": title},
                 headers=self.headers,
                 timeout=30,
+                allow_redirects=False,
             )
             if r.status_code == 200:
                 return r.json()
@@ -346,6 +386,7 @@ class GeminiAPIClient:
                 f"{self.base_url}/chats/{chat_id}",
                 headers=self.headers,
                 timeout=30,
+                allow_redirects=False,
             )
             return r.status_code == 200
         except Exception as e:
@@ -597,6 +638,7 @@ def main():
                     headers=api_client.headers,
                     stream=True,
                     timeout=300,
+                    allow_redirects=False,
                 )
 
                 if response.status_code == 200:
