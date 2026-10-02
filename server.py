@@ -77,11 +77,12 @@ class MessageItem(BaseModel):
 
 
 class StreamChatPayload(BaseModel):
-    message: str
+    message: str = ""
     chat_id: Optional[str] = None
     model_name: Optional[str] = "gemini-3.1-flash-lite"
     history: Optional[List[MessageItem]] = None
     current_dir: Optional[str] = None
+    continue_after_tool: bool = False
 
 
 class LoginPayload(BaseModel):
@@ -394,7 +395,10 @@ def stream_chat(
         background_tasks: BackgroundTasks,
         user: UserContext = Depends(get_current_user),
 ):
-    if not payload.message.strip():
+    if payload.continue_after_tool:
+        if payload.message.strip() or not payload.history or payload.history[-1].role != "tool":
+            raise HTTPException(status_code=400, detail="Ожидается история с результатом инструмента")
+    elif not payload.message.strip():
         raise HTTPException(status_code=400, detail="Сообщение не может быть пустым")
 
     if payload.chat_id:
@@ -403,7 +407,7 @@ def stream_chat(
         if not chat.data:
             raise HTTPException(status_code=404, detail="Чат не найден")
 
-    if payload.chat_id and payload.message != "Продолжай работу на основе ответов инструментов.":
+    if payload.chat_id and not payload.continue_after_tool:
         background_tasks.add_task(
             save_message_to_db,
             user.db,
@@ -443,20 +447,18 @@ def stream_chat(
 
             current_contents = list(history_content)
 
-            if payload.message == "Продолжай работу на основе ответов инструментов." and current_contents:
-
-                if payload.chat_id and payload.history:
+            if payload.continue_after_tool:
+                if payload.chat_id:
                     last_client_msg = payload.history[-1]
-                    if last_client_msg.role == "tool":
-                        background_tasks.add_task(
-                            save_message_to_db,
-                            user.db,
-                            payload.chat_id,
-                            "tool",
-                            last_client_msg.content,
-                            last_client_msg.name,
-                            None
-                        )
+                    background_tasks.add_task(
+                        save_message_to_db,
+                        user.db,
+                        payload.chat_id,
+                        "tool",
+                        last_client_msg.content,
+                        last_client_msg.name,
+                        None
+                    )
                 full_contents = current_contents
             else:
                 active_message = types.Content(

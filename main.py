@@ -497,6 +497,22 @@ def trim_history(history: List[Dict[str, str]], limit: int = 20, tool_content_li
     return trimmed
 
 
+def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
+                         model_name: str, is_temporary: bool) -> Dict[str, Any]:
+    continuing = bool(history and history[-1].get("role") == "tool")
+    payload: Dict[str, Any] = {
+        "message": "" if continuing else history[-1]["content"],
+        "chat_id": chat_id,
+        "model_name": model_name,
+        "continue_after_tool": continuing,
+    }
+    if continuing:
+        payload["history"] = history
+    elif is_temporary:
+        payload["history"] = history[:-1]
+    return payload
+
+
 def print_banner(model: str, chat_mode: str, current_dir: str):
     GEMINI_BLUE = "#4285F4"
     GEMINI_TEAL = "#00BCD4"
@@ -630,27 +646,9 @@ def main():
             temporary_history.append({"role": "user", "content": user_input})
 
             while True:
-                last_msg = temporary_history[-1] if temporary_history else None
-                has_pending_tool = last_msg is not None and last_msg.get("role") == "tool"
-
-                if has_pending_tool:
-                    user_msg = next(
-                        (msg["content"] for msg in reversed(temporary_history) if msg.get("role") == "user"), "")
-                    payload_message = user_msg if user_msg else "Продолжай работу на основе ответов инструментов."
-                else:
-                    payload_message = temporary_history[-1]["content"] if temporary_history and temporary_history[
-                        -1].get("role") == "user" else ""
-
-                payload: Dict[str, Any] = {
-                    "message": payload_message,
-                    "chat_id": chat_id,
-                    "model_name": current_model,
-                }
-
                 temporary_history = trim_history(temporary_history, 20)
-
-                if is_temporary or has_pending_tool:
-                    payload["history"] = temporary_history
+                payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary)
+                has_pending_tool = payload["continue_after_tool"]
 
                 response = requests.post(
                     f"{api_client.base_url}/chat/stream",
