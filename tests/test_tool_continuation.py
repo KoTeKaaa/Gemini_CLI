@@ -180,6 +180,83 @@ class ToolContinuationTest(unittest.TestCase):
         self.assertEqual(len([part for part in parts if part.function_call is not None]), 1)
         self.assertEqual(len([part for part in parts if part.function_response is not None]), 1)
 
+    def test_multiple_tool_calls_return_in_order_with_ids(self):
+        for temporary in (False, True):
+            with self.subTest(temporary=temporary):
+                db = FakeDb()
+                user = self.server.UserContext("user-1", db)
+                chat_id = None if temporary else "chat-1"
+                history = [{"role": "user", "content": "Run both"}]
+                seen_contents = []
+
+                def generate_content_stream(**kwargs):
+                    seen_contents.append(kwargs["contents"])
+                    if len(seen_contents) == 1:
+                        yield SimpleNamespace(function_calls=[SimpleNamespace(
+                            name="execute_command", args={"command": "pwd"}, id="call-1"
+                        )], text=None)
+                        yield SimpleNamespace(function_calls=[SimpleNamespace(
+                            name="execute_command", args={"command": "date"}, id="call-2"
+                        )], text=None)
+                    else:
+                        yield SimpleNamespace(function_calls=None, text="Both done")
+
+                model = SimpleNamespace(models=SimpleNamespace(
+                    generate_content_stream=generate_content_stream))
+                with patch.object(self.server, "client", model), patch.object(
+                    self.server, "StreamingResponse",
+                    side_effect=lambda generator, **_kwargs: SimpleNamespace(body_iterator=generator),
+                ), patch.object(self.main, "handle_execute_command", side_effect=[
+                    '{"output":"/work"}', '{"output":"today"}'
+                ]) as execute:
+                    first = self.main.build_stream_payload(history, chat_id, "test-model", temporary)
+                    response, tasks = self.send(first, user)
+                    stream = SimpleNamespace(iter_lines=lambda: response.body_iterator)
+                    events = list(self.main.iter_stream_events(stream))
+                    asyncio.run(tasks())
+                    calls = [event for event in events if event["type"] == "tool_call"]
+                    self.assertEqual([call["call_id"] for call in calls], ["call-1", "call-2"])
+                    self.main.execute_tool_calls(calls, history, "/work")
+                    self.assertEqual(execute.call_count, 2)
+                    second = self.main.build_stream_payload(history, chat_id, "test-model", temporary)
+                    response, tasks = self.send(second, user)
+                    self.assertIn(b"Both done", b"".join(response.body_iterator))
+                    asyncio.run(tasks())
+
+                self.assertEqual([entry["role"] for entry in history],
+                                 ["user", "model", "model", "tool", "tool"])
+                self.assertEqual([entry["call_id"] for entry in history[1:]],
+                                 ["call-1", "call-2", "call-1", "call-2"])
+                calls_content = [content for content in seen_contents[1] if content.role == "model"]
+                responses_content = [content for content in seen_contents[1] if content.role == "user"
+                                     and content.parts[0].function_response is not None]
+                self.assertEqual([[part.function_call.id for part in content.parts]
+                                  for content in calls_content], [["call-1", "call-2"]])
+                self.assertEqual([[part.function_response.id for part in content.parts]
+                                  for content in responses_content], [["call-1", "call-2"]])
+                if not temporary:
+                    self.assertEqual([row["role"] for row in db.messages],
+                                     ["user", "model", "model", "tool", "tool", "model"])
+                    self.assertEqual([row["content"] for row in db.messages if row["role"] == "tool"],
+                                     ['{"output":"/work"}', '{"output":"today"}'])
+
+    def test_large_tool_batch_keeps_every_result(self):
+        history = [{"role": "user", "content": "Run batch"}]
+        calls = [{"type": "tool_call", "name": "execute_command",
+                  "args": {"command": str(index)}, "call_id": f"call-{index}"}
+                 for index in range(21)]
+        with patch.object(self.main, "handle_execute_command",
+                          side_effect=[f'{{"output":"{index}"}}' for index in range(21)]):
+            self.main.execute_tool_calls(calls, history, "/work")
+        trimmed = self.main.trim_history(history)
+        self.assertEqual(len(trimmed), 43)
+        items = [self.server.MessageItem(**item) for item in trimmed]
+        contents = self.server.build_history_from_client(items)
+        self.assertEqual(len(contents[1].parts), 21)
+        self.assertEqual(len(contents[2].parts), 21)
+        self.assertEqual(contents[2].parts[-1].function_response.response,
+                         {"output": "20"})
+
 
 if __name__ == "__main__":
     unittest.main()

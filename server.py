@@ -74,6 +74,7 @@ class MessageItem(BaseModel):
     content: str
     name: Optional[str] = None
     args: Optional[Dict[str, Any]] = None
+    call_id: Optional[str] = None
 
 
 class StreamChatPayload(BaseModel):
@@ -278,13 +279,17 @@ def build_history_from_client(history: Optional[List[MessageItem]]) -> List[type
     if not history:
         return history_content
 
-    for item in history[-20:]:
+    last_user = next((index for index in range(len(history) - 1, -1, -1)
+                      if history[index].role == "user"), len(history))
+    start = min(max(0, len(history) - 20), last_user)
+    for item in history[start:]:
         msg = item.model_dump() if hasattr(item, "model_dump") else item.dict()
 
         role = msg.get("role")
         content = msg.get("content", "")
         name = msg.get("name")
         args = msg.get("args")
+        call_id = msg.get("call_id")
 
         if role == "user":
             history_content.append(
@@ -296,19 +301,15 @@ def build_history_from_client(history: Optional[List[MessageItem]]) -> List[type
 
         elif role == "model":
             if name:
-                history_content.append(
-                    types.Content(
-                        role="model",
-                        parts=[
-                            types.Part(
-                                function_call=types.FunctionCall(
-                                    name=name,
-                                    args=args or {}
-                                )
-                            )
-                        ],
-                    )
-                )
+                part = types.Part(function_call=types.FunctionCall(
+                    name=name, args=args or {}, id=call_id
+                ))
+                if history_content and history_content[-1].role == "model" and all(
+                    previous.function_call is not None for previous in history_content[-1].parts
+                ):
+                    history_content[-1].parts.append(part)
+                else:
+                    history_content.append(types.Content(role="model", parts=[part]))
             else:
                 history_content.append(
                     types.Content(
@@ -325,17 +326,15 @@ def build_history_from_client(history: Optional[List[MessageItem]]) -> List[type
             except Exception:
                 parsed_result = {"output": content}
 
-            history_content.append(
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_function_response(
-                            name=name or "unknown_tool",
-                            response=parsed_result
-                        )
-                    ],
-                )
-            )
+            part = types.Part(function_response=types.FunctionResponse(
+                name=name or "unknown_tool", response=parsed_result, id=call_id
+            ))
+            if history_content and history_content[-1].role == "user" and all(
+                previous.function_response is not None for previous in history_content[-1].parts
+            ):
+                history_content[-1].parts.append(part)
+            else:
+                history_content.append(types.Content(role="user", parts=[part]))
 
     while history_content and history_content[0].role != "user":
         history_content.pop(0)
@@ -467,16 +466,14 @@ def stream_chat(
 
             if payload.continue_after_tool:
                 if payload.chat_id:
-                    last_client_msg = payload.history[-1]
-                    background_tasks.add_task(
-                        save_message_to_db,
-                        user.db,
-                        payload.chat_id,
-                        "tool",
-                        last_client_msg.content,
-                        last_client_msg.name,
-                        None
-                    )
+                    last_batch_start = len(payload.history) - 1
+                    while last_batch_start and payload.history[last_batch_start - 1].role == "tool":
+                        last_batch_start -= 1
+                    for tool_msg in payload.history[last_batch_start:]:
+                        background_tasks.add_task(
+                            save_message_to_db, user.db, payload.chat_id,
+                            "tool", tool_msg.content, tool_msg.name, None
+                        )
                 full_contents = current_contents
             else:
                 active_message = types.Content(
@@ -492,29 +489,11 @@ def stream_chat(
                 config=config
             )
 
+            tool_calls = []
             for chunk in response_stream:
                 if chunk.function_calls:
-                    for call in chunk.function_calls:
-                        tool_event = {
-                            "type": "tool_call",
-                            "name": call.name,
-                            "args": call.args,
-                            "call_id": getattr(call, "id", None)
-                        }
-
-                        if payload.chat_id:
-                            background_tasks.add_task(
-                                save_message_to_db,
-                                user.db,
-                                payload.chat_id,
-                                "model",
-                                f"[Вызов локального инструмента: {call.name}]",
-                                call.name,
-                                call.args
-                            )
-
-                        yield f"data: {json.dumps(tool_event, ensure_ascii=False)}\n\n".encode("utf-8")
-                    return
+                    tool_calls.extend(chunk.function_calls)
+                    continue
 
                 if chunk.text:
                     full_response += chunk.text
@@ -523,6 +502,21 @@ def stream_chat(
                         "content": chunk.text
                     }
                     yield f"data: {json.dumps(text_event, ensure_ascii=False)}\n\n".encode("utf-8")
+
+            for call in tool_calls:
+                tool_event = {
+                    "type": "tool_call", "name": call.name,
+                    "args": call.args, "call_id": getattr(call, "id", None)
+                }
+                if payload.chat_id:
+                    background_tasks.add_task(
+                        save_message_to_db, user.db, payload.chat_id,
+                        "model", f"[Вызов локального инструмента: {call.name}]",
+                        call.name, call.args
+                    )
+                yield f"data: {json.dumps(tool_event, ensure_ascii=False)}\n\n".encode("utf-8")
+            if tool_calls:
+                return
 
             if payload.chat_id and full_response:
                 background_tasks.add_task(

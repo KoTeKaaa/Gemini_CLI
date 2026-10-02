@@ -480,15 +480,17 @@ def show_model_selection_menu(current_model: str) -> str:
 
 
 def trim_history(history: List[Dict[str, str]], limit: int = 20, tool_content_limit: int = 4) -> List[Dict[str, str]]:
-    if len(history) <= limit:
-        trimmed = history
-    else:
-        trimmed = history[-limit:]
-        while trimmed and trimmed[0].get("role") == "tool":
-            trimmed = trimmed[1:]
+    last_user = next((index for index in range(len(history) - 1, -1, -1)
+                      if history[index].get("role") == "user"), len(history))
+    start = min(max(0, len(history) - limit), last_user)
+    trimmed = history[start:]
+    while trimmed and trimmed[0].get("role") != "user":
+        trimmed = trimmed[1:]
 
     tool_count = 0
-    for msg in reversed(trimmed):
+    current_turn_start = next((index for index in range(len(trimmed) - 1, -1, -1)
+                               if trimmed[index].get("role") == "user"), len(trimmed))
+    for msg in reversed(trimmed[:current_turn_start]):
         if msg.get("role") == "tool":
             tool_count += 1
             if tool_count > tool_content_limit:
@@ -511,6 +513,46 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
     elif is_temporary:
         payload["history"] = history[:-1]
     return payload
+
+
+def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
+                       current_dir: str) -> None:
+    for call in tool_calls:
+        tool_name = call.get("name")
+        history.append({
+            "role": "model", "content": f"[Вызов локального инструмента: {tool_name}]",
+            "name": tool_name, "args": call.get("args", {}), "call_id": call.get("call_id")
+        })
+
+    for call in tool_calls:
+        tool_name = call.get("name")
+        tool_args = call.get("args", {})
+        if tool_name == "read_local_files":
+            tool_result = handle_read_files(tool_args, current_dir)
+        elif tool_name == "write_local_files":
+            tool_result = handle_write_files(tool_args, current_dir)
+        elif tool_name == "execute_command":
+            tool_result = handle_execute_command(tool_args, current_dir)
+        else:
+            tool_result = f"Ошибка: Инструмент {tool_name} не поддерживается клиентом."
+        history.append({
+            "role": "tool", "name": tool_name, "content": tool_result,
+            "call_id": call.get("call_id")
+        })
+        logger.info(f"Tool вызов: {tool_name}, args: {tool_args}")
+
+
+def iter_stream_events(response):
+    for raw_line in response.iter_lines():
+        if not raw_line:
+            continue
+        try:
+            line = raw_line.decode("utf-8").strip()
+            if not line.startswith("data: "):
+                continue
+            yield json.loads(line[6:])
+        except (ValueError, UnicodeError) as e:
+            logger.exception(f"Некорректное событие потока: {e}")
 
 
 def print_banner(model: str, chat_mode: str, current_dir: str):
@@ -661,66 +703,26 @@ def main():
 
                 if response.status_code == 200:
                     full_response = ""
-                    tool_call_received = None
+                    tool_calls_received = []
                     tool_name = None
 
                     status_text = f"[bold yellow]⚙️  {tool_name}...[/bold yellow]" if has_pending_tool else "[bold green]✨ Gemini думает...[/bold green]"
                     with console.status(status_text, spinner="dots"):
 
-                        for raw_line in response.iter_lines():
-                            if not raw_line:
-                                continue
-
-                            line = raw_line.decode("utf-8").strip()
-
-                            if line.startswith("data: "):
-                                body = line[6:]
-                                try:
-                                    event = json.loads(body)
-                                    event_type = event.get("type")
-
-                                    if event_type == "text":
-                                        full_response += event.get("content", "")
-
-                                    elif event_type == "tool_call":
-                                        tool_call_received = event
-                                        break
-
-                                    elif event_type == "error":
-                                        console.print(f"\n[bold red]Ошибка от Gemini:[/] {event.get('content')}")
-                                        break
-                                except Exception as e:
-                                    logger.exception(f"Необработанное исключение: {e}")
+                        for event in iter_stream_events(response):
+                            event_type = event.get("type")
+                            if event_type == "text":
+                                full_response += event.get("content", "")
+                            elif event_type == "tool_call":
+                                tool_calls_received.append(event)
+                            elif event_type == "error":
+                                console.print(f"\n[bold red]Ошибка от Gemini:[/] {event.get('content')}")
+                                break
 
 
-                    if tool_call_received:
-                        tool_name = tool_call_received.get("name")
-                        tool_args = tool_call_received.get("args", {})
-
-                        temporary_history.append({
-                            "role": "model",
-                            "content": f"[Вызов локального инструмента: {tool_name}]",
-                            "name": tool_name,
-                            "args": tool_args
-                        })
-
-                        if tool_name == "read_local_files":
-                            tool_result = handle_read_files(tool_args, current_dir)
-                        elif tool_name == "write_local_files":
-                            tool_result = handle_write_files(tool_args, current_dir)
-                        elif tool_name == "execute_command":
-                            tool_result = handle_execute_command(tool_args, current_dir)
-                        else:
-                            tool_result = f"Ошибка: Инструмент {tool_name} не поддерживается клиентом."
-
-                        temporary_history.append({
-                            "role": "tool",
-                            "name": tool_name,
-                            "content": tool_result
-                        })
-
+                    if tool_calls_received:
+                        execute_tool_calls(tool_calls_received, temporary_history, current_dir)
                         console.print("[dim]Передаю результаты выполнения обратно на сервер...[/dim]")
-                        logger.info(f"Tool вызов: {tool_name}, args: {tool_args}")
                         continue
 
                     if full_response:
