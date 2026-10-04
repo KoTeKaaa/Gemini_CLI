@@ -779,9 +779,12 @@ def main():
                     console.print(f"[yellow]Текущая папка: {current_dir}[/yellow]")
                     continue
 
-                target_path = os.path.abspath(parts[1])
+                target_path = os.path.abspath(os.path.join(current_dir, parts[1]))
 
-                if not os.path.exists(target_path):
+                if not os.path.isdir(target_path):
+                    if os.path.lexists(target_path):
+                        console.print(f"[red]Путь '{target_path}' не является каталогом.[/red]")
+                        continue
                     create_ans = input(f"Папка '{target_path}' не существует. Создать её? (y/n): ").strip().lower()
                     if create_ans == "y":
                         os.makedirs(target_path, exist_ok=True)
