@@ -203,14 +203,18 @@ HTTP разрешён только для `localhost` и loopback-адресов
 целевую архитектуру и дистрибутив сборки. Каталоги `dist/`, `build/` и `.venv/`
 не добавляются в Git.
 
-Для Windows `.exe` нужно собирать на Windows:
+Для Windows `.exe` собирается на Windows через PowerShell:
 
 ```powershell
-python -m pip install -r client/requirements.txt pyinstaller
-python -m PyInstaller --onefile --name gemini-cli main.py
+./client/build.ps1
 ```
 
-После сборки файл находится в `dist\gemini-cli.exe`.
+Скрипт создаёт отдельное окружение `.venv-win`, устанавливает клиентские
+зависимости и PyInstaller. После сборки файл находится в `dist\gemini-cli.exe`.
+Если Windows-компьютера нет, после push в ветку `dev` workflow
+`Build Windows client` соберёт `.exe` на GitHub Actions. Скачайте артефакт
+`gemini-cli-windows-x64` из завершённого запуска и приложите `.exe` к GitHub
+Release. Сборка на Windows должна завершиться успешно до публикации файла.
 
 ## Хранение данных
 
@@ -246,4 +250,4 @@ bash tests/test_deploy_install.sh
 
 ## Лицензия
 
-Лицензия не указана.
+Проект распространяется по лицензии [MIT](LICENSE).
