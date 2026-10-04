@@ -1,4 +1,5 @@
 import importlib
+import base64
 import os
 import tempfile
 import unittest
@@ -231,6 +232,49 @@ class ToolContinuationTest(unittest.TestCase):
                                      ["user", "model", "model", "tool", "tool", "model"])
                     self.assertEqual([row["content"] for row in db.messages if row["role"] == "tool"],
                                      ['{"output":"/work"}', '{"output":"today"}'])
+
+    def test_gemini_3_tool_signature_survives_stream_and_continuation(self):
+        signature = b"signed-model-thought"
+        history = [{"role": "user", "content": "Run pwd"}]
+        seen_contents = []
+
+        def generate_content_stream(**kwargs):
+            seen_contents.append(kwargs["contents"])
+            if len(seen_contents) == 1:
+                part = self.server.types.Part(
+                    function_call=self.server.types.FunctionCall(
+                        name="execute_command", args={"command": "pwd"}, id="call-1"),
+                    thought_signature=signature,
+                )
+                yield SimpleNamespace(candidates=[SimpleNamespace(
+                    content=self.server.types.Content(role="model", parts=[part])
+                )], function_calls=[part.function_call], text=None)
+            else:
+                yield SimpleNamespace(function_calls=None, text="Done")
+
+        model = SimpleNamespace(models=SimpleNamespace(generate_content_stream=generate_content_stream))
+        with patch.object(self.server, "client", model), patch.object(
+            self.server, "StreamingResponse",
+            side_effect=lambda generator, **_kwargs: SimpleNamespace(body_iterator=generator),
+        ), patch.object(self.main, "handle_execute_command", return_value='{"output":"/work"}'):
+            first = self.send(self.main.build_stream_payload(history, None,
+                                   "gemini-3.5-flash-lite", True),
+                              self.server.UserContext("user-1", FakeDb()))
+            events = list(self.main.iter_stream_events(
+                SimpleNamespace(iter_lines=lambda: first.body_iterator)
+            ))
+            calls = [event for event in events if event["type"] == "tool_call"]
+            self.assertEqual(calls[0]["thought_signature"],
+                             base64.b64encode(signature).decode("ascii"))
+            self.main.execute_tool_calls(calls, history, "/work")
+            second = self.send(self.main.build_stream_payload(history, None,
+                                    "gemini-3.5-flash-lite", True),
+                               self.server.UserContext("user-1", FakeDb()))
+            self.assertIn(b"Done", b"".join(second.body_iterator))
+
+        call_part = seen_contents[1][1].parts[0]
+        self.assertEqual(call_part.thought_signature, signature)
+        self.assertEqual(call_part.function_call.id, "call-1")
 
     def test_large_tool_batch_keeps_every_result(self):
         history = [{"role": "user", "content": "Run batch"}]

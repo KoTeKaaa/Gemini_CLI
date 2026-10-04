@@ -1,4 +1,6 @@
 import os
+import base64
+import binascii
 from typing import List, Optional, Literal, Dict, Any
 import json
 from dataclasses import dataclass
@@ -76,12 +78,13 @@ class MessageItem(BaseModel):
     name: Optional[str] = None
     args: Optional[Dict[str, Any]] = None
     call_id: Optional[str] = None
+    thought_signature: Optional[str] = None
 
 
 class StreamChatPayload(BaseModel):
     message: str = ""
     chat_id: Optional[str] = None
-    model_name: Optional[str] = "gemini-3.1-flash-lite"
+    model_name: Optional[str] = "gemini-3.5-flash-lite"
     history: Optional[List[MessageItem]] = None
     current_dir: Optional[str] = None
     continue_after_tool: bool = False
@@ -303,9 +306,15 @@ def build_history_from_client(history: Optional[List[MessageItem]]) -> List[type
 
         elif role == "model":
             if name:
+                signature = msg.get("thought_signature")
+                if signature:
+                    try:
+                        signature = base64.b64decode(signature, validate=True)
+                    except (ValueError, binascii.Error) as exc:
+                        raise HTTPException(status_code=400, detail="Некорректная подпись вызова инструмента") from exc
                 part = types.Part(function_call=types.FunctionCall(
                     name=name, args=args or {}, id=call_id
-                ))
+                ), thought_signature=signature)
                 if history_content and history_content[-1].role == "model" and all(
                     previous.function_call is not None for previous in history_content[-1].parts
                 ):
@@ -485,8 +494,16 @@ def stream_chat(
 
             tool_calls = []
             for chunk in response_stream:
+                candidates = getattr(chunk, "candidates", None) or []
+                content = getattr(candidates[0], "content", None) if candidates else None
+                parts = getattr(content, "parts", None) or []
+                call_parts = [part for part in parts if getattr(part, "function_call", None)]
+                if call_parts:
+                    tool_calls.extend((part.function_call, part.thought_signature)
+                                      for part in call_parts)
+                    continue
                 if chunk.function_calls:
-                    tool_calls.extend(chunk.function_calls)
+                    tool_calls.extend((call, None) for call in chunk.function_calls)
                     continue
 
                 if chunk.text:
@@ -497,10 +514,12 @@ def stream_chat(
                     }
                     yield f"data: {json.dumps(text_event, ensure_ascii=False)}\n\n".encode("utf-8")
 
-            for call in tool_calls:
+            for call, signature in tool_calls:
                 tool_event = {
                     "type": "tool_call", "name": call.name,
-                    "args": call.args, "call_id": getattr(call, "id", None)
+                    "args": call.args, "call_id": getattr(call, "id", None),
+                    "thought_signature": base64.b64encode(signature).decode("ascii")
+                    if signature else None,
                 }
                 if payload.chat_id:
                     save_message_to_db(

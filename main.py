@@ -576,9 +576,10 @@ def show_chat_menu(client: GeminiAPIClient) -> Optional[tuple[Optional[str], boo
 
 def show_model_selection_menu(current_model: str) -> str:
     available_models = [
-        ("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite"),
-        ("gemini-2.5-flash", "Gemini 2.5 Flash"),
-        ("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite"),
+        ("gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite"),
+        ("gemini-3.8-flash", "Gemini 3.8 Flash"),
+        ("gemini-3.7-flash", "Gemini 3.7 Flash"),
+        ("gemini-3.6-flash", "Gemini 3.6 Flash"),
         ("gemini-3.5-flash", "Gemini 3.5 Flash"),
     ]
 
@@ -645,7 +646,8 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
         tool_name = call.get("name")
         history.append({
             "role": "model", "content": f"[Вызов локального инструмента: {tool_name}]",
-            "name": tool_name, "args": call.get("args", {}), "call_id": call.get("call_id")
+            "name": tool_name, "args": call.get("args", {}), "call_id": call.get("call_id"),
+            "thought_signature": call.get("thought_signature")
         })
 
     for call in tool_calls:
@@ -761,7 +763,7 @@ def main():
 
     api_client.login()
 
-    current_model = "gemini-3.1-flash-lite"
+    current_model = "gemini-3.5-flash-lite"
     selected_chat = show_chat_menu(api_client)
     if selected_chat is None:
         return
