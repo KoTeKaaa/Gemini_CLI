@@ -1,9 +1,9 @@
 import os
 import sys
-import time
 import json
 import ipaddress
 import tempfile
+from contextlib import nullcontext
 from typing import Optional, Dict, List, Any
 from urllib.parse import urlsplit
 
@@ -608,6 +608,49 @@ def iter_stream_events(response):
             logger.exception(f"Некорректное событие потока: {e}")
 
 
+def display_stream_response(response, has_pending_tool: bool):
+    full_response = ""
+    tool_calls_received = []
+    error_content = None
+    status_text = ("[bold yellow]⚙️  Ожидаю ответ инструмента...[/bold yellow]"
+                   if has_pending_tool else "[bold green]✨ Gemini думает...[/bold green]")
+    use_screen = (console.is_terminal and not console.is_dumb_terminal
+                  and not console.legacy_windows)
+    with console.screen() if use_screen else nullcontext():
+        status = console.status(status_text, spinner="dots")
+        started_text = False
+        line_ended = False
+        status.start()
+        try:
+            for event in iter_stream_events(response):
+                event_type = event.get("type")
+                if event_type == "text":
+                    fragment = event.get("content", "")
+                    if fragment:
+                        full_response += fragment
+                        if not started_text:
+                            status.stop()
+                            started_text = True
+                        sys.stdout.write(fragment)
+                        sys.stdout.flush()
+                        line_ended = fragment.endswith("\n")
+                elif event_type == "tool_call":
+                    tool_calls_received.append(event)
+                elif event_type == "error":
+                    error_content = event.get("content")
+                    break
+        finally:
+            status.stop()
+            if started_text and not line_ended:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+    if use_screen and full_response and not tool_calls_received:
+        console.print(Markdown(full_response))
+    if error_content is not None:
+        console.print(f"[bold red]Ошибка от Gemini:[/] {error_content}")
+    return full_response, tool_calls_received
+
+
 def print_banner(model: str, chat_mode: str, current_dir: str):
     GEMINI_BLUE = "#4285F4"
     GEMINI_TEAL = "#00BCD4"
@@ -748,23 +791,8 @@ def main():
                 response = api_client.stream_chat(payload)
 
                 if response.status_code == 200:
-                    full_response = ""
-                    tool_calls_received = []
-                    tool_name = None
-
-                    status_text = f"[bold yellow]⚙️  {tool_name}...[/bold yellow]" if has_pending_tool else "[bold green]✨ Gemini думает...[/bold green]"
-                    with console.status(status_text, spinner="dots"):
-
-                        for event in iter_stream_events(response):
-                            event_type = event.get("type")
-                            if event_type == "text":
-                                full_response += event.get("content", "")
-                            elif event_type == "tool_call":
-                                tool_calls_received.append(event)
-                            elif event_type == "error":
-                                console.print(f"\n[bold red]Ошибка от Gemini:[/] {event.get('content')}")
-                                break
-
+                    full_response, tool_calls_received = display_stream_response(
+                        response, has_pending_tool)
 
                     if tool_calls_received:
                         execute_tool_calls(tool_calls_received, temporary_history, current_dir)
@@ -772,17 +800,6 @@ def main():
                         continue
 
                     if full_response:
-                        with console.capture() as capture:
-                            console.print(Markdown(full_response))
-                        rendered_markdown = capture.get()
-
-                        lines = rendered_markdown.splitlines(keepends=True)
-                        for line in lines:
-                            sys.stdout.write(line)
-                            sys.stdout.flush()
-                            if len(line.strip()) > 0:
-                                time.sleep(0.012)
-
                         console.rule(style="dim #4285F4")
                         temporary_history.append({"role": "model", "content": full_response})
                         break
