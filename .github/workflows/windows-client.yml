@@ -1,0 +1,40 @@
+name: Build Windows client
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Build executable
+        shell: pwsh
+        run: ./client/build.ps1
+      - name: Check executable
+        shell: pwsh
+        run: |
+          $exe = 'dist/gemini-cli.exe'
+          if (-not (Test-Path $exe)) { throw 'Windows executable is missing.' }
+          $stream = [System.IO.File]::OpenRead($exe)
+          try {
+            if ($stream.ReadByte() -ne 0x4d -or $stream.ReadByte() -ne 0x5a) {
+              throw 'Windows executable has no PE header.'
+            }
+          } finally {
+            $stream.Dispose()
+          }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gemini-cli-windows-x64
+          path: dist/gemini-cli.exe
+          if-no-files-found: error

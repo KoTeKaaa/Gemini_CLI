@@ -12,5 +12,6 @@ session.json
 server_config.json
 .idea
 /.venv/
+/.venv-win/
 /dist/
 /build/
