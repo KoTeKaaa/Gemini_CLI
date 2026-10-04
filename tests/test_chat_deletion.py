@@ -60,7 +60,7 @@ class FakeDb:
         return FakeQuery(self, name)
 
 
-class ChatDeletionTest(unittest.IsolatedAsyncioTestCase):
+class ChatDeletionTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         with patch.dict(os.environ, {
@@ -74,8 +74,8 @@ class ChatDeletionTest(unittest.IsolatedAsyncioTestCase):
         self.db = FakeDb()
         self.user = self.server.UserContext(user_id="user-a", db=self.db)
 
-    async def test_owned_chat_deletes_messages_by_cascade(self):
-        result = await self.server.delete_chat("own", self.user)
+    def test_owned_chat_deletes_messages_by_cascade(self):
+        result = self.server.delete_chat("own", self.user)
         self.assertEqual(result, {"status": "deleted"})
         self.assertEqual([chat["id"] for chat in self.db.chats], ["foreign"])
         self.assertEqual([message["chat_id"] for message in self.db.messages], ["foreign"])
@@ -84,28 +84,28 @@ class ChatDeletionTest(unittest.IsolatedAsyncioTestCase):
             ("chats", True, {"id": "own", "user_id": "user-a"}),
         ])
 
-    async def test_foreign_and_missing_chat_do_not_delete(self):
+    def test_foreign_and_missing_chat_do_not_delete(self):
         for chat_id in ("foreign", "missing"):
             with self.subTest(chat_id=chat_id):
                 with self.assertRaises(HTTPException) as caught:
-                    await self.server.delete_chat(chat_id, self.user)
+                    self.server.delete_chat(chat_id, self.user)
                 self.assertEqual(caught.exception.status_code, 404)
                 self.assertEqual(len(self.db.chats), 2)
                 self.assertEqual(len(self.db.messages), 2)
         self.assertTrue(all(not is_delete for _, is_delete, _ in self.db.queries))
 
-    async def test_failed_cascade_does_not_report_deleted_or_change_data(self):
+    def test_failed_cascade_does_not_report_deleted_or_change_data(self):
         self.db.fail_delete = True
         with self.assertRaises(HTTPException) as caught:
-            await self.server.delete_chat("own", self.user)
+            self.server.delete_chat("own", self.user)
         self.assertEqual(caught.exception.status_code, 500)
         self.assertEqual(len(self.db.chats), 2)
         self.assertEqual(len(self.db.messages), 2)
 
-    async def test_zero_deleted_rows_does_not_report_deleted(self):
+    def test_zero_deleted_rows_does_not_report_deleted(self):
         self.db.delete_without_rows = True
         with self.assertRaises(HTTPException) as caught:
-            await self.server.delete_chat("own", self.user)
+            self.server.delete_chat("own", self.user)
         self.assertEqual(caught.exception.status_code, 404)
         self.assertEqual(len(self.db.chats), 2)
         self.assertEqual(len(self.db.messages), 2)

@@ -33,7 +33,7 @@ class UserContext:
     db: Client
 
 
-async def get_current_user(authorization: Optional[str] = Header(None)):
+def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Отсутствует заголовок Authorization")
 
@@ -156,7 +156,7 @@ def refresh_user_session(payload: RefreshPayload):
 
 
 @app.get("/chats", response_model=List[ChatResponse])
-async def get_chats(user: UserContext = Depends(get_current_user)):
+def get_chats(user: UserContext = Depends(get_current_user)):
     try:
         response = user.db.table("chats") \
             .select("id, title, created_at") \
@@ -179,7 +179,7 @@ async def get_chats(user: UserContext = Depends(get_current_user)):
 
 
 @app.post("/chats", response_model=ChatResponse)
-async def create_chat(payload: ChatCreate, user: UserContext = Depends(get_current_user)):
+def create_chat(payload: ChatCreate, user: UserContext = Depends(get_current_user)):
     if not payload.title.strip():
         raise HTTPException(status_code=400, detail="Название чата не может быть пустым")
 
@@ -204,7 +204,7 @@ async def create_chat(payload: ChatCreate, user: UserContext = Depends(get_curre
 
 
 @app.delete("/chats/{chat_id}")
-async def delete_chat(chat_id: str, user: UserContext = Depends(get_current_user)):
+def delete_chat(chat_id: str, user: UserContext = Depends(get_current_user)):
     try:
         chat = user.db.table("chats").select("id") \
             .eq("id", chat_id).eq("user_id", user.user_id).execute()

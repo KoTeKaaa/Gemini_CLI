@@ -1,5 +1,4 @@
 import importlib
-import asyncio
 import io
 import json
 import os
@@ -75,7 +74,7 @@ class ChatErrorsTest(unittest.TestCase):
             "database unavailable"
         )
         with patch("builtins.print"), self.assertRaises(HTTPException) as caught:
-            asyncio.run(self.server.get_chats(self.server.UserContext("user-1", db)))
+            self.server.get_chats(self.server.UserContext("user-1", db))
         self.assertEqual(caught.exception.status_code, 500)
 
     def test_chat_list_distinguishes_empty_and_http_errors(self):

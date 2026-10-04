@@ -1,4 +1,3 @@
-import asyncio
 import importlib
 import os
 import sys
@@ -94,10 +93,10 @@ class SessionIsolationTest(unittest.TestCase):
             return db
 
         def request(user_id):
-            context = asyncio.run(server.get_current_user(f"Bearer {user_id}"))
+            context = server.get_current_user(f"Bearer {user_id}")
             barrier.wait()
-            chats = asyncio.run(server.get_chats(context))
-            created = asyncio.run(server.create_chat(server.ChatCreate(title="new"), context))
+            chats = server.get_chats(context)
+            created = server.create_chat(server.ChatCreate(title="new"), context)
             server.save_message_to_db(context.db, created.id, "user", user_id)
             own_messages = context.db.table("messages").select("*").execute().data
             return context, chats, created, own_messages
