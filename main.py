@@ -612,7 +612,10 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
             "role": "tool", "name": tool_name, "content": tool_result,
             "call_id": call.get("call_id")
         })
-        logger.info(f"Tool вызов: {tool_name}, args: {tool_args}")
+        logged_name = tool_name if tool_name in (
+            "read_local_files", "write_local_files", "execute_command"
+        ) else "unknown"
+        logger.info("Tool вызов: %s", logged_name)
 
 
 def iter_stream_events(response):
