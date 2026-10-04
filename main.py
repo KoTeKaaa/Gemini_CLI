@@ -505,7 +505,7 @@ def show_chat_menu(client: GeminiAPIClient) -> Optional[tuple[Optional[str], boo
     ).run()
 
     if result is None:
-        sys.exit(0)
+        return None
 
     if result == "temporary":
         return None, True
