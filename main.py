@@ -301,6 +301,51 @@ class GeminiAPIClient:
             logger.exception(f"Необработанное исключение: {e}")
             return None
 
+    def _renew_session(self) -> bool:
+        try:
+            with open(SESSION_FILE, "r", encoding="utf-8") as file:
+                refresh_token = json.load(file).get("refresh_token")
+        except (OSError, ValueError, AttributeError):
+            refresh_token = None
+
+        if refresh_token:
+            try:
+                response = requests.post(
+                    f"{self.base_url}/auth/refresh",
+                    json={"refresh_token": refresh_token}, timeout=30,
+                    allow_redirects=False,
+                )
+            except requests.RequestException as e:
+                console.print(f"[red]Не удалось обновить сессию: {e}[/red]")
+                return False
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("access_token") and data.get("refresh_token"):
+                    save_session(data)
+                    self.set_token(data["access_token"])
+                    return True
+            elif response.status_code not in (400, 401, 403):
+                console.print("[red]Сервер временно не может обновить сессию.[/red]")
+                return False
+
+        self.token = None
+        try:
+            os.unlink(SESSION_FILE)
+        except FileNotFoundError:
+            pass
+        console.print("[yellow]Сессия истекла. Войдите снова.[/yellow]")
+        self.login()
+        return bool(self.token)
+
+    def _authorized_request(self, request):
+        response = request()
+        if response.status_code != 401:
+            return response
+        response.close()
+        if not self._renew_session():
+            return response
+        return request()
+
     def login(self):
         token = self._load_session_token()
         if token:
@@ -351,7 +396,7 @@ class GeminiAPIClient:
 
                                 token = data.get("access_token") or (data.get("session") or {}).get("access_token")
                                 if token:
-                                    save_session(data)
+                                    save_session(data.get("session") or data)
                                     self.set_token(token)
                                     console.print("[green]Аккаунт создан и вход выполнен.[/green]")
                                     logger.info("Новый аккаунт создан и авторизован")
@@ -373,8 +418,9 @@ class GeminiAPIClient:
 
     def get_chats(self) -> List[Dict[str, Any]]:
         try:
-            r = requests.get(f"{self.base_url}/chats", headers=self.headers, timeout=30,
-                             allow_redirects=False)
+            r = self._authorized_request(lambda: requests.get(
+                f"{self.base_url}/chats", headers=self.headers, timeout=30,
+                allow_redirects=False))
             if r.status_code == 200:
                 return r.json()
             return []
@@ -385,13 +431,13 @@ class GeminiAPIClient:
 
     def create_chat(self, title: str) -> Optional[Dict[str, Any]]:
         try:
-            r = requests.post(
+            r = self._authorized_request(lambda: requests.post(
                 f"{self.base_url}/chats",
                 json={"title": title},
                 headers=self.headers,
                 timeout=30,
                 allow_redirects=False,
-            )
+            ))
             if r.status_code == 200:
                 return r.json()
             return None
@@ -402,17 +448,24 @@ class GeminiAPIClient:
 
     def delete_chat(self, chat_id: str) -> bool:
         try:
-            r = requests.delete(
+            r = self._authorized_request(lambda: requests.delete(
                 f"{self.base_url}/chats/{chat_id}",
                 headers=self.headers,
                 timeout=30,
                 allow_redirects=False,
-            )
+            ))
             return r.status_code == 200
         except Exception as e:
             logger.error(f"Ошибка при удалении чата: {e}")
             console.print(f"[red]Ошибка при удалении чата: {e}[/red]")
             return False
+
+    def stream_chat(self, payload: Dict[str, Any]):
+        return self._authorized_request(lambda: requests.post(
+            f"{self.base_url}/chat/stream", json=payload,
+            headers=self.headers, stream=True, timeout=300,
+            allow_redirects=False,
+        ))
 
 def show_chat_menu(client: GeminiAPIClient) -> tuple[Optional[str], bool]:
     db_chats = client.get_chats()
@@ -692,14 +745,7 @@ def main():
                 payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary)
                 has_pending_tool = payload["continue_after_tool"]
 
-                response = requests.post(
-                    f"{api_client.base_url}/chat/stream",
-                    json=payload,
-                    headers=api_client.headers,
-                    stream=True,
-                    timeout=300,
-                    allow_redirects=False,
-                )
+                response = api_client.stream_chat(payload)
 
                 if response.status_code == 200:
                     full_response = ""

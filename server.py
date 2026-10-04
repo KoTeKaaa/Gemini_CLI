@@ -90,6 +90,11 @@ class LoginPayload(BaseModel):
     email: str
     password: str
 
+
+class RefreshPayload(BaseModel):
+    refresh_token: str
+
+
 from fastapi import status
 
 @app.post("/auth/signup", status_code=status.HTTP_201_CREATED)
@@ -131,6 +136,23 @@ def login_user(payload: LoginPayload):
     except Exception as e:
         print(f"[AUTH ERROR] Login failed for {payload.email!r}: {e}")
         raise HTTPException(status_code=401, detail="Не удалось выполнить вход")
+
+
+@app.post("/auth/refresh")
+def refresh_user_session(payload: RefreshPayload):
+    if not payload.refresh_token:
+        raise HTTPException(status_code=401, detail="Не удалось обновить сессию")
+    try:
+        response = create_client(supabase_url, supabase_key).auth.refresh_session(
+            payload.refresh_token)
+        if not response or not response.session:
+            raise HTTPException(status_code=401, detail="Не удалось обновить сессию")
+        return response.session.model_dump()
+    except Exception as e:
+        print(f"[AUTH ERROR] Session refresh failed: {e}")
+        status_code = (401 if isinstance(e, HTTPException) or
+                       getattr(e, "status", None) in (400, 401, 403) else 503)
+        raise HTTPException(status_code=status_code, detail="Не удалось обновить сессию")
 
 
 @app.get("/chats", response_model=List[ChatResponse])
