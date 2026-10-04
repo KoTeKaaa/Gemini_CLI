@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -55,6 +56,46 @@ class FileSandboxTest(unittest.TestCase):
         self.assertEqual((self.base / "inside.txt").read_text(encoding="utf-8"), "changed")
         self.assertEqual((self.sibling / "outside.txt").read_text(encoding="utf-8"), "outside")
         self.assertFalse((self.sibling / "new.txt").exists())
+
+    def test_failed_write_preserves_original_and_reports_each_file(self):
+        original_temp_file = tempfile.NamedTemporaryFile
+        calls = 0
+
+        @contextmanager
+        def fail_first_write(**kwargs):
+            nonlocal calls
+            calls += 1
+            with original_temp_file(**kwargs) as file_obj:
+                if calls == 1:
+                    class FailingWriter:
+                        name = file_obj.name
+
+                        def write(self, content):
+                            file_obj.write(content[:2])
+                            raise OSError("write failed")
+
+                    yield FailingWriter()
+                else:
+                    yield file_obj
+
+        files = [
+            {"filepath": "inside.txt", "content": "replacement"},
+            {"filepath": "new.txt", "content": "new"},
+        ]
+        with (patch.object(self.client.console, "print") as printed,
+              patch("builtins.input", return_value="y"),
+              patch.object(self.client.tempfile, "NamedTemporaryFile", side_effect=fail_first_write)):
+            result = json.loads(self.client.handle_write_files({"files": files}, str(self.base)))
+
+        self.assertIn("write failed", result[0]["status"])
+        self.assertEqual(result[1]["status"], "Успешно записан")
+        self.assertEqual((self.base / "inside.txt").read_text(encoding="utf-8"), "inside")
+        self.assertEqual((self.base / "new.txt").read_text(encoding="utf-8"), "new")
+        self.assertEqual(list(self.base.glob(".gemini-write-*")), [])
+        output = "\n".join(str(call.args[0]) for call in printed.call_args_list)
+        self.assertIn("inside.txt: Ошибка: write failed", output)
+        self.assertIn("new.txt: Успешно записан", output)
+        self.assertNotIn("Изменения успешно применены", output)
 
 
 if __name__ == "__main__":

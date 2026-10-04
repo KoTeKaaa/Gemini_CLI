@@ -3,6 +3,7 @@ import sys
 import json
 import ipaddress
 import tempfile
+import stat
 from contextlib import nullcontext
 from typing import Optional, Dict, List, Any
 from urllib.parse import urlsplit
@@ -221,19 +222,32 @@ def handle_write_files(args: dict, current_dir: str) -> str:
 
         full_path = resolve_safe_path(current_dir, rel_path)
         if full_path is None:
-            results.append({"filepath": rel_path, "status": "Заблокировано песочницей"})
+            status = "Заблокировано песочницей"
+            results.append({"filepath": rel_path, "status": status})
+            console.print(f"{rel_path}: {status}")
             continue
 
+        temporary_path = None
         try:
-            os.makedirs(os.path.dirname(full_path), exist_ok=True)
-            with open(full_path, "w", encoding="utf-8") as file_obj:
+            directory = os.path.dirname(full_path)
+            os.makedirs(directory, exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
+                                             prefix=".gemini-write-", delete=False) as file_obj:
+                temporary_path = file_obj.name
                 file_obj.write(content)
-            results.append({"filepath": rel_path, "status": "Успешно записан"})
+            if os.path.exists(full_path):
+                os.chmod(temporary_path, stat.S_IMODE(os.stat(full_path).st_mode))
+            os.replace(temporary_path, full_path)
+            status = "Успешно записан"
         except Exception as e:
-            results.append({"filepath": rel_path, "status": f"Ошибка: {str(e)}"})
+            status = f"Ошибка: {str(e)}"
             logger.exception(f"Необработанное исключение: {e}")
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+        results.append({"filepath": rel_path, "status": status})
+        console.print(f"{rel_path}: {status}")
 
-    console.print("[green]✔ Изменения успешно применены к диску.[/green]\n")
     return json.dumps(results, ensure_ascii=False)
 
 
