@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from fastapi import BackgroundTasks, HTTPException
+from fastapi import HTTPException
 
 
 class FakeQuery:
@@ -81,18 +81,16 @@ class StreamChatOwnershipTest(unittest.TestCase):
                 for payload in payloads:
                     with self.subTest(chat_id=chat_id, payload=payload):
                         self.db.queries.clear()
-                        tasks = BackgroundTasks()
                         with self.assertRaises(HTTPException) as caught:
                             self.server.stream_chat(
                                 self.server.StreamChatPayload(chat_id=chat_id, **payload),
-                                tasks, self.user,
+                                self.user,
                             )
                         self.assertEqual(caught.exception.status_code, 404)
                         self.assertEqual(caught.exception.detail, "Чат не найден")
                         self.assertEqual(self.db.queries, [
                             ("chats", {"id": chat_id, "user_id": "user-a"}, None)
                         ])
-                        self.assertEqual(tasks.tasks, [])
                         self.assertEqual(self.db.messages, [])
 
     def test_owned_chat_allows_message_and_tool_continuation(self):
@@ -101,16 +99,14 @@ class StreamChatOwnershipTest(unittest.TestCase):
             self.server, "StreamingResponse",
             side_effect=lambda generator, **_kwargs: SimpleNamespace(body_iterator=generator),
         ):
-            tasks = BackgroundTasks()
             response = self.server.stream_chat(
                 self.server.StreamChatPayload(chat_id="own", message="Hello"),
-                tasks, self.user,
+                self.user,
             )
             list(response.body_iterator)
-            self.assertEqual([(task.args[2], task.args[3]) for task in tasks.tasks],
+            self.assertEqual([(row["role"], row["content"]) for row in self.db.messages],
                              [("user", "Hello")])
 
-            tasks = BackgroundTasks()
             response = self.server.stream_chat(
                 self.server.StreamChatPayload(
                     chat_id="own",
@@ -119,11 +115,11 @@ class StreamChatOwnershipTest(unittest.TestCase):
                         self.server.MessageItem(role="user", content="Hello"),
                         self.server.MessageItem(role="tool", name="execute_command", content="{}"),
                     ],
-                ), tasks, self.user,
+                ), self.user,
             )
             list(response.body_iterator)
-            self.assertEqual([(task.args[2], task.args[3]) for task in tasks.tasks],
-                             [("tool", "{}")])
+            self.assertEqual([(row["role"], row["content"]) for row in self.db.messages],
+                             [("user", "Hello"), ("tool", "{}")])
 
 
 if __name__ == "__main__":

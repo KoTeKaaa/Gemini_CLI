@@ -430,18 +430,22 @@ class GeminiAPIClient:
                 console.print("[red]Произошла непредвиденная ошибка входа.[/red]")
                 logger.exception(f"Необработанное исключение: {e}")
 
-    def get_chats(self) -> List[Dict[str, Any]]:
+    def get_chats(self) -> Optional[List[Dict[str, Any]]]:
         try:
             r = self._authorized_request(lambda: requests.get(
                 f"{self.base_url}/chats", headers=self.headers, timeout=30,
                 allow_redirects=False))
             if r.status_code == 200:
                 return r.json()
-            return []
+            if r.status_code == 401:
+                console.print("[red]Сессия истекла. Войдите снова.[/red]")
+            else:
+                console.print(f"[red]Не удалось получить список чатов (код {r.status_code}).[/red]")
+            return None
         except Exception as e:
             console.print(f"[red]Ошибка при получении чатов: {e}[/red]")
             logger.exception(f"Необработанное исключение: {e}")
-            return []
+            return None
 
     def create_chat(self, title: str) -> Optional[Dict[str, Any]]:
         try:
@@ -481,8 +485,10 @@ class GeminiAPIClient:
             allow_redirects=False,
         ))
 
-def show_chat_menu(client: GeminiAPIClient) -> tuple[Optional[str], bool]:
+def show_chat_menu(client: GeminiAPIClient) -> Optional[tuple[Optional[str], bool]]:
     db_chats = client.get_chats()
+    if db_chats is None:
+        return None
 
     values = [
         ("temporary", "Войти во временный чат"),
@@ -658,10 +664,11 @@ def display_stream_response(response, has_pending_tool: bool):
             if started_text and not line_ended:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
+    if error_content is not None:
+        console.print(f"[bold red]Ошибка:[/] {error_content}")
+        return "", []
     if use_screen and full_response and not tool_calls_received:
         console.print(Markdown(full_response))
-    if error_content is not None:
-        console.print(f"[bold red]Ошибка от Gemini:[/] {error_content}")
     return full_response, tool_calls_received
 
 
@@ -701,7 +708,10 @@ def main():
     api_client.login()
 
     current_model = "gemini-3.1-flash-lite"
-    chat_id, is_temporary = show_chat_menu(api_client)
+    selected_chat = show_chat_menu(api_client)
+    if selected_chat is None:
+        return
+    chat_id, is_temporary = selected_chat
     current_dir = os.getcwd()
     chat_mode = "ВРЕМЕННЫЙ" if is_temporary else "ПОСТОЯННЫЙ"
     print_banner(current_model, chat_mode, current_dir)
@@ -764,7 +774,10 @@ def main():
                 continue
 
             if first_line.startswith("/chat"):
-                new_chat_id, new_is_temporary = show_chat_menu(api_client)
+                selected_chat = show_chat_menu(api_client)
+                if selected_chat is None:
+                    continue
+                new_chat_id, new_is_temporary = selected_chat
                 if new_chat_id != chat_id or new_is_temporary != is_temporary:
                     chat_id = new_chat_id
                     is_temporary = new_is_temporary

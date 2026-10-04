@@ -1,4 +1,3 @@
-import asyncio
 import importlib
 import os
 import tempfile
@@ -6,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from fastapi import BackgroundTasks, HTTPException
+from fastapi import HTTPException
 
 
 class FakeQuery:
@@ -88,9 +87,8 @@ class ToolContinuationTest(unittest.TestCase):
                 ):
                     first = self.main.build_stream_payload(history, chat_id, "test-model", temporary)
                     self.assertFalse(first["continue_after_tool"])
-                    response, tasks = self.send(first, user)
+                    response = self.send(first, user)
                     self.assertIn(b'"tool_call"', b"".join(response.body_iterator))
-                    asyncio.run(tasks())
 
                     history.extend([
                         {"role": "model", "content": "[tool call]", "name": "execute_command",
@@ -101,9 +99,8 @@ class ToolContinuationTest(unittest.TestCase):
                     second = self.main.build_stream_payload(history, chat_id, "test-model", temporary)
                     self.assertTrue(second["continue_after_tool"])
                     self.assertEqual(second["message"], "")
-                    response, tasks = self.send(second, user)
+                    response = self.send(second, user)
                     self.assertIn(b'Done', b"".join(response.body_iterator))
-                    asyncio.run(tasks())
 
                 for contents in seen_contents:
                     request_parts = [part.text for item in contents for part in item.parts
@@ -118,9 +115,8 @@ class ToolContinuationTest(unittest.TestCase):
                                      ['{"output":"/work"}'])
 
     def send(self, data, user):
-        tasks = BackgroundTasks()
         payload = self.server.StreamChatPayload(**data)
-        return self.server.stream_chat(payload, tasks, user), tasks
+        return self.server.stream_chat(payload, user)
 
     def test_continuation_requires_tool_result(self):
         user = self.server.UserContext("user-1", FakeDb())
@@ -157,22 +153,20 @@ class ToolContinuationTest(unittest.TestCase):
         ):
             # A reopened client has no local copy of the older exchange.
             history = [{"role": "user", "content": "Run pwd"}]
-            response, tasks = self.send(
+            response = self.send(
                 self.main.build_stream_payload(history, "chat-1", "test-model", False), user
             )
             list(response.body_iterator)
-            asyncio.run(tasks())
             history.extend([
                 {"role": "model", "content": "[tool call]", "name": "execute_command",
                  "args": {"command": "pwd"}},
                 {"role": "tool", "content": '{"output":"/work"}',
                  "name": "execute_command"},
             ])
-            response, tasks = self.send(
+            response = self.send(
                 self.main.build_stream_payload(history, "chat-1", "test-model", False), user
             )
             list(response.body_iterator)
-            asyncio.run(tasks())
 
         parts = [part for item in seen_contents[1] for part in item.parts]
         texts = [part.text for part in parts if part.text is not None]
@@ -210,18 +204,16 @@ class ToolContinuationTest(unittest.TestCase):
                     '{"output":"/work"}', '{"output":"today"}'
                 ]) as execute:
                     first = self.main.build_stream_payload(history, chat_id, "test-model", temporary)
-                    response, tasks = self.send(first, user)
+                    response = self.send(first, user)
                     stream = SimpleNamespace(iter_lines=lambda: response.body_iterator)
                     events = list(self.main.iter_stream_events(stream))
-                    asyncio.run(tasks())
                     calls = [event for event in events if event["type"] == "tool_call"]
                     self.assertEqual([call["call_id"] for call in calls], ["call-1", "call-2"])
                     self.main.execute_tool_calls(calls, history, "/work")
                     self.assertEqual(execute.call_count, 2)
                     second = self.main.build_stream_payload(history, chat_id, "test-model", temporary)
-                    response, tasks = self.send(second, user)
+                    response = self.send(second, user)
                     self.assertIn(b"Both done", b"".join(response.body_iterator))
-                    asyncio.run(tasks())
 
                 self.assertEqual([entry["role"] for entry in history],
                                  ["user", "model", "model", "tool", "tool"])
@@ -284,11 +276,10 @@ class ToolContinuationTest(unittest.TestCase):
             self.server, "StreamingResponse",
             side_effect=lambda generator, **_kwargs: SimpleNamespace(body_iterator=generator),
         ):
-            response, tasks = self.send({
+            response = self.send({
                 "chat_id": "chat-1", "message": "What happened?", "model_name": "test-model"
             }, user)
             self.assertIn(b"Next answer", b"".join(response.body_iterator))
-            asyncio.run(tasks())
 
         contents = seen_contents[0]
         self.assertEqual([content.role for content in contents],

@@ -2,7 +2,7 @@ import os
 from typing import List, Optional, Literal, Dict, Any
 import json
 from dataclasses import dataclass
-from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from google import genai
@@ -224,7 +224,7 @@ async def delete_chat(chat_id: str, user: UserContext = Depends(get_current_user
         raise HTTPException(status_code=500, detail="Не удалось удалить чат")
 
 
-async def save_message_to_db(
+def save_message_to_db(
         db: Client,
         chat_id: str,
         role: Literal["user", "model", "tool"],
@@ -232,18 +232,18 @@ async def save_message_to_db(
         name: Optional[str] = None,
         args: Optional[Dict[str, Any]] = None
 ):
+    data = {
+        "chat_id": chat_id,
+        "role": role,
+        "content": content,
+        "name": name,
+        "args": args,
+    }
     try:
-        data = {
-            "chat_id": chat_id,
-            "role": role,
-            "content": content,
-            "name": name,
-            "args": args,
-        }
         db.table("messages").insert(data).execute()
-
     except Exception as e:
-        print(f"[BD ERROR] Не удалось сохранить сообщения в БД: {e}")
+        print(f"[DB ERROR] Не удалось сохранить сообщение: {e}")
+        raise RuntimeError("Не удалось сохранить сообщение в БД") from e
 
 
 def build_history_from_db(db: Client, chat_id: str,
@@ -395,7 +395,6 @@ def execute_command(command: str) -> str:
 @app.post("/chat/stream")
 def stream_chat(
         payload: StreamChatPayload,
-        background_tasks: BackgroundTasks,
         user: UserContext = Depends(get_current_user),
 ):
     if payload.continue_after_tool:
@@ -409,15 +408,6 @@ def stream_chat(
             .eq("id", payload.chat_id).eq("user_id", user.user_id).execute()
         if not chat.data:
             raise HTTPException(status_code=404, detail="Чат не найден")
-
-    if payload.chat_id and not payload.continue_after_tool:
-        background_tasks.add_task(
-            save_message_to_db,
-            user.db,
-            payload.chat_id,
-            "user",
-            payload.message.strip()
-        )
 
     if payload.chat_id and payload.continue_after_tool:
         current_turn_start = next(
@@ -440,6 +430,8 @@ def stream_chat(
     def event_generator():
         full_response = ""
         try:
+            if payload.chat_id and not payload.continue_after_tool:
+                save_message_to_db(user.db, payload.chat_id, "user", payload.message.strip())
 
             agent_instruction = (
                 "Ты — продвинутый AI-ассистент разработчика с доступом к локальной файловой системе и терминалу. "
@@ -467,8 +459,8 @@ def stream_chat(
                     while last_batch_start and payload.history[last_batch_start - 1].role == "tool":
                         last_batch_start -= 1
                     for tool_msg in payload.history[last_batch_start:]:
-                        background_tasks.add_task(
-                            save_message_to_db, user.db, payload.chat_id,
+                        save_message_to_db(
+                            user.db, payload.chat_id,
                             "tool", tool_msg.content, tool_msg.name, None
                         )
                 full_contents = current_contents
@@ -506,8 +498,8 @@ def stream_chat(
                     "args": call.args, "call_id": getattr(call, "id", None)
                 }
                 if payload.chat_id:
-                    background_tasks.add_task(
-                        save_message_to_db, user.db, payload.chat_id,
+                    save_message_to_db(
+                        user.db, payload.chat_id,
                         "model", f"[Вызов локального инструмента: {call.name}]",
                         call.name, call.args
                     )
@@ -516,13 +508,7 @@ def stream_chat(
                 return
 
             if payload.chat_id and full_response:
-                background_tasks.add_task(
-                    save_message_to_db,
-                    user.db,
-                    payload.chat_id,
-                    "model",
-                    full_response
-                )
+                save_message_to_db(user.db, payload.chat_id, "model", full_response)
 
         except Exception as e:
             error_msg = str(e)
