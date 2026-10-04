@@ -1,8 +1,12 @@
 import os
 import sys
-import time
 import json
+import ipaddress
+import tempfile
+import stat
+from contextlib import nullcontext
 from typing import Optional, Dict, List, Any
+from urllib.parse import urlsplit
 
 import requests
 from prompt_toolkit import PromptSession
@@ -17,12 +21,21 @@ from rich.markdown import Markdown
 import subprocess
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 import logging
 from datetime import datetime
 
 
 LOG_FILE = os.path.join(os.path.expanduser("~"), ".gemini_cli", "gemini_cli.log")
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
+
+def ensure_private_directory(path: str) -> None:
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    if os.name == "posix":
+        os.chmod(path, 0o700)
+
+
+ensure_private_directory(os.path.dirname(LOG_FILE))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,7 +72,55 @@ CONFIG_DIR = APP_DIR
 SESSION_FILE = os.path.join(CONFIG_DIR, "session.json")
 SERVER_FILE = os.path.join(CONFIG_DIR, "server_config.json")
 
-os.makedirs(CONFIG_DIR, exist_ok=True)
+
+def save_session(data: dict) -> None:
+    directory = os.path.dirname(SESSION_FILE)
+    ensure_private_directory(directory)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
+                                         prefix=".session-", delete=False) as file:
+            temporary_path = file.name
+            json.dump(data, file, ensure_ascii=False, indent=4)
+        os.replace(temporary_path, SESSION_FILE)
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+
+
+def normalize_server_url(value: str) -> str:
+    url = value.strip() or "http://127.0.0.1:8000"
+    if any(char.isspace() or ord(char) < 32 or char == "\\" for char in url):
+        raise ValueError("Адрес сервера содержит недопустимые символы")
+    if "://" not in url:
+        url = f"//{url}"
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        if not host:
+            raise ValueError("Укажите адрес сервера")
+        scheme = "http" if is_loopback_host(host) else "https"
+        port = "" if parsed.port is not None else ":8000"
+        url = f"{scheme}:{url}{port}"
+
+    parsed = urlsplit(url)
+    if (parsed.scheme not in ("http", "https") or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+        raise ValueError("Укажите URL сервера без пути и учётных данных (HTTP или HTTPS)")
+    if parsed.port is not None and not 1 <= parsed.port <= 65535:
+        raise ValueError("Некорректный порт сервера")
+    if parsed.scheme == "http" and not is_loopback_host(parsed.hostname):
+        raise ValueError("Для удалённого сервера требуется HTTPS")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def is_loopback_host(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def get_server_url() -> str:
@@ -69,19 +130,19 @@ def get_server_url() -> str:
                 data = json.load(f)
                 url = data.get("server_url", "http://127.0.0.1:8000")
                 if url:
-                    return url
+                    return normalize_server_url(url)
+        except ValueError as e:
+            console.print(f"[yellow]Сохранённый адрес сервера отклонён: {e}[/yellow]")
         except Exception as e:
             logger.exception(f"Необработанное исключение: {e}")
 
     console.print("[yellow]Конфигурация сервера не найдена.[/yellow]")
-    url = input("Введите URL или IP вашего сервера (например, https://YOUR_VPS_IP:8000): ").strip()
-    if not url:
-        url = "http://127.0.0.1:8000"
-    if not url.startswith("http://") and not url.startswith("https://"):
-        if ":" in url:
-            url = f"http://{url}"
-        else:
-            url = f"http://{url}:8000"
+    while True:
+        try:
+            url = normalize_server_url(input("Введите URL или IP вашего сервера (например, https://YOUR_VPS_IP:8000): "))
+            break
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
 
     with open(SERVER_FILE, "w", encoding="utf-8") as f:
         json.dump({"server_url": url}, f, ensure_ascii=False, indent=4)
@@ -89,10 +150,30 @@ def get_server_url() -> str:
     return url
 
 
-def is_safe_path(base_dir: str, path: str) -> bool:
-    absolute_base = os.path.abspath(base_dir)
-    absolute_target = os.path.abspath(os.path.join(base_dir, path))
-    return absolute_target.startswith(absolute_base)
+def resolve_safe_path(base_dir: str, path: str) -> Optional[str]:
+    resolved_base = os.path.realpath(base_dir)
+    resolved_target = os.path.realpath(os.path.join(base_dir, path))
+    try:
+        if os.path.commonpath((resolved_base, resolved_target)) == resolved_base:
+            return resolved_target
+    except ValueError:
+        pass
+    return None
+
+
+def is_sensitive_read_path(path: str) -> bool:
+    parts = [part.casefold() for part in os.path.normpath(path).split(os.sep)]
+    name = parts[-1]
+    return (any(part == ".env" or part.startswith(".env.") for part in parts)
+            or name in {".envrc", ".netrc", ".npmrc", ".pypirc", "credentials.json",
+                        "service-account.json", "service_account.json", "session.json",
+                        "id_rsa", "id_ed25519"}
+            or name.endswith((".pem", ".key")))
+
+
+def file_identity(file_stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (file_stat.st_dev, file_stat.st_ino, file_stat.st_size,
+            file_stat.st_mtime_ns, file_stat.st_ctime_ns)
 
 
 def handle_read_files(args: dict, current_dir: str) -> str:
@@ -100,22 +181,57 @@ def handle_read_files(args: dict, current_dir: str) -> str:
     if not filepaths:
         return json.dumps({"error": "Список файлов пуст"})
 
-    console.print(f"\n[bold blue]📥 ИИ запрашивает чтение файлов ({len(filepaths)} шт.)...[/bold blue]")
+    planned = []
+    for path in filepaths:
+        full_path = resolve_safe_path(current_dir, path)
+        expected_identity = None
+        if full_path is None:
+            error = "Ошибка: Доступ заблокирован песочницей"
+        elif is_sensitive_read_path(full_path):
+            error = "Ошибка: Чтение файла с секретами запрещено"
+        else:
+            error = None
+            try:
+                expected_identity = file_identity(os.stat(full_path))
+            except FileNotFoundError:
+                error = "Ошибка: Файл не найден"
+            except OSError as e:
+                error = f"Ошибка при чтении файла: {e}"
+        planned.append((path, full_path, error, expected_identity))
+
+    readable = [(path, full_path) for path, full_path, error, _ in planned if error is None]
+    approved = False
+    if readable:
+        table = Table(title="ИИ запрашивает чтение файлов")
+        table.add_column("Запрошенный путь")
+        table.add_column("Файл")
+        for path, full_path in readable:
+            table.add_row(Text(repr(path)), Text(full_path))
+        console.print(table)
+        try:
+            approved = input("Разрешить чтение и отправку содержимого этих файлов модели? (y/n): ").strip().lower() == "y"
+        except (EOFError, KeyboardInterrupt):
+            approved = False
 
     results = {}
-    for path in filepaths:
-        if not is_safe_path(current_dir, path):
-            results[path] = "Ошибка: Доступ заблокирован песочницей"
+    for path, full_path, error, expected_identity in planned:
+        if error:
+            results[path] = error
             continue
-
-        full_path = os.path.normpath(os.path.join(current_dir, path))
-        if not os.path.exists(full_path):
-            results[path] = "Ошибка: Файл не найден"
+        if not approved:
+            results[path] = "Ошибка: Чтение отклонено пользователем"
             continue
 
         try:
-            with open(full_path, "r", encoding="utf-8") as f:
-                results[path] = f.read()
+            with os.fdopen(os.open(full_path, os.O_RDONLY), "r", encoding="utf-8") as f:
+                if file_identity(os.fstat(f.fileno())) != expected_identity:
+                    results[path] = "Ошибка: Файл изменился после подтверждения"
+                    continue
+                content = f.read()
+                if file_identity(os.fstat(f.fileno())) != expected_identity:
+                    results[path] = "Ошибка: Файл изменился во время чтения"
+                    continue
+                results[path] = content
         except Exception as e:
             results[path] = f"Ошибка при чтении файла: {str(e)}"
             logger.exception(f"Необработанное исключение: {e}")
@@ -155,21 +271,34 @@ def handle_write_files(args: dict, current_dir: str) -> str:
         rel_path = f.get("filepath", "")
         content = f.get("content", "")
 
-        if not is_safe_path(current_dir, rel_path):
-            results.append({"filepath": rel_path, "status": "Заблокировано песочницей"})
+        full_path = resolve_safe_path(current_dir, rel_path)
+        if full_path is None:
+            status = "Заблокировано песочницей"
+            results.append({"filepath": rel_path, "status": status})
+            console.print(f"{rel_path}: {status}")
             continue
 
-        full_path = os.path.normpath(os.path.join(current_dir, rel_path))
+        temporary_path = None
         try:
-            os.makedirs(os.path.dirname(full_path), exist_ok=True)
-            with open(full_path, "w", encoding="utf-8") as file_obj:
+            directory = os.path.dirname(full_path)
+            os.makedirs(directory, exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
+                                             prefix=".gemini-write-", delete=False) as file_obj:
+                temporary_path = file_obj.name
                 file_obj.write(content)
-            results.append({"filepath": rel_path, "status": "Успешно записан"})
+            if os.path.exists(full_path):
+                os.chmod(temporary_path, stat.S_IMODE(os.stat(full_path).st_mode))
+            os.replace(temporary_path, full_path)
+            status = "Успешно записан"
         except Exception as e:
-            results.append({"filepath": rel_path, "status": f"Ошибка: {str(e)}"})
+            status = f"Ошибка: {str(e)}"
             logger.exception(f"Необработанное исключение: {e}")
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+        results.append({"filepath": rel_path, "status": status})
+        console.print(f"{rel_path}: {status}")
 
-    console.print("[green]✔ Изменения успешно применены к диску.[/green]\n")
     return json.dumps(results, ensure_ascii=False)
 
 
@@ -215,7 +344,7 @@ def handle_execute_command(args: dict, current_dir: str) -> str:
 
 class GeminiAPIClient:
     def __init__(self, base_url: str):
-        self.base_url = base_url
+        self.base_url = normalize_server_url(base_url)
         self.token: Optional[str] = None
 
     def set_token(self, token: str):
@@ -237,6 +366,51 @@ class GeminiAPIClient:
             logger.exception(f"Необработанное исключение: {e}")
             return None
 
+    def _renew_session(self) -> bool:
+        try:
+            with open(SESSION_FILE, "r", encoding="utf-8") as file:
+                refresh_token = json.load(file).get("refresh_token")
+        except (OSError, ValueError, AttributeError):
+            refresh_token = None
+
+        if refresh_token:
+            try:
+                response = requests.post(
+                    f"{self.base_url}/auth/refresh",
+                    json={"refresh_token": refresh_token}, timeout=30,
+                    allow_redirects=False,
+                )
+            except requests.RequestException as e:
+                console.print(f"[red]Не удалось обновить сессию: {e}[/red]")
+                return False
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("access_token") and data.get("refresh_token"):
+                    save_session(data)
+                    self.set_token(data["access_token"])
+                    return True
+            elif response.status_code not in (400, 401, 403):
+                console.print("[red]Сервер временно не может обновить сессию.[/red]")
+                return False
+
+        self.token = None
+        try:
+            os.unlink(SESSION_FILE)
+        except FileNotFoundError:
+            pass
+        console.print("[yellow]Сессия истекла. Войдите снова.[/yellow]")
+        self.login()
+        return bool(self.token)
+
+    def _authorized_request(self, request):
+        response = request()
+        if response.status_code != 401:
+            return response
+        response.close()
+        if not self._renew_session():
+            return response
+        return request()
+
     def login(self):
         token = self._load_session_token()
         if token:
@@ -255,7 +429,7 @@ class GeminiAPIClient:
             try:
                 url = f"{self.base_url}/auth/login"
                 payload = {"email": email, "password": password}
-                r = requests.post(url, json=payload, timeout=30)
+                r = requests.post(url, json=payload, timeout=30, allow_redirects=False)
 
                 if r.status_code == 200:
                     res_data = r.json()
@@ -264,8 +438,7 @@ class GeminiAPIClient:
                         console.print("[red]Сервер не вернул access_token[/red]")
                         continue
 
-                    with open(SESSION_FILE, "w", encoding="utf-8") as f:
-                        json.dump(res_data, f, ensure_ascii=False, indent=4)
+                    save_session(res_data)
 
                     self.set_token(token)
                     console.print("[green]Вход выполнен успешно.[/green]")
@@ -277,7 +450,8 @@ class GeminiAPIClient:
                             "[yellow]Не удалось войти: проверьте email, пароль или подтверждение на почте.[/yellow]")
                         ans = input("Создать новый аккаунт? (y/n): ").strip().lower()
                         if ans == "y":
-                            s = requests.post(f"{self.base_url}/auth/signup", json=payload, timeout=30)
+                            s = requests.post(f"{self.base_url}/auth/signup", json=payload, timeout=30,
+                                              allow_redirects=False)
                             if s.status_code in (200, 201):
                                 try:
                                     data = s.json()
@@ -287,8 +461,7 @@ class GeminiAPIClient:
 
                                 token = data.get("access_token") or (data.get("session") or {}).get("access_token")
                                 if token:
-                                    with open(SESSION_FILE, "w", encoding="utf-8") as f:
-                                        json.dump(data, f, ensure_ascii=False, indent=4)
+                                    save_session(data.get("session") or data)
                                     self.set_token(token)
                                     console.print("[green]Аккаунт создан и вход выполнен.[/green]")
                                     logger.info("Новый аккаунт создан и авторизован")
@@ -308,25 +481,32 @@ class GeminiAPIClient:
                 console.print("[red]Произошла непредвиденная ошибка входа.[/red]")
                 logger.exception(f"Необработанное исключение: {e}")
 
-    def get_chats(self) -> List[Dict[str, Any]]:
+    def get_chats(self) -> Optional[List[Dict[str, Any]]]:
         try:
-            r = requests.get(f"{self.base_url}/chats", headers=self.headers, timeout=30)
+            r = self._authorized_request(lambda: requests.get(
+                f"{self.base_url}/chats", headers=self.headers, timeout=30,
+                allow_redirects=False))
             if r.status_code == 200:
                 return r.json()
-            return []
+            if r.status_code == 401:
+                console.print("[red]Сессия истекла. Войдите снова.[/red]")
+            else:
+                console.print(f"[red]Не удалось получить список чатов (код {r.status_code}).[/red]")
+            return None
         except Exception as e:
             console.print(f"[red]Ошибка при получении чатов: {e}[/red]")
             logger.exception(f"Необработанное исключение: {e}")
-            return []
+            return None
 
     def create_chat(self, title: str) -> Optional[Dict[str, Any]]:
         try:
-            r = requests.post(
+            r = self._authorized_request(lambda: requests.post(
                 f"{self.base_url}/chats",
                 json={"title": title},
                 headers=self.headers,
                 timeout=30,
-            )
+                allow_redirects=False,
+            ))
             if r.status_code == 200:
                 return r.json()
             return None
@@ -337,19 +517,29 @@ class GeminiAPIClient:
 
     def delete_chat(self, chat_id: str) -> bool:
         try:
-            r = requests.delete(
+            r = self._authorized_request(lambda: requests.delete(
                 f"{self.base_url}/chats/{chat_id}",
                 headers=self.headers,
                 timeout=30,
-            )
+                allow_redirects=False,
+            ))
             return r.status_code == 200
         except Exception as e:
             logger.error(f"Ошибка при удалении чата: {e}")
             console.print(f"[red]Ошибка при удалении чата: {e}[/red]")
             return False
 
-def show_chat_menu(client: GeminiAPIClient) -> tuple[Optional[str], bool]:
+    def stream_chat(self, payload: Dict[str, Any]):
+        return self._authorized_request(lambda: requests.post(
+            f"{self.base_url}/chat/stream", json=payload,
+            headers=self.headers, stream=True, timeout=300,
+            allow_redirects=False,
+        ))
+
+def show_chat_menu(client: GeminiAPIClient) -> Optional[tuple[Optional[str], bool]]:
     db_chats = client.get_chats()
+    if db_chats is None:
+        return None
 
     values = [
         ("temporary", "Войти во временный чат"),
@@ -366,7 +556,7 @@ def show_chat_menu(client: GeminiAPIClient) -> tuple[Optional[str], bool]:
     ).run()
 
     if result is None:
-        sys.exit(0)
+        return None
 
     if result == "temporary":
         return None, True
@@ -386,9 +576,10 @@ def show_chat_menu(client: GeminiAPIClient) -> tuple[Optional[str], bool]:
 
 def show_model_selection_menu(current_model: str) -> str:
     available_models = [
-        ("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite"),
-        ("gemini-2.5-flash", "Gemini 2.5 Flash"),
-        ("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite"),
+        ("gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite"),
+        ("gemini-3.8-flash", "Gemini 3.8 Flash"),
+        ("gemini-3.7-flash", "Gemini 3.7 Flash"),
+        ("gemini-3.6-flash", "Gemini 3.6 Flash"),
         ("gemini-3.5-flash", "Gemini 3.5 Flash"),
     ]
 
@@ -414,21 +605,127 @@ def show_model_selection_menu(current_model: str) -> str:
 
 
 def trim_history(history: List[Dict[str, str]], limit: int = 20, tool_content_limit: int = 4) -> List[Dict[str, str]]:
-    if len(history) <= limit:
-        trimmed = history
-    else:
-        trimmed = history[-limit:]
-        while trimmed and trimmed[0].get("role") == "tool":
-            trimmed = trimmed[1:]
+    last_user = next((index for index in range(len(history) - 1, -1, -1)
+                      if history[index].get("role") == "user"), len(history))
+    start = min(max(0, len(history) - limit), last_user)
+    trimmed = history[start:]
+    while trimmed and trimmed[0].get("role") != "user":
+        trimmed = trimmed[1:]
 
     tool_count = 0
-    for msg in reversed(trimmed):
+    current_turn_start = next((index for index in range(len(trimmed) - 1, -1, -1)
+                               if trimmed[index].get("role") == "user"), len(trimmed))
+    for msg in reversed(trimmed[:current_turn_start]):
         if msg.get("role") == "tool":
             tool_count += 1
             if tool_count > tool_content_limit:
                 msg["content"] = '{"status": "already_processed"}'
 
     return trimmed
+
+
+def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
+                         model_name: str, is_temporary: bool) -> Dict[str, Any]:
+    continuing = bool(history and history[-1].get("role") == "tool")
+    payload: Dict[str, Any] = {
+        "message": "" if continuing else history[-1]["content"],
+        "chat_id": chat_id,
+        "model_name": model_name,
+        "continue_after_tool": continuing,
+    }
+    if continuing:
+        payload["history"] = history
+    elif is_temporary:
+        payload["history"] = history[:-1]
+    return payload
+
+
+def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
+                       current_dir: str) -> None:
+    for call in tool_calls:
+        tool_name = call.get("name")
+        history.append({
+            "role": "model", "content": f"[Вызов локального инструмента: {tool_name}]",
+            "name": tool_name, "args": call.get("args", {}), "call_id": call.get("call_id"),
+            "thought_signature": call.get("thought_signature")
+        })
+
+    for call in tool_calls:
+        tool_name = call.get("name")
+        tool_args = call.get("args", {})
+        if tool_name == "read_local_files":
+            tool_result = handle_read_files(tool_args, current_dir)
+        elif tool_name == "write_local_files":
+            tool_result = handle_write_files(tool_args, current_dir)
+        elif tool_name == "execute_command":
+            tool_result = handle_execute_command(tool_args, current_dir)
+        else:
+            tool_result = f"Ошибка: Инструмент {tool_name} не поддерживается клиентом."
+        history.append({
+            "role": "tool", "name": tool_name, "content": tool_result,
+            "call_id": call.get("call_id")
+        })
+        logged_name = tool_name if tool_name in (
+            "read_local_files", "write_local_files", "execute_command"
+        ) else "unknown"
+        logger.info("Tool вызов: %s", logged_name)
+
+
+def iter_stream_events(response):
+    for raw_line in response.iter_lines():
+        if not raw_line:
+            continue
+        try:
+            line = raw_line.decode("utf-8").strip()
+            if not line.startswith("data: "):
+                continue
+            yield json.loads(line[6:])
+        except (ValueError, UnicodeError) as e:
+            logger.exception(f"Некорректное событие потока: {e}")
+
+
+def display_stream_response(response, has_pending_tool: bool):
+    full_response = ""
+    tool_calls_received = []
+    error_content = None
+    status_text = ("[bold yellow]⚙️  Ожидаю ответ инструмента...[/bold yellow]"
+                   if has_pending_tool else "[bold green]✨ Gemini думает...[/bold green]")
+    use_screen = (console.is_terminal and not console.is_dumb_terminal
+                  and not console.legacy_windows)
+    with console.screen() if use_screen else nullcontext():
+        status = console.status(status_text, spinner="dots")
+        started_text = False
+        line_ended = False
+        status.start()
+        try:
+            for event in iter_stream_events(response):
+                event_type = event.get("type")
+                if event_type == "text":
+                    fragment = event.get("content", "")
+                    if fragment:
+                        full_response += fragment
+                        if not started_text:
+                            status.stop()
+                            started_text = True
+                        sys.stdout.write(fragment)
+                        sys.stdout.flush()
+                        line_ended = fragment.endswith("\n")
+                elif event_type == "tool_call":
+                    tool_calls_received.append(event)
+                elif event_type == "error":
+                    error_content = event.get("content")
+                    break
+        finally:
+            status.stop()
+            if started_text and not line_ended:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+    if error_content is not None:
+        console.print(f"[bold red]Ошибка:[/] {error_content}")
+        return "", []
+    if use_screen and full_response and not tool_calls_received:
+        console.print(Markdown(full_response))
+    return full_response, tool_calls_received
 
 
 def print_banner(model: str, chat_mode: str, current_dir: str):
@@ -466,8 +763,11 @@ def main():
 
     api_client.login()
 
-    current_model = "gemini-3.1-flash-lite"
-    chat_id, is_temporary = show_chat_menu(api_client)
+    current_model = "gemini-3.5-flash-lite"
+    selected_chat = show_chat_menu(api_client)
+    if selected_chat is None:
+        return
+    chat_id, is_temporary = selected_chat
     current_dir = os.getcwd()
     chat_mode = "ВРЕМЕННЫЙ" if is_temporary else "ПОСТОЯННЫЙ"
     print_banner(current_model, chat_mode, current_dir)
@@ -530,7 +830,10 @@ def main():
                 continue
 
             if first_line.startswith("/chat"):
-                new_chat_id, new_is_temporary = show_chat_menu(api_client)
+                selected_chat = show_chat_menu(api_client)
+                if selected_chat is None:
+                    continue
+                new_chat_id, new_is_temporary = selected_chat
                 if new_chat_id != chat_id or new_is_temporary != is_temporary:
                     chat_id = new_chat_id
                     is_temporary = new_is_temporary
@@ -545,9 +848,12 @@ def main():
                     console.print(f"[yellow]Текущая папка: {current_dir}[/yellow]")
                     continue
 
-                target_path = os.path.abspath(parts[1])
+                target_path = os.path.abspath(os.path.join(current_dir, parts[1]))
 
-                if not os.path.exists(target_path):
+                if not os.path.isdir(target_path):
+                    if os.path.lexists(target_path):
+                        console.print(f"[red]Путь '{target_path}' не является каталогом.[/red]")
+                        continue
                     create_ans = input(f"Папка '{target_path}' не существует. Создать её? (y/n): ").strip().lower()
                     if create_ans == "y":
                         os.makedirs(target_path, exist_ok=True)
@@ -564,111 +870,22 @@ def main():
             temporary_history.append({"role": "user", "content": user_input})
 
             while True:
-                last_msg = temporary_history[-1] if temporary_history else None
-                has_pending_tool = last_msg is not None and last_msg.get("role") == "tool"
-
-                if has_pending_tool:
-                    user_msg = next(
-                        (msg["content"] for msg in reversed(temporary_history) if msg.get("role") == "user"), "")
-                    payload_message = user_msg if user_msg else "Продолжай работу на основе ответов инструментов."
-                else:
-                    payload_message = temporary_history[-1]["content"] if temporary_history and temporary_history[
-                        -1].get("role") == "user" else ""
-
-                payload: Dict[str, Any] = {
-                    "message": payload_message,
-                    "chat_id": chat_id,
-                    "model_name": current_model,
-                }
-
                 temporary_history = trim_history(temporary_history, 20)
+                payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary)
+                has_pending_tool = payload["continue_after_tool"]
 
-                if is_temporary or has_pending_tool:
-                    payload["history"] = temporary_history
-
-                response = requests.post(
-                    f"{api_client.base_url}/chat/stream",
-                    json=payload,
-                    headers=api_client.headers,
-                    stream=True,
-                    timeout=300,
-                )
+                response = api_client.stream_chat(payload)
 
                 if response.status_code == 200:
-                    full_response = ""
-                    tool_call_received = None
+                    full_response, tool_calls_received = display_stream_response(
+                        response, has_pending_tool)
 
-                    status_text = f"[bold yellow]⚙️  Выполнение...[/bold yellow]" if has_pending_tool else "[bold green]✨ Gemini думает...[/bold green]"
-                    with console.status(status_text, spinner="dots"):
-
-                        for raw_line in response.iter_lines():
-                            if not raw_line:
-                                continue
-
-                            line = raw_line.decode("utf-8").strip()
-
-                            if line.startswith("data: "):
-                                body = line[6:]
-                                try:
-                                    event = json.loads(body)
-                                    event_type = event.get("type")
-
-                                    if event_type == "text":
-                                        full_response += event.get("content", "")
-
-                                    elif event_type == "tool_call":
-                                        tool_call_received = event
-                                        break
-
-                                    elif event_type == "error":
-                                        console.print(f"\n[bold red]Ошибка от Gemini:[/] {event.get('content')}")
-                                        break
-                                except Exception as e:
-                                    logger.exception(f"Необработанное исключение: {e}")
-
-
-                    if tool_call_received:
-                        tool_name = tool_call_received.get("name")
-                        tool_args = tool_call_received.get("args", {})
-
-                        temporary_history.append({
-                            "role": "model",
-                            "content": f"[Вызов локального инструмента: {tool_name}]",
-                            "name": tool_name,
-                            "args": tool_args
-                        })
-
-                        if tool_name == "read_local_files":
-                            tool_result = handle_read_files(tool_args, current_dir)
-                        elif tool_name == "write_local_files":
-                            tool_result = handle_write_files(tool_args, current_dir)
-                        elif tool_name == "execute_command":
-                            tool_result = handle_execute_command(tool_args, current_dir)
-                        else:
-                            tool_result = f"Ошибка: Инструмент {tool_name} не поддерживается клиентом."
-
-                        temporary_history.append({
-                            "role": "tool",
-                            "name": tool_name,
-                            "content": tool_result
-                        })
-
+                    if tool_calls_received:
+                        execute_tool_calls(tool_calls_received, temporary_history, current_dir)
                         console.print("[dim]Передаю результаты выполнения обратно на сервер...[/dim]")
-                        logger.info(f"Tool вызов: {tool_name}, args: {tool_args}")
                         continue
 
                     if full_response:
-                        with console.capture() as capture:
-                            console.print(Markdown(full_response))
-                        rendered_markdown = capture.get()
-
-                        lines = rendered_markdown.splitlines(keepends=True)
-                        for line in lines:
-                            sys.stdout.write(line)
-                            sys.stdout.flush()
-                            if len(line.strip()) > 0:
-                                time.sleep(0.012)
-
                         console.rule(style="dim #4285F4")
                         temporary_history.append({"role": "model", "content": full_response})
                         break

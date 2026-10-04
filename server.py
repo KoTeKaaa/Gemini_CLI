@@ -1,13 +1,17 @@
 import os
+import base64
+import binascii
 from typing import List, Optional, Literal, Dict, Any
 import json
-from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks
+from dataclasses import dataclass
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from supabase.lib.client_options import SyncClientOptions
 
 load_dotenv()
 
@@ -21,13 +25,18 @@ supabase_key = os.getenv("SUPABASE_ANON_KEY")
 if not supabase_url or not supabase_key:
     raise RuntimeError("Данные Supabase (URL/KEY) не найдены в переменных окружения")
 
-supabase: Client = create_client(supabase_url, supabase_key)
-
 app = FastAPI()
 client = genai.Client(api_key=api)
+REDACTED_READ_RESULT = '{"status":"redacted","message":"Результат чтения файлов не сохраняется"}'
 
 
-async def get_current_user(authorization: Optional[str] = Header(None)):
+@dataclass(frozen=True)
+class UserContext:
+    user_id: str
+    db: Client
+
+
+def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="Отсутствует заголовок Authorization")
 
@@ -39,10 +48,15 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Неверный формат заголовка Authorization")
 
     try:
-        user_response = supabase.auth.get_user(token)
+        db = create_client(
+            supabase_url,
+            supabase_key,
+            options=SyncClientOptions(headers={"Authorization": f"Bearer {token}"}),
+        )
+        user_response = db.auth.get_user(token)
         if not user_response or not user_response.user:
             raise HTTPException(status_code=401, detail="Неверный токен сессии")
-        return user_response.user.id
+        return UserContext(user_id=user_response.user.id, db=db)
     except Exception as e:
         print(f"[AUTH ERROR] Ошибка валидации токена: {e}")
         raise HTTPException(status_code=401, detail="Ошибка авторизации")
@@ -63,19 +77,27 @@ class MessageItem(BaseModel):
     content: str
     name: Optional[str] = None
     args: Optional[Dict[str, Any]] = None
+    call_id: Optional[str] = None
+    thought_signature: Optional[str] = None
 
 
 class StreamChatPayload(BaseModel):
-    message: str
+    message: str = ""
     chat_id: Optional[str] = None
-    model_name: Optional[str] = "gemini-3.1-flash-lite"
+    model_name: Optional[str] = "gemini-3.5-flash-lite"
     history: Optional[List[MessageItem]] = None
     current_dir: Optional[str] = None
+    continue_after_tool: bool = False
 
 
 class LoginPayload(BaseModel):
     email: str
     password: str
+
+
+class RefreshPayload(BaseModel):
+    refresh_token: str
+
 
 from fastapi import status
 
@@ -85,7 +107,7 @@ def signup_user(payload: LoginPayload):
         raise HTTPException(status_code=400, detail="Email и пароль обязательны")
 
     try:
-        resp = supabase.auth.sign_up({
+        resp = create_client(supabase_url, supabase_key).auth.sign_up({
             "email": payload.email.strip(),
             "password": payload.password.strip(),
         })
@@ -105,7 +127,7 @@ def login_user(payload: LoginPayload):
         raise HTTPException(status_code=400, detail="Email и пароль обязательны")
 
     try:
-        auth_response = supabase.auth.sign_in_with_password({
+        auth_response = create_client(supabase_url, supabase_key).auth.sign_in_with_password({
             "email": payload.email.strip(),
             "password": payload.password.strip(),
         })
@@ -120,12 +142,29 @@ def login_user(payload: LoginPayload):
         raise HTTPException(status_code=401, detail="Не удалось выполнить вход")
 
 
-@app.get("/chats", response_model=List[ChatResponse])
-async def get_chats(user_id: str = Depends(get_current_user)):
+@app.post("/auth/refresh")
+def refresh_user_session(payload: RefreshPayload):
+    if not payload.refresh_token:
+        raise HTTPException(status_code=401, detail="Не удалось обновить сессию")
     try:
-        response = supabase.table("chats") \
+        response = create_client(supabase_url, supabase_key).auth.refresh_session(
+            payload.refresh_token)
+        if not response or not response.session:
+            raise HTTPException(status_code=401, detail="Не удалось обновить сессию")
+        return response.session.model_dump()
+    except Exception as e:
+        print(f"[AUTH ERROR] Session refresh failed: {e}")
+        status_code = (401 if isinstance(e, HTTPException) or
+                       getattr(e, "status", None) in (400, 401, 403) else 503)
+        raise HTTPException(status_code=status_code, detail="Не удалось обновить сессию")
+
+
+@app.get("/chats", response_model=List[ChatResponse])
+def get_chats(user: UserContext = Depends(get_current_user)):
+    try:
+        response = user.db.table("chats") \
             .select("id, title, created_at") \
-            .eq("user_id", user_id) \
+            .eq("user_id", user.user_id) \
             .order("created_at", desc=True) \
             .execute()
 
@@ -144,13 +183,13 @@ async def get_chats(user_id: str = Depends(get_current_user)):
 
 
 @app.post("/chats", response_model=ChatResponse)
-async def create_chat(payload: ChatCreate, user_id: str = Depends(get_current_user)):
+def create_chat(payload: ChatCreate, user: UserContext = Depends(get_current_user)):
     if not payload.title.strip():
         raise HTTPException(status_code=400, detail="Название чата не может быть пустым")
 
     try:
-        response = supabase.table("chats") \
-            .insert({"user_id": user_id, "title": payload.title.strip()}) \
+        response = user.db.table("chats") \
+            .insert({"user_id": user.user_id, "title": payload.title.strip()}) \
             .execute()
 
         if not response or not response.data:
@@ -169,77 +208,75 @@ async def create_chat(payload: ChatCreate, user_id: str = Depends(get_current_us
 
 
 @app.delete("/chats/{chat_id}")
-async def delete_chat(chat_id: str, user_id: str = Depends(get_current_user)):
+def delete_chat(chat_id: str, user: UserContext = Depends(get_current_user)):
     try:
-        supabase.table("messages").delete().eq("chat_id", chat_id).execute()
-        supabase.table("chats").delete().eq("id", chat_id).eq("user_id", user_id).execute()
+        chat = user.db.table("chats").select("id") \
+            .eq("id", chat_id).eq("user_id", user.user_id).execute()
+        if not chat.data:
+            raise HTTPException(status_code=404, detail="Чат не найден")
+
+        # messages.chat_id has ON DELETE CASCADE; one database request is atomic.
+        deleted = user.db.table("chats").delete() \
+            .eq("id", chat_id).eq("user_id", user.user_id).execute()
+        if not deleted.data:
+            raise HTTPException(status_code=404, detail="Чат не найден")
         return {"status": "deleted"}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[SERVER ERROR] Ошибка удаления чата: {e}")
+        raise HTTPException(status_code=500, detail="Не удалось удалить чат")
 
 
-async def save_message_to_db(
+def save_message_to_db(
+        db: Client,
         chat_id: str,
         role: Literal["user", "model", "tool"],
         content: str,
         name: Optional[str] = None,
         args: Optional[Dict[str, Any]] = None
 ):
+    if role == "tool" and name == "read_local_files":
+        content = REDACTED_READ_RESULT
+    data = {
+        "chat_id": chat_id,
+        "role": role,
+        "content": content,
+        "name": name,
+        "args": args,
+    }
     try:
-        data = {
-            "chat_id": chat_id,
-            "role": role,
-            "content": content,
-            "name": name,
-            "args": args,
-        }
-        supabase.table("messages").insert(data).execute()
-
+        db.table("messages").insert(data).execute()
     except Exception as e:
-        print(f"[BD ERROR] Не удалось сохранить сообщения в БД: {e}")
+        print(f"[DB ERROR] Не удалось сохранить сообщение: {e}")
+        raise RuntimeError("Не удалось сохранить сообщение в БД") from e
 
 
-def build_history_from_db(chat_id: str) -> List[types.Content]:
-    history_content: List[types.Content] = []
+def build_history_from_db(db: Client, chat_id: str,
+                          before_user_content: Optional[str] = None) -> List[types.Content]:
     try:
-        response = supabase.table("messages").select("*").eq("chat_id", chat_id).order("created_at").execute()
+        response = db.table("messages").select("*").eq("chat_id", chat_id).order("created_at").execute()
         messages = response.data
 
-        for msg in messages[-20:]:
-            role = msg.get("role")
-            content = msg.get("content", "")
-            tool_name = msg.get("name")
+        if before_user_content is not None:
+            for index in range(len(messages) - 1, -1, -1):
+                if messages[index].get("role") == "user" and messages[index].get("content") == before_user_content:
+                    messages = messages[:index]
+                    break
 
-            if role in ["user", "model"]:
-                history_content.append(
-                    types.Content(
-                        role=role,
-                        parts=[types.Part.from_text(text=content)],
-                    )
-                )
-            elif role == "tool":
-                try:
-                    parsed_result = json.loads(content)
-                    if not isinstance(parsed_result, dict):
-                        parsed_result = {"output": parsed_result}
-
-                except Exception:
-                    parsed_result = {"output": content}
-
-                history_content.append(
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part.from_function_response(
-                                name=tool_name or "unknown_tool",
-                                response=parsed_result
-                            )
-                        ],
-                    )
-                )
+        return build_history_from_client([
+            MessageItem(
+                role=msg["role"],
+                content=(REDACTED_READ_RESULT if msg["role"] == "tool"
+                         and msg.get("name") == "read_local_files" else msg.get("content") or ""),
+                name=msg.get("name"), args=msg.get("args"),
+                call_id=msg.get("call_id"),
+            )
+            for msg in messages
+        ])
     except Exception as e:
         print(f"[DB ERROR] Ошибка загрузки истории: {e}")
-    return history_content
+        raise HTTPException(status_code=503, detail="Не удалось загрузить историю чата") from e
 
 
 def build_history_from_client(history: Optional[List[MessageItem]]) -> List[types.Content]:
@@ -247,13 +284,17 @@ def build_history_from_client(history: Optional[List[MessageItem]]) -> List[type
     if not history:
         return history_content
 
-    for item in history[-20:]:
+    last_user = next((index for index in range(len(history) - 1, -1, -1)
+                      if history[index].role == "user"), len(history))
+    start = min(max(0, len(history) - 20), last_user)
+    for item in history[start:]:
         msg = item.model_dump() if hasattr(item, "model_dump") else item.dict()
 
         role = msg.get("role")
         content = msg.get("content", "")
         name = msg.get("name")
         args = msg.get("args")
+        call_id = msg.get("call_id")
 
         if role == "user":
             history_content.append(
@@ -265,19 +306,21 @@ def build_history_from_client(history: Optional[List[MessageItem]]) -> List[type
 
         elif role == "model":
             if name:
-                history_content.append(
-                    types.Content(
-                        role="model",
-                        parts=[
-                            types.Part(
-                                function_call=types.FunctionCall(
-                                    name=name,
-                                    args=args or {}
-                                )
-                            )
-                        ],
-                    )
-                )
+                signature = msg.get("thought_signature")
+                if signature:
+                    try:
+                        signature = base64.b64decode(signature, validate=True)
+                    except (ValueError, binascii.Error) as exc:
+                        raise HTTPException(status_code=400, detail="Некорректная подпись вызова инструмента") from exc
+                part = types.Part(function_call=types.FunctionCall(
+                    name=name, args=args or {}, id=call_id
+                ), thought_signature=signature)
+                if history_content and history_content[-1].role == "model" and all(
+                    previous.function_call is not None for previous in history_content[-1].parts
+                ):
+                    history_content[-1].parts.append(part)
+                else:
+                    history_content.append(types.Content(role="model", parts=[part]))
             else:
                 history_content.append(
                     types.Content(
@@ -294,17 +337,15 @@ def build_history_from_client(history: Optional[List[MessageItem]]) -> List[type
             except Exception:
                 parsed_result = {"output": content}
 
-            history_content.append(
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_function_response(
-                            name=name or "unknown_tool",
-                            response=parsed_result
-                        )
-                    ],
-                )
-            )
+            part = types.Part(function_response=types.FunctionResponse(
+                name=name or "unknown_tool", response=parsed_result, id=call_id
+            ))
+            if history_content and history_content[-1].role == "user" and all(
+                previous.function_response is not None for previous in history_content[-1].parts
+            ):
+                history_content[-1].parts.append(part)
+            else:
+                history_content.append(types.Content(role="user", parts=[part]))
 
     while history_content and history_content[0].role != "user":
         history_content.pop(0)
@@ -368,30 +409,43 @@ def execute_command(command: str) -> str:
 @app.post("/chat/stream")
 def stream_chat(
         payload: StreamChatPayload,
-        background_tasks: BackgroundTasks,
-        user_id: str = Depends(get_current_user),
+        user: UserContext = Depends(get_current_user),
 ):
-    if not payload.message.strip():
+    if payload.continue_after_tool:
+        if payload.message.strip() or not payload.history or payload.history[-1].role != "tool":
+            raise HTTPException(status_code=400, detail="Ожидается история с результатом инструмента")
+    elif not payload.message.strip():
         raise HTTPException(status_code=400, detail="Сообщение не может быть пустым")
 
-    if payload.chat_id and payload.message != "Продолжай работу на основе ответов инструментов.":
-        background_tasks.add_task(
-            save_message_to_db,
-            payload.chat_id,
-            "user",
-            payload.message.strip()
-        )
+    if payload.chat_id:
+        chat = user.db.table("chats").select("id") \
+            .eq("id", payload.chat_id).eq("user_id", user.user_id).execute()
+        if not chat.data:
+            raise HTTPException(status_code=404, detail="Чат не найден")
 
-    if payload.history:
-        history_content = build_history_from_client(payload.history)
+    if payload.chat_id and payload.continue_after_tool:
+        current_turn_start = next(
+            (index for index in range(len(payload.history) - 1, -1, -1)
+             if payload.history[index].role == "user"), None
+        )
+        if current_turn_start is None:
+            raise HTTPException(status_code=400, detail="Ожидается исходный запрос перед результатом инструмента")
+        current_turn = payload.history[current_turn_start:]
+        history_content = build_history_from_db(
+            user.db, payload.chat_id, before_user_content=current_turn[0].content
+        ) + build_history_from_client(current_turn)
     elif payload.chat_id:
-        history_content = build_history_from_db(payload.chat_id)
+        history_content = build_history_from_db(user.db, payload.chat_id)
+    elif payload.history:
+        history_content = build_history_from_client(payload.history)
     else:
         history_content = []
 
     def event_generator():
         full_response = ""
         try:
+            if payload.chat_id and not payload.continue_after_tool:
+                save_message_to_db(user.db, payload.chat_id, "user", payload.message.strip())
 
             agent_instruction = (
                 "Ты — продвинутый AI-ассистент разработчика с доступом к локальной файловой системе и терминалу. "
@@ -413,18 +467,15 @@ def stream_chat(
 
             current_contents = list(history_content)
 
-            if payload.message == "Продолжай работу на основе ответов инструментов." and current_contents:
-
-                if payload.chat_id and payload.history:
-                    last_client_msg = payload.history[-1]
-                    if last_client_msg.role == "tool":
-                        background_tasks.add_task(
-                            save_message_to_db,
-                            payload.chat_id,
-                            "tool",
-                            last_client_msg.content,
-                            last_client_msg.name,
-                            None
+            if payload.continue_after_tool:
+                if payload.chat_id:
+                    last_batch_start = len(payload.history) - 1
+                    while last_batch_start and payload.history[last_batch_start - 1].role == "tool":
+                        last_batch_start -= 1
+                    for tool_msg in payload.history[last_batch_start:]:
+                        save_message_to_db(
+                            user.db, payload.chat_id,
+                            "tool", tool_msg.content, tool_msg.name, None
                         )
                 full_contents = current_contents
             else:
@@ -441,28 +492,19 @@ def stream_chat(
                 config=config
             )
 
+            tool_calls = []
             for chunk in response_stream:
+                candidates = getattr(chunk, "candidates", None) or []
+                content = getattr(candidates[0], "content", None) if candidates else None
+                parts = getattr(content, "parts", None) or []
+                call_parts = [part for part in parts if getattr(part, "function_call", None)]
+                if call_parts:
+                    tool_calls.extend((part.function_call, part.thought_signature)
+                                      for part in call_parts)
+                    continue
                 if chunk.function_calls:
-                    for call in chunk.function_calls:
-                        tool_event = {
-                            "type": "tool_call",
-                            "name": call.name,
-                            "args": call.args,
-                            "call_id": getattr(call, "id", None)
-                        }
-
-                        if payload.chat_id:
-                            background_tasks.add_task(
-                                save_message_to_db,
-                                payload.chat_id,
-                                "model",
-                                f"[Вызов локального инструмента: {call.name}]",
-                                call.name,
-                                call.args
-                            )
-
-                        yield f"data: {json.dumps(tool_event, ensure_ascii=False)}\n\n".encode("utf-8")
-                    return
+                    tool_calls.extend((call, None) for call in chunk.function_calls)
+                    continue
 
                 if chunk.text:
                     full_response += chunk.text
@@ -472,13 +514,25 @@ def stream_chat(
                     }
                     yield f"data: {json.dumps(text_event, ensure_ascii=False)}\n\n".encode("utf-8")
 
+            for call, signature in tool_calls:
+                tool_event = {
+                    "type": "tool_call", "name": call.name,
+                    "args": call.args, "call_id": getattr(call, "id", None),
+                    "thought_signature": base64.b64encode(signature).decode("ascii")
+                    if signature else None,
+                }
+                if payload.chat_id:
+                    save_message_to_db(
+                        user.db, payload.chat_id,
+                        "model", f"[Вызов локального инструмента: {call.name}]",
+                        call.name, call.args
+                    )
+                yield f"data: {json.dumps(tool_event, ensure_ascii=False)}\n\n".encode("utf-8")
+            if tool_calls:
+                return
+
             if payload.chat_id and full_response:
-                background_tasks.add_task(
-                    save_message_to_db,
-                    payload.chat_id,
-                    "model",
-                    full_response
-                )
+                save_message_to_db(user.db, payload.chat_id, "model", full_response)
 
         except Exception as e:
             error_msg = str(e)

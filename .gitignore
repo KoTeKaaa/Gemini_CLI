@@ -1,2 +1,17 @@
 .env
+.env.*
+*.env
+*.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+.gemini_cli/
+session.json
+server_config.json
 .idea
+/.venv/
+/.venv-win/
+/dist/
+/build/

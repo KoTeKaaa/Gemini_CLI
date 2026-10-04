@@ -1,0 +1,8 @@
+[Unit]
+Description=Reload Gemini CLI TLS certificate in Nginx
+ConditionPathExists=@CERT_FILE@
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/sbin/nginx -t -q
+ExecStart=/usr/bin/systemctl reload nginx
