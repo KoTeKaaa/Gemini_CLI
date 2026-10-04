@@ -27,6 +27,7 @@ class ChatErrorsTest(unittest.TestCase):
         db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
             {"id": "chat-1"}
         ]
+        db.table.return_value.select.return_value.eq.return_value.order.return_value.execute.return_value.data = []
         db.table.return_value.insert.return_value.execute.side_effect = OSError("database unavailable")
         user = self.server.UserContext("user-1", db)
         model = SimpleNamespace(models=SimpleNamespace(
@@ -49,6 +50,7 @@ class ChatErrorsTest(unittest.TestCase):
         db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
             {"id": "chat-1"}
         ]
+        db.table.return_value.select.return_value.eq.return_value.order.return_value.execute.return_value.data = []
         db.table.return_value.insert.return_value.execute.side_effect = [
             SimpleNamespace(data=[{}]), OSError("database unavailable")
         ]
@@ -67,6 +69,27 @@ class ChatErrorsTest(unittest.TestCase):
                       for part in response.body_iterator]
         self.assertEqual([event["type"] for event in events], ["text", "error"])
         self.assertIn("Не удалось сохранить сообщение", events[-1]["content"])
+
+    def test_failed_history_read_stops_before_save_and_model_call(self):
+        for history in (None, [{"role": "user", "content": "Client history"}]):
+            with self.subTest(history=history):
+                db = Mock()
+                db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                    {"id": "chat-1"}
+                ]
+                db.table.return_value.select.return_value.eq.return_value.order.return_value.execute.side_effect = OSError(
+                    "history unavailable"
+                )
+                model = SimpleNamespace(models=SimpleNamespace(
+                    generate_content_stream=lambda **_kwargs: self.fail("Model was called")))
+                with patch.object(self.server, "client", model), patch("builtins.print"), \
+                        self.assertRaises(HTTPException) as caught:
+                    self.server.stream_chat(
+                        self.server.StreamChatPayload(chat_id="chat-1", message="Hello", history=history),
+                        self.server.UserContext("user-1", db),
+                    )
+                self.assertEqual(caught.exception.status_code, 503)
+                db.table.return_value.insert.assert_not_called()
 
     def test_chat_list_returns_500_when_database_is_unavailable(self):
         db = Mock()

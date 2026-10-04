@@ -21,6 +21,7 @@ from rich.markdown import Markdown
 import subprocess
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 import logging
 from datetime import datetime
 
@@ -160,27 +161,77 @@ def resolve_safe_path(base_dir: str, path: str) -> Optional[str]:
     return None
 
 
+def is_sensitive_read_path(path: str) -> bool:
+    parts = [part.casefold() for part in os.path.normpath(path).split(os.sep)]
+    name = parts[-1]
+    return (any(part == ".env" or part.startswith(".env.") for part in parts)
+            or name in {".envrc", ".netrc", ".npmrc", ".pypirc", "credentials.json",
+                        "service-account.json", "service_account.json", "session.json",
+                        "id_rsa", "id_ed25519"}
+            or name.endswith((".pem", ".key")))
+
+
+def file_identity(file_stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (file_stat.st_dev, file_stat.st_ino, file_stat.st_size,
+            file_stat.st_mtime_ns, file_stat.st_ctime_ns)
+
+
 def handle_read_files(args: dict, current_dir: str) -> str:
     filepaths = args.get("filepaths", [])
     if not filepaths:
         return json.dumps({"error": "Список файлов пуст"})
 
-    console.print(f"\n[bold blue]📥 ИИ запрашивает чтение файлов ({len(filepaths)} шт.)...[/bold blue]")
-
-    results = {}
+    planned = []
     for path in filepaths:
         full_path = resolve_safe_path(current_dir, path)
+        expected_identity = None
         if full_path is None:
-            results[path] = "Ошибка: Доступ заблокирован песочницей"
-            continue
+            error = "Ошибка: Доступ заблокирован песочницей"
+        elif is_sensitive_read_path(full_path):
+            error = "Ошибка: Чтение файла с секретами запрещено"
+        else:
+            error = None
+            try:
+                expected_identity = file_identity(os.stat(full_path))
+            except FileNotFoundError:
+                error = "Ошибка: Файл не найден"
+            except OSError as e:
+                error = f"Ошибка при чтении файла: {e}"
+        planned.append((path, full_path, error, expected_identity))
 
-        if not os.path.exists(full_path):
-            results[path] = "Ошибка: Файл не найден"
+    readable = [(path, full_path) for path, full_path, error, _ in planned if error is None]
+    approved = False
+    if readable:
+        table = Table(title="ИИ запрашивает чтение файлов")
+        table.add_column("Запрошенный путь")
+        table.add_column("Файл")
+        for path, full_path in readable:
+            table.add_row(Text(repr(path)), Text(full_path))
+        console.print(table)
+        try:
+            approved = input("Разрешить чтение и отправку содержимого этих файлов модели? (y/n): ").strip().lower() == "y"
+        except (EOFError, KeyboardInterrupt):
+            approved = False
+
+    results = {}
+    for path, full_path, error, expected_identity in planned:
+        if error:
+            results[path] = error
+            continue
+        if not approved:
+            results[path] = "Ошибка: Чтение отклонено пользователем"
             continue
 
         try:
-            with open(full_path, "r", encoding="utf-8") as f:
-                results[path] = f.read()
+            with os.fdopen(os.open(full_path, os.O_RDONLY), "r", encoding="utf-8") as f:
+                if file_identity(os.fstat(f.fileno())) != expected_identity:
+                    results[path] = "Ошибка: Файл изменился после подтверждения"
+                    continue
+                content = f.read()
+                if file_identity(os.fstat(f.fileno())) != expected_identity:
+                    results[path] = "Ошибка: Файл изменился во время чтения"
+                    continue
+                results[path] = content
         except Exception as e:
             results[path] = f"Ошибка при чтении файла: {str(e)}"
             logger.exception(f"Необработанное исключение: {e}")

@@ -292,9 +292,53 @@ class ToolContinuationTest(unittest.TestCase):
         ])
         self.assertEqual([(result.name, result.response) for result in results], [
             ("execute_command", {"output": "/work"}),
-            ("read_local_files", {"files": {"a.txt": "hello"}}),
+            ("read_local_files", {"status": "redacted",
+                                  "message": "Результат чтения файлов не сохраняется"}),
         ])
         self.assertEqual(contents[-1].parts[0].text, "What happened?")
+
+    def test_read_result_is_used_for_current_turn_but_not_saved_or_replayed(self):
+        db = FakeDb()
+        user = self.server.UserContext("user-1", db)
+        history = [{"role": "user", "content": "Read file"}]
+        seen_contents = []
+
+        def generate_content_stream(**kwargs):
+            seen_contents.append(kwargs["contents"])
+            if len(seen_contents) == 1:
+                yield SimpleNamespace(function_calls=[SimpleNamespace(
+                    name="read_local_files", args={"filepaths": ["notes.txt"]}, id="read-1"
+                )], text=None)
+            else:
+                yield SimpleNamespace(function_calls=None, text="Done")
+
+        model = SimpleNamespace(models=SimpleNamespace(generate_content_stream=generate_content_stream))
+        with patch.object(self.server, "client", model), patch.object(
+            self.server, "StreamingResponse",
+            side_effect=lambda generator, **_kwargs: SimpleNamespace(body_iterator=generator),
+        ), patch.object(self.main, "handle_read_files", return_value='{"notes.txt":"private content"}'):
+            first = self.send(self.main.build_stream_payload(history, "chat-1", "test-model", False), user)
+            events = list(self.main.iter_stream_events(
+                SimpleNamespace(iter_lines=lambda: first.body_iterator)
+            ))
+            self.main.execute_tool_calls([event for event in events if event["type"] == "tool_call"],
+                                         history, "/work")
+            second = self.send(self.main.build_stream_payload(history, "chat-1", "test-model", False), user)
+            list(second.body_iterator)
+
+        response = seen_contents[1][-1].parts[0].function_response
+        self.assertEqual(response.response, {"notes.txt": "private content"})
+        stored = [row["content"] for row in db.messages if row["role"] == "tool"]
+        self.assertEqual(stored, [self.server.REDACTED_READ_RESULT])
+        next(row for row in db.messages if row["role"] == "tool")["content"] = \
+            '{"notes.txt":"legacy secret"}'
+        replayed = self.server.build_history_from_db(db, "chat-1")
+        responses = [part.function_response for item in replayed for part in item.parts
+                     if part.function_response is not None]
+        self.assertEqual(responses[0].response["status"], "redacted")
+        replayed_text = str(replayed)
+        self.assertNotIn("private content", replayed_text)
+        self.assertNotIn("legacy secret", replayed_text)
 
 
 if __name__ == "__main__":

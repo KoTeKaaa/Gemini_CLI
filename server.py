@@ -25,6 +25,7 @@ if not supabase_url or not supabase_key:
 
 app = FastAPI()
 client = genai.Client(api_key=api)
+REDACTED_READ_RESULT = '{"status":"redacted","message":"Результат чтения файлов не сохраняется"}'
 
 
 @dataclass(frozen=True)
@@ -232,6 +233,8 @@ def save_message_to_db(
         name: Optional[str] = None,
         args: Optional[Dict[str, Any]] = None
 ):
+    if role == "tool" and name == "read_local_files":
+        content = REDACTED_READ_RESULT
     data = {
         "chat_id": chat_id,
         "role": role,
@@ -260,7 +263,9 @@ def build_history_from_db(db: Client, chat_id: str,
 
         return build_history_from_client([
             MessageItem(
-                role=msg["role"], content=msg.get("content") or "",
+                role=msg["role"],
+                content=(REDACTED_READ_RESULT if msg["role"] == "tool"
+                         and msg.get("name") == "read_local_files" else msg.get("content") or ""),
                 name=msg.get("name"), args=msg.get("args"),
                 call_id=msg.get("call_id"),
             )
@@ -268,7 +273,7 @@ def build_history_from_db(db: Client, chat_id: str,
         ])
     except Exception as e:
         print(f"[DB ERROR] Ошибка загрузки истории: {e}")
-        return []
+        raise HTTPException(status_code=503, detail="Не удалось загрузить историю чата") from e
 
 
 def build_history_from_client(history: Optional[List[MessageItem]]) -> List[types.Content]:
@@ -420,10 +425,10 @@ def stream_chat(
         history_content = build_history_from_db(
             user.db, payload.chat_id, before_user_content=current_turn[0].content
         ) + build_history_from_client(current_turn)
-    elif payload.history:
-        history_content = build_history_from_client(payload.history)
     elif payload.chat_id:
         history_content = build_history_from_db(user.db, payload.chat_id)
+    elif payload.history:
+        history_content = build_history_from_client(payload.history)
     else:
         history_content = []
 

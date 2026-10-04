@@ -33,12 +33,58 @@ class FileSandboxTest(unittest.TestCase):
             "../workspace-other/outside.txt", "outside-link/outside.txt",
             str(self.sibling / "outside.txt"),
         ]
-        with patch.object(self.client.console, "print"):
+        with patch.object(self.client.console, "print"), patch("builtins.input", return_value="y"):
             result = json.loads(self.client.handle_read_files({"filepaths": paths}, str(self.base)))
         for path in paths[:3]:
             self.assertEqual(result[path], "inside")
         for path in paths[3:]:
             self.assertIn("Доступ заблокирован", result[path])
+
+    def test_read_requires_approval(self):
+        with patch.object(self.client.console, "print"), patch("builtins.input", return_value="n"):
+            result = json.loads(self.client.handle_read_files(
+                {"filepaths": ["inside.txt"]}, str(self.base)
+            ))
+        self.assertIn("отклонено пользователем", result["inside.txt"])
+        self.assertNotIn("inside", result["inside.txt"])
+
+    def test_read_blocks_secret_paths_and_symlink_aliases(self):
+        (self.base / ".env").write_text("API_KEY=secret", encoding="utf-8")
+        nested = self.base / "nested"
+        nested.mkdir()
+        (nested / ".env.local").write_text("TOKEN=secret", encoding="utf-8")
+        (self.base / "alias.txt").symlink_to(self.base / ".env")
+        paths = [".env", "nested/.env.local", "alias.txt", "inside.txt"]
+        with patch.object(self.client.console, "print"), patch("builtins.input", return_value="y"):
+            result = json.loads(self.client.handle_read_files({"filepaths": paths}, str(self.base)))
+        for path in paths[:3]:
+            self.assertIn("запрещено", result[path])
+        self.assertEqual(result["inside.txt"], "inside")
+        self.assertNotIn("secret", json.dumps(result))
+
+    def test_secret_only_batch_does_not_ask_for_approval(self):
+        (self.base / ".env").write_text("API_KEY=secret", encoding="utf-8")
+        with patch.object(self.client.console, "print"), patch("builtins.input") as prompt:
+            result = json.loads(self.client.handle_read_files(
+                {"filepaths": [".env"]}, str(self.base)
+            ))
+        prompt.assert_not_called()
+        self.assertIn("запрещено", result[".env"])
+
+    def test_read_rejects_file_swapped_for_secret_during_approval(self):
+        (self.base / ".env").write_text("API_KEY=secret", encoding="utf-8")
+
+        def replace_file(_prompt):
+            (self.base / "inside.txt").unlink()
+            (self.base / "inside.txt").symlink_to(self.base / ".env")
+            return "y"
+
+        with patch.object(self.client.console, "print"), patch("builtins.input", side_effect=replace_file):
+            result = json.loads(self.client.handle_read_files(
+                {"filepaths": ["inside.txt"]}, str(self.base)
+            ))
+        self.assertIn("изменился", result["inside.txt"])
+        self.assertNotIn("secret", json.dumps(result))
 
     def test_write_resolves_paths_and_blocks_escape(self):
         files = [
