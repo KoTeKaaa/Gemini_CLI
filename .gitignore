@@ -11,3 +11,6 @@
 session.json
 server_config.json
 .idea
+/.venv/
+/dist/
+/build/
