@@ -90,3 +90,12 @@ def search_text(query: str) -> str:
 
 TOOLS["search_text"] = search_text
 CLIENT_NAMES = (*CLIENT_NAMES, "search_text")
+
+
+def read_file_lines(filepath: str, start_line: int, end_line: int) -> str:
+    """Read an inclusive range of numbered lines from a workspace text file after approval."""
+    return "Чтение диапазона инициировано"
+
+
+TOOLS["read_file_lines"] = read_file_lines
+CLIENT_NAMES = (*CLIENT_NAMES, "read_file_lines")

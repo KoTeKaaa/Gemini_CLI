@@ -7,7 +7,8 @@ import stat
 import tempfile
 from typing import Callable
 
-from .workspace import file_identity, is_sensitive_read_path, resolve_safe_path
+from .workspace import file_identity, is_sensitive_read_path, resolve_safe_path, plan_text_file, read_text_snapshot
+from ..results import failure, success
 
 
 def read_files(
@@ -118,3 +119,30 @@ def write_files(
         results.append({"filepath": rel_path, "status": status})
         notify(f"{rel_path}: {status}")
     return json.dumps(results, ensure_ascii=False)
+
+
+def read_file_lines(args: dict, current_dir: str, *, approve,
+                    max_lines=500, max_chars=20000) -> dict:
+    path, start, end = args.get("filepath"), args.get("start_line"), args.get("end_line")
+    if (not isinstance(path, str) or not path or type(start) is not int or type(end) is not int
+            or start < 1 or end < start):
+        return failure("invalid_arguments", "Нужны путь и включительный диапазон строк от 1")
+    try:
+        expected = plan_text_file(current_dir, path)
+        if not approve(f"Чтение {path!r}, строки {start}–{end}; содержимое будет отправлено модели"):
+            return failure("denied", "Чтение отклонено пользователем")
+        lines = read_text_snapshot(current_dir, path, expected).splitlines()
+    except (OSError, ValueError, UnicodeError):
+        return failure("unreadable", "Файл недоступен, изменился, содержит секреты или не является текстовым")
+    selected, characters = [], 0
+    available = lines[start - 1:end]
+    truncated = len(available) > max_lines
+    for number, line in enumerate(available[:max_lines], start):
+        remaining = max_chars - characters
+        if remaining <= 0:
+            truncated = True
+            break
+        selected.append({"line": number, "text": line[:remaining]})
+        characters += min(len(line), remaining)
+        truncated |= len(line) > remaining
+    return success({"filepath": path, "lines": selected}, truncated=truncated)
