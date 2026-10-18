@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 from supabase.lib.client_options import SyncClientOptions
 
+from gemini_cli.server.web_routes import create_web_router
 from gemini_cli.tools.definitions import available_tools
 from gemini_cli.server.tool_history import REDACTED_READ_RESULT, persistent_tool_message
 
@@ -62,6 +63,9 @@ def get_current_user(authorization: Optional[str] = Header(None)):
     except Exception as e:
         print(f"[AUTH ERROR] Ошибка валидации токена: {e}")
         raise HTTPException(status_code=401, detail="Ошибка авторизации")
+
+
+app.include_router(create_web_router(get_current_user, api_key=os.getenv("TAVILY_API_KEY")))
 
 
 class ChatCreate(BaseModel):
