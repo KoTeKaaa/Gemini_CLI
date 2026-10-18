@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 from supabase.lib.client_options import SyncClientOptions
 
+from gemini_cli.tools.definitions import available_tools
+
 load_dotenv()
 
 api = os.getenv("API_KEY")
@@ -88,6 +90,7 @@ class StreamChatPayload(BaseModel):
     history: Optional[List[MessageItem]] = None
     current_dir: Optional[str] = None
     continue_after_tool: bool = False
+    supported_tools: Optional[List[str]] = None
 
 
 class LoginPayload(BaseModel):
@@ -363,49 +366,6 @@ def build_history_from_client(history: Optional[List[MessageItem]]) -> List[type
 
 
 
-def read_local_files(filepaths: List[str]) -> str:
-    """
-    Reads the content of multiple text-based files (source code, text, configs, logs) from the workspace at once.
-    ALWAYS use this when the user asks to fix, refactor, or analyze code across multiple files.
-
-    Args:
-        filepaths: A list of RELATIVE file paths starting from the current workspace root.
-                   Do NOT use absolute paths. Example: ["main.py", "utils/helpers.py"]
-    """
-    return "Пакетное чтение файлов инициировано"
-
-
-def write_local_files(files: List[dict]) -> str:
-    """
-    Creates or completely overwrites multiple text files in the workspace simultaneously.
-    Use this to save generated source code, laboratory scripts, or Markdown documentation.
-
-    CRITICAL: You must provide the FULL and COMPLETE content of the files. Do NOT truncate
-    the code with placeholders like '// ... rest of code ...'. Write everything from scratch.
-
-    Args:
-        files: A list of dictionaries. Each dict MUST strictly contain:
-               - 'filepath' (str): The relative path to the file from workspace root (e.g., 'src/app.py').
-               - 'content' (str): The exact and complete text/code content to be written.
-    """
-    return "Пакетная запись файлов инициирована"
-
-
-def execute_command(command: str) -> str:
-    """
-    Executes a SINGLE, NON-INTERACTIVE shell command in the user's terminal workspace (e.g., runs tests, compilers, pip).
-
-    CRITICAL RULES:
-    1. Do NOT string multiple commands together using '&&', '||', or ';'. Execute them one by one.
-    2. The command MUST be non-interactive. Do NOT run commands that wait for user input (e.g., bare 'python', 'git commit' without -m, 'npm init' without -y).
-    3. For Python scripts, use 'python <filename>' or 'python3 <filename>'.
-
-    Args:
-        command: The raw shell command string to execute in the workspace.
-    """
-    return "Выполнение команды инициировано"
-
-
 @app.post("/chat/stream")
 def stream_chat(
         payload: StreamChatPayload,
@@ -460,7 +420,7 @@ def stream_chat(
             )
 
             config = types.GenerateContentConfig(
-                tools=[read_local_files, write_local_files, execute_command],
+                tools=available_tools(payload.supported_tools),
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                 system_instruction=agent_instruction
             )

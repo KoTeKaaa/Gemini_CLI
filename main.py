@@ -26,6 +26,7 @@ from datetime import datetime
 from gemini_cli.client.tool_runner import execute_tool_calls as run_tool_calls
 from gemini_cli.tools.local.command import execute_command
 from gemini_cli.tools.local.files import read_files, write_files
+from gemini_cli.tools.definitions import LEGACY_NAMES
 
 LOG_FILE = os.path.join(os.path.expanduser("~"), ".gemini_cli", "gemini_cli.log")
 
@@ -505,6 +506,7 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
         "chat_id": chat_id,
         "model_name": model_name,
         "continue_after_tool": continuing,
+        "supported_tools": list(LEGACY_NAMES),
     }
     if continuing:
         payload["history"] = history
