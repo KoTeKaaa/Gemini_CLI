@@ -61,7 +61,10 @@ jobs:
           }
           Set-Location $smokeHome
           $output = & $exe 2>&1 | Out-String
-          if ($LASTEXITCODE -ne 0) { throw 'Standalone executable startup failed.' }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output $output
+            throw 'Standalone executable startup failed.'
+          }
           if ($output -match 'Traceback|ModuleNotFoundError') { throw 'Standalone import check failed.' }
           Write-Output 'Standalone startup passed with an offline fixture server and no server keys.'
       - uses: actions/upload-artifact@v7
