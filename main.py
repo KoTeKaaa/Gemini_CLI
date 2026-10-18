@@ -3,7 +3,6 @@ import sys
 import json
 import ipaddress
 import tempfile
-import stat
 from contextlib import nullcontext
 from typing import Optional, Dict, List, Any
 from urllib.parse import urlsplit
@@ -25,8 +24,7 @@ from rich.text import Text
 import logging
 from datetime import datetime
 
-from gemini_cli.tools.local.files import read_files
-from gemini_cli.tools.local.workspace import resolve_safe_path
+from gemini_cli.tools.local.files import read_files, write_files
 
 LOG_FILE = os.path.join(os.path.expanduser("~"), ".gemini_cli", "gemini_cli.log")
 
@@ -169,11 +167,7 @@ def handle_read_files(args: dict, current_dir: str) -> str:
     return read_files(args, current_dir, approve=confirm_file_read, logger=logger)
 
 
-def handle_write_files(args: dict, current_dir: str) -> str:
-    files = args.get("files", [])
-    if not files:
-        return json.dumps({"error": "Список файлов для записи пуст"}, ensure_ascii=False)
-
+def confirm_file_write(files: list[dict]) -> bool:
     table = Table(title="🚨 Запрос на запись/изменение файлов", show_header=True, header_style="bold yellow")
     table.add_column("Путь (относительно рабочей папки)", style="cyan")
     table.add_column("Размер (символов)", style="magenta")
@@ -193,43 +187,14 @@ def handle_write_files(args: dict, current_dir: str) -> str:
 
     if confirm != 'y':
         console.print("[bold red]❌ Операция заблокирована пользователем.[/bold red]\n")
-        return json.dumps({"error": "Операция отклонена пользователем из соображений безопасности."},
-                          ensure_ascii=False)
+        return False
 
-    results = []
-    for f in files:
-        rel_path = f.get("filepath", "")
-        content = f.get("content", "")
+    return True
 
-        full_path = resolve_safe_path(current_dir, rel_path)
-        if full_path is None:
-            status = "Заблокировано песочницей"
-            results.append({"filepath": rel_path, "status": status})
-            console.print(f"{rel_path}: {status}")
-            continue
 
-        temporary_path = None
-        try:
-            directory = os.path.dirname(full_path)
-            os.makedirs(directory, exist_ok=True)
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
-                                             prefix=".gemini-write-", delete=False) as file_obj:
-                temporary_path = file_obj.name
-                file_obj.write(content)
-            if os.path.exists(full_path):
-                os.chmod(temporary_path, stat.S_IMODE(os.stat(full_path).st_mode))
-            os.replace(temporary_path, full_path)
-            status = "Успешно записан"
-        except Exception as e:
-            status = f"Ошибка: {str(e)}"
-            logger.exception(f"Необработанное исключение: {e}")
-        finally:
-            if temporary_path and os.path.exists(temporary_path):
-                os.unlink(temporary_path)
-        results.append({"filepath": rel_path, "status": status})
-        console.print(f"{rel_path}: {status}")
-
-    return json.dumps(results, ensure_ascii=False)
+def handle_write_files(args: dict, current_dir: str) -> str:
+    return write_files(args, current_dir, approve=confirm_file_write,
+                       notify=console.print, logger=logger)
 
 
 def handle_execute_command(args: dict, current_dir: str) -> str:

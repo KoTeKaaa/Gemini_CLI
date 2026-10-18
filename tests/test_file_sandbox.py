@@ -1,6 +1,7 @@
 import importlib
 import json
 import os
+import stat
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -13,6 +14,7 @@ class FileSandboxTest(unittest.TestCase):
     def setUpClass(cls):
         with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home}):
             cls.client = importlib.import_module("main")
+            cls.files = importlib.import_module("gemini_cli.tools.local.files")
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -174,7 +176,7 @@ class FileSandboxTest(unittest.TestCase):
         ]
         with (patch.object(self.client.console, "print") as printed,
               patch("builtins.input", return_value="y"),
-              patch.object(self.client.tempfile, "NamedTemporaryFile", side_effect=fail_first_write)):
+              patch.object(self.files.tempfile, "NamedTemporaryFile", side_effect=fail_first_write)):
             result = json.loads(self.client.handle_write_files({"files": files}, str(self.base)))
 
         self.assertIn("write failed", result[0]["status"])
@@ -186,6 +188,42 @@ class FileSandboxTest(unittest.TestCase):
         self.assertIn("inside.txt: Ошибка: write failed", output)
         self.assertIn("new.txt: Успешно записан", output)
         self.assertNotIn("Изменения успешно применены", output)
+
+    def test_write_refusal_leaves_file_unchanged(self):
+        files = [{"filepath": "inside.txt", "content": "replacement"}]
+        with (patch.object(self.client.console, "print") as printed,
+              patch("builtins.input", return_value="n"),
+              patch.object(self.files, "atomic_write_text") as write):
+            result = json.loads(self.client.handle_write_files({"files": files}, str(self.base)))
+        write.assert_not_called()
+        self.assertIn("отклонена пользователем", result["error"])
+        self.assertEqual((self.base / "inside.txt").read_text(), "inside")
+        self.assertTrue(any(getattr(call.args[0], "renderable", None) == "replacement"
+                            for call in printed.call_args_list if call.args))
+
+    @unittest.skipUnless(os.name == "posix", "POSIX permission bits")
+    def test_write_preserves_existing_permissions(self):
+        path = self.base / "inside.txt"
+        path.chmod(0o640)
+        with patch.object(self.client.console, "print"), patch("builtins.input", return_value="y"):
+            result = json.loads(self.client.handle_write_files(
+                {"files": [{"filepath": "inside.txt", "content": "replacement"}]}, str(self.base)
+            ))
+        self.assertEqual(result[0]["status"], "Успешно записан")
+        self.assertEqual(path.read_text(), "replacement")
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
+        self.assertEqual(list(self.base.glob(".gemini-write-*")), [])
+
+    def test_failed_replace_preserves_original_and_removes_temporary(self):
+        with (patch.object(self.client.console, "print"),
+              patch("builtins.input", return_value="y"),
+              patch.object(self.files.os, "replace", side_effect=OSError("replace failed"))):
+            result = json.loads(self.client.handle_write_files(
+                {"files": [{"filepath": "inside.txt", "content": "replacement"}]}, str(self.base)
+            ))
+        self.assertIn("replace failed", result[0]["status"])
+        self.assertEqual((self.base / "inside.txt").read_text(), "inside")
+        self.assertEqual(list(self.base.glob(".gemini-write-*")), [])
 
 
 if __name__ == "__main__":

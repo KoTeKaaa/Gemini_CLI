@@ -3,6 +3,8 @@
 import json
 import logging
 import os
+import stat
+import tempfile
 from typing import Callable
 
 from .workspace import file_identity, is_sensitive_read_path, resolve_safe_path
@@ -63,4 +65,56 @@ def read_files(
             results[path] = f"Ошибка при чтении файла: {str(e)}"
             logger.exception(f"Необработанное исключение: {e}")
 
+    return json.dumps(results, ensure_ascii=False)
+
+
+def atomic_write_text(full_path: str, content: str) -> None:
+    """Заменить файл через временный в том же каталоге, сохранив его права."""
+    temporary_path = None
+    try:
+        directory = os.path.dirname(full_path)
+        os.makedirs(directory, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
+                                         prefix=".gemini-write-", delete=False) as file_obj:
+            temporary_path = file_obj.name
+            file_obj.write(content)
+        if os.path.exists(full_path):
+            os.chmod(temporary_path, stat.S_IMODE(os.stat(full_path).st_mode))
+        os.replace(temporary_path, full_path)
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+
+
+def write_files(
+    args: dict,
+    current_dir: str,
+    *,
+    approve: Callable[[list[dict]], bool],
+    notify: Callable[[str], None],
+    logger: logging.Logger,
+) -> str:
+    files = args.get("files", [])
+    if not files:
+        return json.dumps({"error": "Список файлов для записи пуст"}, ensure_ascii=False)
+    if not approve(files):
+        return json.dumps({"error": "Операция отклонена пользователем из соображений безопасности."},
+                          ensure_ascii=False)
+
+    results = []
+    for file in files:
+        rel_path = file.get("filepath", "")
+        content = file.get("content", "")
+        full_path = resolve_safe_path(current_dir, rel_path)
+        if full_path is None:
+            status = "Заблокировано песочницей"
+        else:
+            try:
+                atomic_write_text(full_path, content)
+                status = "Успешно записан"
+            except Exception as e:
+                status = f"Ошибка: {str(e)}"
+                logger.exception(f"Необработанное исключение: {e}")
+        results.append({"filepath": rel_path, "status": status})
+        notify(f"{rel_path}: {status}")
     return json.dumps(results, ensure_ascii=False)
