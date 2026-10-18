@@ -537,7 +537,8 @@ def trim_history(history: List[Dict[str, str]], limit: int = 20, tool_content_li
 
 
 def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
-                         model_name: str, is_temporary: bool, turn: ToolTurn | None = None) -> Dict[str, Any]:
+                         model_name: str, is_temporary: bool, turn: ToolTurn | None = None,
+                         *, end_tool_turn: bool = False) -> Dict[str, Any]:
     continuing = bool(history and history[-1].get("role") == "tool")
     payload: Dict[str, Any] = {
         "message": "" if continuing else history[-1]["content"],
@@ -549,6 +550,9 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
     }
     if continuing:
         payload["history"] = history
+        if end_tool_turn:
+            payload["end_tool_turn"] = True
+            payload["supported_tools"] = []
     elif is_temporary:
         payload["history"] = history[:-1]
     return payload
@@ -781,11 +785,10 @@ def main():
             tool_rounds = 0
             while True:
                 tool_rounds += 1
-                if tool_rounds > 12:
-                    console.print("[yellow]Достигнут предел продолжений инструментов для сообщения.[/yellow]")
-                    break
+                ending = tool_rounds > 12
                 temporary_history = trim_history(temporary_history, 20)
-                payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary, turn)
+                payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary, turn,
+                                               end_tool_turn=ending)
                 has_pending_tool = payload["continue_after_tool"]
 
                 response = api_client.stream_chat(payload)
@@ -795,6 +798,9 @@ def main():
                         response, has_pending_tool)
 
                     if tool_calls_received:
+                        if ending:
+                            console.print("[yellow]Сервер не поддерживает завершение цепочки инструментов.[/yellow]")
+                            break
                         execute_tool_calls(tool_calls_received, temporary_history, current_dir,
                                            turn=turn, api_client=api_client)
                         console.print("[dim]Передаю результаты выполнения обратно на сервер...[/dim]")

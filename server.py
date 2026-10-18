@@ -96,6 +96,7 @@ class StreamChatPayload(BaseModel):
     current_dir: Optional[str] = None
     continue_after_tool: bool = False
     supported_tools: Optional[List[str]] = None
+    end_tool_turn: bool = False
 
 
 class LoginPayload(BaseModel):
@@ -372,6 +373,8 @@ def stream_chat(
         payload: StreamChatPayload,
         user: UserContext = Depends(get_current_user),
 ):
+    if payload.end_tool_turn and not payload.continue_after_tool:
+        raise HTTPException(status_code=400, detail="Завершение допустимо только после результата инструмента")
     if payload.continue_after_tool:
         if payload.message.strip() or not payload.history or payload.history[-1].role != "tool":
             raise HTTPException(status_code=400, detail="Ожидается история с результатом инструмента")
@@ -448,6 +451,13 @@ def stream_chat(
                 )
 
                 full_contents = current_contents + [active_message]
+
+            if payload.end_tool_turn:
+                message = "Достигнут предел продолжений инструментов. Последние результаты сохранены; продолжите новым сообщением."
+                if payload.chat_id:
+                    save_message_to_db(user.db, payload.chat_id, "model", message)
+                yield f"data: {json.dumps({'type': 'text', 'content': message}, ensure_ascii=False)}\n\n".encode("utf-8")
+                return
 
             response_stream = client.models.generate_content_stream(
                 model=payload.model_name,
