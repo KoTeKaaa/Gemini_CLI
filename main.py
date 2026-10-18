@@ -17,13 +17,14 @@ from prompt_toolkit.styles import Style
 
 from rich.console import Console
 from rich.markdown import Markdown
-import subprocess
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 import logging
 from datetime import datetime
 
+from gemini_cli.client.tool_runner import execute_tool_calls as run_tool_calls
+from gemini_cli.tools.local.command import execute_command
 from gemini_cli.tools.local.files import read_files, write_files
 
 LOG_FILE = os.path.join(os.path.expanduser("~"), ".gemini_cli", "gemini_cli.log")
@@ -197,44 +198,21 @@ def handle_write_files(args: dict, current_dir: str) -> str:
                        notify=console.print, logger=logger)
 
 
-def handle_execute_command(args: dict, current_dir: str) -> str:
-    command = args.get("command", "").strip()
-    if not command:
-        return json.dumps({"error": "Команда пустая"})
-
+def confirm_command(command: str) -> bool:
     console.print(Panel(f"[bold white]{command}[/bold white]", title="⚙️ ИИ запрашивает выполнение команды терминала",
                         border_style="yellow"))
 
     confirm = input("Выполнить эту команду в вашей рабочей директории? (y/n): ").strip().lower()
     if confirm != 'y':
         console.print("[bold red]❌ Выполнение команды отменено пользователем.[/bold red]")
-        return "Выполнение команды отменено пользователем."
+        return False
 
-    console.print("[green]Запуск процесса...[/green]")
-    try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=current_dir,
-            text=True,
-            capture_output=True,
-            timeout=120
-        )
+    return True
 
-        response_data = {
-            "exit_code": result.returncode,
-            "stdout": result.stdout,
-            "stderr": result.stderr
-        }
-        return json.dumps(response_data, ensure_ascii=False)
 
-    except subprocess.TimeoutExpired:
-        console.print("[red]❌ Превышено время ожидания (лимит 2 минуты)[/red]")
-        return json.dumps({"error": "Превышено время ожидания выполнения команды (Timeout 120s)"})
-    except Exception as e:
-        logger.exception(f"Необработанное исключение: {e}")
-        return json.dumps({"error": f"Критическая ошибка вызова подпроцесса: {str(e)}"})
-
+def handle_execute_command(args: dict, current_dir: str) -> str:
+    return execute_command(args, current_dir, approve=confirm_command,
+                           notify=console.print, logger=logger)
 
 
 class GeminiAPIClient:
@@ -537,33 +515,11 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
 
 def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
                        current_dir: str) -> None:
-    for call in tool_calls:
-        tool_name = call.get("name")
-        history.append({
-            "role": "model", "content": f"[Вызов локального инструмента: {tool_name}]",
-            "name": tool_name, "args": call.get("args", {}), "call_id": call.get("call_id"),
-            "thought_signature": call.get("thought_signature")
-        })
-
-    for call in tool_calls:
-        tool_name = call.get("name")
-        tool_args = call.get("args", {})
-        if tool_name == "read_local_files":
-            tool_result = handle_read_files(tool_args, current_dir)
-        elif tool_name == "write_local_files":
-            tool_result = handle_write_files(tool_args, current_dir)
-        elif tool_name == "execute_command":
-            tool_result = handle_execute_command(tool_args, current_dir)
-        else:
-            tool_result = f"Ошибка: Инструмент {tool_name} не поддерживается клиентом."
-        history.append({
-            "role": "tool", "name": tool_name, "content": tool_result,
-            "call_id": call.get("call_id")
-        })
-        logged_name = tool_name if tool_name in (
-            "read_local_files", "write_local_files", "execute_command"
-        ) else "unknown"
-        logger.info("Tool вызов: %s", logged_name)
+    run_tool_calls(tool_calls, history, current_dir, handlers={
+        "read_local_files": handle_read_files,
+        "write_local_files": handle_write_files,
+        "execute_command": handle_execute_command,
+    }, logger=logger)
 
 
 def iter_stream_events(response):

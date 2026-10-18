@@ -22,7 +22,8 @@ class BlockApplicationImports(importlib.abc.MetaPathFinder):
 
 sys.meta_path.insert(0, BlockApplicationImports())
 import gemini_cli
-from gemini_cli.tools.local import files, workspace
+from gemini_cli.tools.local import command, files, workspace
+from gemini_cli.client import tool_runner
 assert Path(gemini_cli.__file__).resolve() == (
     Path.cwd() / 'gemini_cli' / '__init__.py'
 ).resolve()
