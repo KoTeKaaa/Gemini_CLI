@@ -1,9 +1,11 @@
 """Диспетчер прежних локальных инструментов с сохранением порядка вызовов."""
 
 import logging
+import json
 from typing import Callable, Mapping
 
 from ..tools.definitions import TOOLS
+from ..tools.results import failure
 
 
 def execute_tool_calls(
@@ -22,7 +24,10 @@ def execute_tool_calls(
         tool_name = call.get("name")
         tool_args = call.get("args", {})
         if tool_name in TOOLS and tool_name in handlers:
-            tool_result = handlers[tool_name](tool_args, current_dir)
+            try:
+                tool_result = handlers[tool_name](tool_args, current_dir)
+            except Exception:
+                tool_result = json.dumps(failure("tool_error", "Инструмент не выполнен"), ensure_ascii=False)
         else:
             tool_result = f"Ошибка: Инструмент {tool_name} не поддерживается клиентом."
         history.append({
