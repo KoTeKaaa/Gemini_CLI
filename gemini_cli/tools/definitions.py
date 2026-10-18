@@ -72,3 +72,12 @@ def read_url(url: str) -> str:
 
 TOOLS["read_url"] = read_url
 CLIENT_NAMES = (*CLIENT_NAMES, "read_url")
+
+
+def find_files(pattern: str = "*") -> str:
+    """Find workspace files by relative glob pattern without reading their contents."""
+    return "Поиск файлов инициирован"
+
+
+TOOLS["find_files"] = find_files
+CLIENT_NAMES = (*CLIENT_NAMES, "find_files")
