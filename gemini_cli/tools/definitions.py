@@ -99,3 +99,12 @@ def read_file_lines(filepath: str, start_line: int, end_line: int) -> str:
 
 TOOLS["read_file_lines"] = read_file_lines
 CLIENT_NAMES = (*CLIENT_NAMES, "read_file_lines")
+
+
+def replace_in_file(filepath: str, old_text: str, new_text: str) -> str:
+    """Replace one unique nonempty literal fragment in an existing text file after a diff approval."""
+    return "Точечная замена инициирована"
+
+
+TOOLS["replace_in_file"] = replace_in_file
+CLIENT_NAMES = (*CLIENT_NAMES, "replace_in_file")

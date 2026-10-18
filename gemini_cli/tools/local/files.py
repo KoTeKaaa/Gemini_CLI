@@ -69,18 +69,21 @@ def read_files(
     return json.dumps(results, ensure_ascii=False)
 
 
-def atomic_write_text(full_path: str, content: str) -> None:
+def atomic_write_text(full_path: str, content: str, *, newline: str | None = None,
+                      validate: Callable[[], None] | None = None) -> None:
     """Заменить файл через временный в том же каталоге, сохранив его права."""
     temporary_path = None
     try:
         directory = os.path.dirname(full_path)
         os.makedirs(directory, exist_ok=True)
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline=newline, dir=directory,
                                          prefix=".gemini-write-", delete=False) as file_obj:
             temporary_path = file_obj.name
             file_obj.write(content)
         if os.path.exists(full_path):
             os.chmod(temporary_path, stat.S_IMODE(os.stat(full_path).st_mode))
+        if validate is not None:
+            validate()
         os.replace(temporary_path, full_path)
     finally:
         if temporary_path and os.path.exists(temporary_path):

@@ -1,8 +1,11 @@
 import tempfile
 import unittest
+import os
+import stat
+from unittest.mock import patch
 from pathlib import Path
 
-from gemini_cli.tools.local.edit import prepare_replacement
+from gemini_cli.tools.local.edit import prepare_replacement, replace_in_file
 
 
 class FileEditTest(unittest.TestCase):
@@ -38,3 +41,35 @@ class FileEditTest(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises((OSError, ValueError)):
                 prepare_replacement({"filepath": name, "old_text": "PRIVATE", "new_text": ""},
                                     str(self.root), approve=lambda _: True)
+
+    def apply(self, confirm):
+        return replace_in_file({"filepath": "file.txt", "old_text": "two", "new_text": "два"},
+                               str(self.root), approve=lambda _: True, confirm_diff=confirm)
+
+    def test_apply_preserves_newlines_and_permissions(self):
+        for newline in (b"\n", b"\r\n"):
+            self.file.write_bytes(newline.join([b"one", b"two", b"three"]))
+            if os.name == "posix":
+                self.file.chmod(0o640)
+            result = self.apply(lambda diff: "-two" in diff)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(self.file.read_bytes(), newline.join([b"one", "два".encode(), b"three"]))
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(self.file.stat().st_mode), 0o640)
+
+    def test_denial_interrupt_change_and_write_failure(self):
+        def interrupt(_diff):
+            raise KeyboardInterrupt()
+        def changed(_diff):
+            self.file.write_text("changed")
+            return True
+        for confirm in (lambda _: False, interrupt, changed):
+            self.file.write_text("one\ntwo\nthree")
+            result = self.apply(confirm)
+            self.assertEqual(result["status"], "error")
+            self.assertNotIn("два", self.file.read_text())
+        self.file.write_text("one\ntwo\nthree")
+        with patch("gemini_cli.tools.local.files.os.replace", side_effect=OSError):
+            self.assertEqual(self.apply(lambda _: True)["status"], "error")
+        self.assertEqual(self.file.read_text(), "one\ntwo\nthree")
+        self.assertEqual(list(self.root.glob(".gemini-write-*")), [])

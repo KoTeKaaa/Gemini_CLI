@@ -5,6 +5,8 @@ import difflib
 import os
 
 from .workspace import plan_text_file, read_text_snapshot
+from .files import atomic_write_text
+from ..results import failure, success
 
 
 @dataclass(frozen=True)
@@ -39,3 +41,26 @@ def prepare_replacement(args: dict, current_dir: str, *, approve) -> Replacement
     diff = "".join(difflib.unified_diff(original.splitlines(keepends=True), updated.splitlines(keepends=True),
                                      fromfile=f"a/{relative}", tofile=f"b/{relative}"))
     return Replacement(root, path, expected, original, updated, diff)
+
+
+def apply_replacement(plan: Replacement) -> None:
+    def validate():
+        if read_text_snapshot(plan.root, plan.filepath, plan.expected) != plan.original:
+            raise ValueError("Файл изменился после предпросмотра")
+    validate()
+    atomic_write_text(plan.expected[0], plan.updated, newline="", validate=validate)
+
+
+def replace_in_file(args: dict, current_dir: str, *, approve, confirm_diff) -> dict:
+    try:
+        plan = prepare_replacement(args, current_dir, approve=approve)
+        if not confirm_diff(plan.diff):
+            return failure("denied", "Замена отклонена пользователем")
+        apply_replacement(plan)
+        return success({"filepath": plan.filepath, "changed": True})
+    except (EOFError, KeyboardInterrupt):
+        return failure("denied", "Замена прервана пользователем")
+    except ValueError as error:
+        return failure("not_applied", str(error))
+    except OSError:
+        return failure("write_failed", "Не удалось применить замену; проверьте файл")
