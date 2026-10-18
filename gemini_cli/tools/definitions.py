@@ -54,3 +54,12 @@ def available_tools(supported: list[str] | None, enabled: set[str] | None = None
     requested = set(LEGACY_NAMES if supported is None else supported)
     allowed = set(TOOLS) if enabled is None else enabled
     return [tool for name, tool in TOOLS.items() if name in requested and name in allowed]
+
+
+def web_search(query: str, max_results: int = 5) -> str:
+    """Search the public web for sources. Up to five results; three searches per user turn."""
+    return "Поиск инициирован"
+
+
+TOOLS["web_search"] = web_search
+CLIENT_NAMES = (*LEGACY_NAMES, "web_search")

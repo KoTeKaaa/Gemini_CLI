@@ -26,7 +26,9 @@ from datetime import datetime
 from gemini_cli.client.tool_runner import execute_tool_calls as run_tool_calls
 from gemini_cli.tools.local.command import execute_command
 from gemini_cli.tools.local.files import read_files, write_files
-from gemini_cli.tools.definitions import LEGACY_NAMES
+from gemini_cli.tools.definitions import CLIENT_NAMES
+from gemini_cli.client.web_tools import ToolTurn
+from gemini_cli.tools.results import failure
 
 LOG_FILE = os.path.join(os.path.expanduser("~"), ".gemini_cli", "gemini_cli.log")
 
@@ -285,6 +287,21 @@ class GeminiAPIClient:
             return response
         return request()
 
+    def web_tool(self, kind: str, payload: dict) -> dict:
+        try:
+            response = self._authorized_request(lambda: requests.post(
+                f"{self.base_url}/tools/web/{kind}", json=payload, headers=self.headers,
+                timeout=25, allow_redirects=False))
+            with response:
+                if response.status_code != 200:
+                    return failure("network", "Веб-инструмент недоступен")
+                result = response.json()
+                if not isinstance(result, dict) or result.get("status") not in {"ok", "error"}:
+                    return failure("invalid_response", "Некорректный ответ веб-инструмента")
+                return result
+        except (requests.RequestException, ValueError):
+            return failure("network", "Сетевая ошибка веб-инструмента; автоматического повтора нет")
+
     def login(self):
         token = self._load_session_token()
         if token:
@@ -499,14 +516,15 @@ def trim_history(history: List[Dict[str, str]], limit: int = 20, tool_content_li
 
 
 def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
-                         model_name: str, is_temporary: bool) -> Dict[str, Any]:
+                         model_name: str, is_temporary: bool, turn: ToolTurn | None = None) -> Dict[str, Any]:
     continuing = bool(history and history[-1].get("role") == "tool")
     payload: Dict[str, Any] = {
         "message": "" if continuing else history[-1]["content"],
         "chat_id": chat_id,
         "model_name": model_name,
         "continue_after_tool": continuing,
-        "supported_tools": list(LEGACY_NAMES),
+        "supported_tools": [name for name in CLIENT_NAMES
+                            if name != "web_search" or turn is None or turn.search_available],
     }
     if continuing:
         payload["history"] = history
@@ -516,12 +534,15 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
 
 
 def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
-                       current_dir: str) -> None:
-    run_tool_calls(tool_calls, history, current_dir, handlers={
+                       current_dir: str, *, turn: ToolTurn | None = None, api_client=None) -> None:
+    handlers = {
         "read_local_files": handle_read_files,
         "write_local_files": handle_write_files,
         "execute_command": handle_execute_command,
-    }, logger=logger)
+    }
+    if turn is not None and api_client is not None:
+        handlers["web_search"] = lambda args, _cwd: turn.search(args, api_client.web_tool)
+    run_tool_calls(tool_calls, history, current_dir, handlers=handlers, logger=logger)
 
 
 def iter_stream_events(response):
@@ -722,9 +743,15 @@ def main():
 
             temporary_history.append({"role": "user", "content": user_input})
 
+            turn = ToolTurn()
+            tool_rounds = 0
             while True:
+                tool_rounds += 1
+                if tool_rounds > 12:
+                    console.print("[yellow]Достигнут предел продолжений инструментов для сообщения.[/yellow]")
+                    break
                 temporary_history = trim_history(temporary_history, 20)
-                payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary)
+                payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary, turn)
                 has_pending_tool = payload["continue_after_tool"]
 
                 response = api_client.stream_chat(payload)
@@ -734,7 +761,8 @@ def main():
                         response, has_pending_tool)
 
                     if tool_calls_received:
-                        execute_tool_calls(tool_calls_received, temporary_history, current_dir)
+                        execute_tool_calls(tool_calls_received, temporary_history, current_dir,
+                                           turn=turn, api_client=api_client)
                         console.print("[dim]Передаю результаты выполнения обратно на сервер...[/dim]")
                         continue
 

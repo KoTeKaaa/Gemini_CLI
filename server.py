@@ -14,7 +14,7 @@ from supabase import create_client, Client
 from supabase.lib.client_options import SyncClientOptions
 
 from gemini_cli.server.web_routes import create_web_router
-from gemini_cli.tools.definitions import available_tools
+from gemini_cli.tools.definitions import TOOLS, available_tools
 from gemini_cli.server.tool_history import REDACTED_READ_RESULT, persistent_tool_message
 
 load_dotenv()
@@ -415,12 +415,14 @@ def stream_chat(
                 "и продолжить выполнение исходной задачи пользователя. НЕ запрашивай контекст повторно, "
                 "НЕ пиши фразы в духе 'Уточните задачу' — вся хронология действий уже находится в истории чата! "
                 "ВАЖНО: Если инструмент вернул успешный результат (например, файл записан, команда выполнена), "
-                "считай задачу ВЫПОЛНЕННОЙ. НЕ повторяй вызов того же инструмента снова. "
-                "Просто сообщи пользователю об успешном выполнении текстом."
+                "оцени, выполнена ли исходная задача целиком; при необходимости продолжай другими инструментами. "
+                "Не повторяй завершённую операцию без причины. При отказе или исчерпании поиска отвечай "
+                "по доступным данным и укажи ограничение. Для веб-фактов приводи фактические ссылки из результатов."
             )
 
             config = types.GenerateContentConfig(
-                tools=available_tools(payload.supported_tools),
+                tools=available_tools(payload.supported_tools,
+                                      set(TOOLS) - ({"web_search"} if not os.getenv("TAVILY_API_KEY") else set())),
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                 system_instruction=agent_instruction
             )

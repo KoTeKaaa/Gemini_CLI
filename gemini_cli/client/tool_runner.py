@@ -3,6 +3,8 @@
 import logging
 from typing import Callable, Mapping
 
+from ..tools.definitions import TOOLS
+
 
 def execute_tool_calls(
     tool_calls: list[dict], history: list[dict], current_dir: str, *,
@@ -19,7 +21,7 @@ def execute_tool_calls(
     for call in tool_calls:
         tool_name = call.get("name")
         tool_args = call.get("args", {})
-        if tool_name in ("read_local_files", "write_local_files", "execute_command"):
+        if tool_name in TOOLS and tool_name in handlers:
             tool_result = handlers[tool_name](tool_args, current_dir)
         else:
             tool_result = f"Ошибка: Инструмент {tool_name} не поддерживается клиентом."
@@ -27,7 +29,5 @@ def execute_tool_calls(
             "role": "tool", "name": tool_name, "content": tool_result,
             "call_id": call.get("call_id")
         })
-        logged_name = tool_name if tool_name in (
-            "read_local_files", "write_local_files", "execute_command"
-        ) else "unknown"
+        logged_name = tool_name if tool_name in TOOLS else "unknown"
         logger.info("Tool вызов: %s", logged_name)
