@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..tools.results import failure
 from ..tools.web.search import search
+from ..tools.web.extract import read_url
 
 
 class SearchPayload(BaseModel):
@@ -39,9 +40,25 @@ class UserRateLimit:
             return True
 
 
-def create_web_router(get_user, *, api_key=None, search_adapter=search, search_limit=10):
+class ReadPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(min_length=1, max_length=2048)
+
+
+def create_web_router(get_user, *, api_key=None, search_adapter=search, search_limit=10,
+                      read_adapter=read_url, read_limit=30):
     router = APIRouter(prefix="/tools/web")
     limiter = UserRateLimit(search_limit)
+    read_limiter = UserRateLimit(read_limit)
+
+    @router.post("/read")
+    def web_read(payload: ReadPayload, user=Depends(get_user)):
+        if not read_limiter.allow(user.user_id):
+            return failure("rate_limit", "Достигнут минутный лимит чтения URL")
+        try:
+            return read_adapter(payload.url)
+        except Exception:
+            return failure("fetch_failed", "Не удалось прочитать URL")
 
     @router.post("/search")
     def web_search(payload: SearchPayload, user=Depends(get_user)):
