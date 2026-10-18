@@ -4,7 +4,7 @@ import json
 
 REDACTED_READ_RESULT = '{"status":"redacted","message":"Результат чтения файлов не сохраняется"}'
 PRIVATE_TOOLS = {"search_text", "read_file_lines", "replace_in_file"}
-SAFE_ARGUMENTS = {"filepath", "start_line", "end_line", "path", "pattern"}
+SAFE_ARGUMENTS = {"filepath", "start_line", "end_line", "path"}
 
 
 def persistent_tool_message(role: str, name: str | None, content: str,
@@ -20,15 +20,19 @@ def persistent_tool_message(role: str, name: str | None, content: str,
         try:
             result = json.loads(content)
             data = result.get("data", {})
+            if not isinstance(data, dict):
+                raise ValueError("Invalid web history")
             safe = {key: str(data[key])[:2048] for key in ("url", "final_url", "title") if key in data}
             if "text" in data:
                 safe["text"] = str(data["text"])[:1000]
             if "results" in data:
+                if not isinstance(data["results"], list):
+                    raise ValueError("Invalid web sources")
                 safe["results"] = [{key: str(item.get(key, ""))[:500]
                                     for key in ("title", "url", "snippet")}
                                    for item in data["results"][:5] if isinstance(item, dict)]
             content = json.dumps({"status": result.get("status"), "data": safe,
                                   "truncated": True}, ensure_ascii=False)
-        except (ValueError, TypeError, AttributeError):
+        except (ValueError, TypeError, AttributeError, KeyError):
             content = '{"status":"redacted"}'
     return content, args
