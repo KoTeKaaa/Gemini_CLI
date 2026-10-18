@@ -81,3 +81,12 @@ def find_files(pattern: str = "*") -> str:
 
 TOOLS["find_files"] = find_files
 CLIENT_NAMES = (*CLIENT_NAMES, "find_files")
+
+
+def search_text(query: str) -> str:
+    """Search literal text in workspace files after user approval; return bounded lines and paths."""
+    return "Поиск текста инициирован"
+
+
+TOOLS["search_text"] = search_text
+CLIENT_NAMES = (*CLIENT_NAMES, "search_text")

@@ -26,7 +26,7 @@ from datetime import datetime
 from gemini_cli.client.tool_runner import execute_tool_calls as run_tool_calls
 from gemini_cli.tools.local.command import execute_command
 from gemini_cli.tools.local.files import read_files, write_files
-from gemini_cli.tools.local.search import find_files
+from gemini_cli.tools.local.search import find_files, search_text
 from gemini_cli.tools.definitions import CLIENT_NAMES
 from gemini_cli.client.web_tools import ToolTurn
 from gemini_cli.tools.results import failure
@@ -153,6 +153,14 @@ def get_server_url() -> str:
         json.dump({"server_url": url}, f, ensure_ascii=False, indent=4)
 
     return url
+
+
+def confirm_content_scope(scope: str) -> bool:
+    console.print(Text(scope))
+    try:
+        return input("Разрешить чтение и отправку содержимого модели? (y/n): ").strip().lower() == "y"
+    except (EOFError, KeyboardInterrupt):
+        return False
 
 
 def confirm_file_read(readable: list[tuple[str, str]]) -> bool:
@@ -541,6 +549,8 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
         "write_local_files": handle_write_files,
         "execute_command": handle_execute_command,
         "find_files": lambda args, cwd: json.dumps(find_files(args, cwd), ensure_ascii=False),
+        "search_text": lambda args, cwd: json.dumps(search_text(args, cwd, approve=confirm_content_scope),
+                                                     ensure_ascii=False),
     }
     if turn is not None and api_client is not None:
         def web_handler(kind, args):

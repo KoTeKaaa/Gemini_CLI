@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 
 from ..results import failure, success
-from .workspace import is_sensitive_read_path, resolve_safe_path
+from .workspace import is_sensitive_read_path, resolve_safe_path, plan_text_file, read_text_snapshot
 
 SKIP_DIRS = {".git", ".venv", ".venv-win", "venv", "node_modules", "__pycache__", "build", "dist"}
 
@@ -57,3 +57,38 @@ def find_files(args: dict, current_dir: str, *, max_entries=10000, max_results=2
                 break
             matches.append(relative)
     return success({"paths": matches, "skipped": budget.skipped}, truncated=budget.truncated)
+
+
+def search_text(args: dict, current_dir: str, *, approve, max_results=200, max_chars=20000) -> dict:
+    query = args.get("query")
+    if not isinstance(query, str) or not query or len(query) > 2000:
+        return failure("invalid_arguments", "Нужна непустая строка поиска до 2000 символов")
+    budget, plans = WalkBudget(), []
+    for relative, path in walk_files(current_dir, budget):
+        try:
+            plans.append((relative, plan_text_file(current_dir, relative)))
+        except (OSError, ValueError):
+            budget.skipped += 1
+    if not approve(f"Поиск текста в {len(plans)} файлах workspace; совпадения будут отправлены модели"):
+        return failure("denied", "Поиск содержимого отклонён пользователем")
+    matches, characters, read_bytes = [], 0, 0
+    for relative, expected in plans:
+        read_bytes += expected[1][2]
+        if read_bytes > 8 * 1024 * 1024:
+            budget.truncated = True
+            break
+        try:
+            text = read_text_snapshot(current_dir, relative, expected)
+        except (OSError, ValueError, UnicodeError):
+            budget.skipped += 1
+            continue
+        for number, line in enumerate(text.splitlines(), 1):
+            if query in line:
+                position = line.index(query)
+                snippet = line[max(0, position - 100):position + min(len(query), 200) + 100]
+                if len(matches) >= max_results or characters + len(snippet) > max_chars:
+                    return success({"matches": matches, "skipped": budget.skipped}, truncated=True)
+                matches.append({"path": relative, "line": number, "text": snippet})
+                characters += len(snippet)
+                budget.truncated |= len(snippet) < len(line)
+    return success({"matches": matches, "skipped": budget.skipped}, truncated=budget.truncated)
