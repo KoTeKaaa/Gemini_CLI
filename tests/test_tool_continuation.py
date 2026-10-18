@@ -3,8 +3,9 @@ import base64
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
 
@@ -293,6 +294,38 @@ class ToolContinuationTest(unittest.TestCase):
         self.assertEqual(contents[2].parts[-1].function_response.response,
                          {"output": "20"})
 
+    def test_turn_limit_persists_final_batch_without_another_model_call(self):
+        db = FakeDb()
+        user = self.server.UserContext("user-1", db)
+        self.server.save_message_to_db(db, "chat-1", "user", "Run task")
+        self.server.save_message_to_db(db, "chat-1", "model", "call", "execute_command", {"command": "fixture"})
+        history = [{"role": "user", "content": "Run task"},
+                   {"role": "model", "content": "call", "name": "execute_command",
+                    "args": {"command": "fixture"}, "call_id": "final-call"},
+                   {"role": "tool", "name": "execute_command", "content": '{"stdout":"final result"}',
+                    "call_id": "final-call"}]
+        payload = self.main.build_stream_payload(history, "chat-1", "fixture", False, end_tool_turn=True)
+        self.assertEqual(payload["supported_tools"], [])
+        generate = Mock(side_effect=AssertionError("Unexpected model call"))
+        model = SimpleNamespace(models=SimpleNamespace(generate_content_stream=generate))
+        with patch.object(self.server, "client", model), patch.object(
+            self.server, "StreamingResponse", side_effect=lambda generator, **_: SimpleNamespace(body_iterator=generator)
+        ):
+            events = list(self.send(payload, user).body_iterator)
+        generate.assert_not_called()
+        self.assertIn(b'"type": "text"', b"".join(events))
+        self.assertEqual([row["content"] for row in db.messages if row["role"] == "tool"],
+                         ['{"stdout":"final result"}'])
+        restored = self.server.build_history_from_db(db, "chat-1")
+        self.assertIsNone(restored[-1].parts[0].function_call)
+        self.assertEqual(restored[-2].parts[0].function_response.response, {"stdout": "final result"})
+
+    def test_end_tool_turn_requires_a_continuation(self):
+        with self.assertRaises(HTTPException) as raised:
+            self.server.stream_chat(self.server.StreamChatPayload(message="hello", end_tool_turn=True),
+                                    self.server.UserContext("user-1", FakeDb()))
+        self.assertEqual(raised.exception.status_code, 400)
+
     def test_reopened_chat_restores_saved_tool_calls_and_responses(self):
         db = FakeDb()
         db.messages.extend([
@@ -342,6 +375,9 @@ class ToolContinuationTest(unittest.TestCase):
         self.assertEqual(contents[-1].parts[0].text, "What happened?")
 
     def test_read_result_is_used_for_current_turn_but_not_saved_or_replayed(self):
+        workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(workspace.cleanup)
+        (Path(workspace.name) / "notes.txt").write_text("private content", encoding="utf-8")
         db = FakeDb()
         user = self.server.UserContext("user-1", db)
         history = [{"role": "user", "content": "Read file"}]
@@ -360,13 +396,13 @@ class ToolContinuationTest(unittest.TestCase):
         with patch.object(self.server, "client", model), patch.object(
             self.server, "StreamingResponse",
             side_effect=lambda generator, **_kwargs: SimpleNamespace(body_iterator=generator),
-        ), patch.object(self.main, "handle_read_files", return_value='{"notes.txt":"private content"}'):
+        ), patch.object(self.main.console, "print"), patch("builtins.input", return_value="y"):
             first = self.send(self.main.build_stream_payload(history, "chat-1", "test-model", False), user)
             events = list(self.main.iter_stream_events(
                 SimpleNamespace(iter_lines=lambda: first.body_iterator)
             ))
             self.main.execute_tool_calls([event for event in events if event["type"] == "tool_call"],
-                                         history, "/work")
+                                         history, workspace.name)
             second = self.send(self.main.build_stream_payload(history, "chat-1", "test-model", False), user)
             list(second.body_iterator)
 

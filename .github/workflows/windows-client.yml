@@ -4,11 +4,23 @@ on:
   push:
     branches: [dev]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
 jobs:
+  package-import:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Check package import without dependencies
+        run: python -B -m unittest discover -s tests -p test_package_import.py -v
+
   build:
     runs-on: windows-latest
     steps:
@@ -33,6 +45,9 @@ jobs:
           } finally {
             $stream.Dispose()
           }
+      - name: Check standalone executable startup
+        shell: pwsh
+        run: python client/check_executable.py dist/gemini-cli.exe
       - uses: actions/upload-artifact@v7
         with:
           name: gemini-cli-windows-x64

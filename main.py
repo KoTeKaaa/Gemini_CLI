@@ -3,7 +3,6 @@ import sys
 import json
 import ipaddress
 import tempfile
-import stat
 from contextlib import nullcontext
 from typing import Optional, Dict, List, Any
 from urllib.parse import urlsplit
@@ -18,13 +17,23 @@ from prompt_toolkit.styles import Style
 
 from rich.console import Console
 from rich.markdown import Markdown
-import subprocess
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 import logging
 from datetime import datetime
 
+from gemini_cli.client.tool_runner import execute_tool_calls as run_tool_calls
+from gemini_cli.tools.local.command import execute_command
+from gemini_cli.tools.local.files import read_files, write_files, read_file_lines
+from gemini_cli.tools.local.search import find_files, search_text
+from gemini_cli.tools.local.edit import replace_in_file
+from gemini_cli.tools.definitions import CLIENT_NAMES
+from gemini_cli.client.web_tools import ToolTurn
+from gemini_cli.client.terminal import configure_output
+from gemini_cli.tools.results import failure
+
+configure_output()
 
 LOG_FILE = os.path.join(os.path.expanduser("~"), ".gemini_cli", "gemini_cli.log")
 
@@ -99,8 +108,7 @@ def normalize_server_url(value: str) -> str:
         if not host:
             raise ValueError("Укажите адрес сервера")
         scheme = "http" if is_loopback_host(host) else "https"
-        port = "" if parsed.port is not None else ":8000"
-        url = f"{scheme}:{url}{port}"
+        url = f"{scheme}:{url}"
 
     parsed = urlsplit(url)
     if (parsed.scheme not in ("http", "https") or not parsed.hostname
@@ -111,7 +119,8 @@ def normalize_server_url(value: str) -> str:
         raise ValueError("Некорректный порт сервера")
     if parsed.scheme == "http" and not is_loopback_host(parsed.hostname):
         raise ValueError("Для удалённого сервера требуется HTTPS")
-    return f"{parsed.scheme}://{parsed.netloc}"
+    port = "" if parsed.port is not None else (":9443" if parsed.scheme == "https" else ":8000")
+    return f"{parsed.scheme}://{parsed.netloc}{port}"
 
 
 def is_loopback_host(host: str) -> bool:
@@ -139,7 +148,7 @@ def get_server_url() -> str:
     console.print("[yellow]Конфигурация сервера не найдена.[/yellow]")
     while True:
         try:
-            url = normalize_server_url(input("Введите URL или IP вашего сервера (например, https://YOUR_VPS_IP:8000): "))
+            url = normalize_server_url(input("Введите URL или IP вашего сервера (например, https://YOUR_VPS_IP:9443): "))
             break
         except ValueError as e:
             console.print(f"[red]{e}[/red]")
@@ -150,100 +159,40 @@ def get_server_url() -> str:
     return url
 
 
-def resolve_safe_path(base_dir: str, path: str) -> Optional[str]:
-    resolved_base = os.path.realpath(base_dir)
-    resolved_target = os.path.realpath(os.path.join(base_dir, path))
+def confirm_content_scope(scope: str) -> bool:
+    console.print(Text(scope))
     try:
-        if os.path.commonpath((resolved_base, resolved_target)) == resolved_base:
-            return resolved_target
-    except ValueError:
-        pass
-    return None
+        return input("Разрешить чтение и отправку содержимого модели? (y/n): ").strip().lower() == "y"
+    except (EOFError, KeyboardInterrupt):
+        return False
 
 
-def is_sensitive_read_path(path: str) -> bool:
-    parts = [part.casefold() for part in os.path.normpath(path).split(os.sep)]
-    name = parts[-1]
-    return (any(part == ".env" or part.startswith(".env.") for part in parts)
-            or name in {".envrc", ".netrc", ".npmrc", ".pypirc", "credentials.json",
-                        "service-account.json", "service_account.json", "session.json",
-                        "id_rsa", "id_ed25519"}
-            or name.endswith((".pem", ".key")))
+def confirm_file_read(readable: list[tuple[str, str]]) -> bool:
+    table = Table(title="ИИ запрашивает чтение файлов")
+    table.add_column("Запрошенный путь")
+    table.add_column("Файл")
+    for path, full_path in readable:
+        table.add_row(Text(repr(path)), Text(full_path))
+    console.print(table)
+    try:
+        return input("Разрешить чтение и отправку содержимого этих файлов модели? (y/n): ").strip().lower() == "y"
+    except (EOFError, KeyboardInterrupt):
+        return False
 
 
-def file_identity(file_stat: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (file_stat.st_dev, file_stat.st_ino, file_stat.st_size,
-            file_stat.st_mtime_ns, file_stat.st_ctime_ns)
+def confirm_replacement(diff: str) -> bool:
+    console.print(Text(diff))
+    try:
+        return input("Применить показанный diff? (y/n): ").strip().lower() == "y"
+    except (EOFError, KeyboardInterrupt):
+        return False
 
 
 def handle_read_files(args: dict, current_dir: str) -> str:
-    filepaths = args.get("filepaths", [])
-    if not filepaths:
-        return json.dumps({"error": "Список файлов пуст"})
-
-    planned = []
-    for path in filepaths:
-        full_path = resolve_safe_path(current_dir, path)
-        expected_identity = None
-        if full_path is None:
-            error = "Ошибка: Доступ заблокирован песочницей"
-        elif is_sensitive_read_path(full_path):
-            error = "Ошибка: Чтение файла с секретами запрещено"
-        else:
-            error = None
-            try:
-                expected_identity = file_identity(os.stat(full_path))
-            except FileNotFoundError:
-                error = "Ошибка: Файл не найден"
-            except OSError as e:
-                error = f"Ошибка при чтении файла: {e}"
-        planned.append((path, full_path, error, expected_identity))
-
-    readable = [(path, full_path) for path, full_path, error, _ in planned if error is None]
-    approved = False
-    if readable:
-        table = Table(title="ИИ запрашивает чтение файлов")
-        table.add_column("Запрошенный путь")
-        table.add_column("Файл")
-        for path, full_path in readable:
-            table.add_row(Text(repr(path)), Text(full_path))
-        console.print(table)
-        try:
-            approved = input("Разрешить чтение и отправку содержимого этих файлов модели? (y/n): ").strip().lower() == "y"
-        except (EOFError, KeyboardInterrupt):
-            approved = False
-
-    results = {}
-    for path, full_path, error, expected_identity in planned:
-        if error:
-            results[path] = error
-            continue
-        if not approved:
-            results[path] = "Ошибка: Чтение отклонено пользователем"
-            continue
-
-        try:
-            with os.fdopen(os.open(full_path, os.O_RDONLY), "r", encoding="utf-8") as f:
-                if file_identity(os.fstat(f.fileno())) != expected_identity:
-                    results[path] = "Ошибка: Файл изменился после подтверждения"
-                    continue
-                content = f.read()
-                if file_identity(os.fstat(f.fileno())) != expected_identity:
-                    results[path] = "Ошибка: Файл изменился во время чтения"
-                    continue
-                results[path] = content
-        except Exception as e:
-            results[path] = f"Ошибка при чтении файла: {str(e)}"
-            logger.exception(f"Необработанное исключение: {e}")
-
-    return json.dumps(results, ensure_ascii=False)
+    return read_files(args, current_dir, approve=confirm_file_read, logger=logger)
 
 
-def handle_write_files(args: dict, current_dir: str) -> str:
-    files = args.get("files", [])
-    if not files:
-        return json.dumps({"error": "Список файлов для записи пуст"}, ensure_ascii=False)
-
+def confirm_file_write(files: list[dict]) -> bool:
     table = Table(title="🚨 Запрос на запись/изменение файлов", show_header=True, header_style="bold yellow")
     table.add_column("Путь (относительно рабочей папки)", style="cyan")
     table.add_column("Размер (символов)", style="magenta")
@@ -263,83 +212,31 @@ def handle_write_files(args: dict, current_dir: str) -> str:
 
     if confirm != 'y':
         console.print("[bold red]❌ Операция заблокирована пользователем.[/bold red]\n")
-        return json.dumps({"error": "Операция отклонена пользователем из соображений безопасности."},
-                          ensure_ascii=False)
+        return False
 
-    results = []
-    for f in files:
-        rel_path = f.get("filepath", "")
-        content = f.get("content", "")
-
-        full_path = resolve_safe_path(current_dir, rel_path)
-        if full_path is None:
-            status = "Заблокировано песочницей"
-            results.append({"filepath": rel_path, "status": status})
-            console.print(f"{rel_path}: {status}")
-            continue
-
-        temporary_path = None
-        try:
-            directory = os.path.dirname(full_path)
-            os.makedirs(directory, exist_ok=True)
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
-                                             prefix=".gemini-write-", delete=False) as file_obj:
-                temporary_path = file_obj.name
-                file_obj.write(content)
-            if os.path.exists(full_path):
-                os.chmod(temporary_path, stat.S_IMODE(os.stat(full_path).st_mode))
-            os.replace(temporary_path, full_path)
-            status = "Успешно записан"
-        except Exception as e:
-            status = f"Ошибка: {str(e)}"
-            logger.exception(f"Необработанное исключение: {e}")
-        finally:
-            if temporary_path and os.path.exists(temporary_path):
-                os.unlink(temporary_path)
-        results.append({"filepath": rel_path, "status": status})
-        console.print(f"{rel_path}: {status}")
-
-    return json.dumps(results, ensure_ascii=False)
+    return True
 
 
-def handle_execute_command(args: dict, current_dir: str) -> str:
-    command = args.get("command", "").strip()
-    if not command:
-        return json.dumps({"error": "Команда пустая"})
+def handle_write_files(args: dict, current_dir: str) -> str:
+    return write_files(args, current_dir, approve=confirm_file_write,
+                       notify=console.print, logger=logger)
 
+
+def confirm_command(command: str) -> bool:
     console.print(Panel(f"[bold white]{command}[/bold white]", title="⚙️ ИИ запрашивает выполнение команды терминала",
                         border_style="yellow"))
 
     confirm = input("Выполнить эту команду в вашей рабочей директории? (y/n): ").strip().lower()
     if confirm != 'y':
         console.print("[bold red]❌ Выполнение команды отменено пользователем.[/bold red]")
-        return "Выполнение команды отменено пользователем."
+        return False
 
-    console.print("[green]Запуск процесса...[/green]")
-    try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=current_dir,
-            text=True,
-            capture_output=True,
-            timeout=120
-        )
+    return True
 
-        response_data = {
-            "exit_code": result.returncode,
-            "stdout": result.stdout,
-            "stderr": result.stderr
-        }
-        return json.dumps(response_data, ensure_ascii=False)
 
-    except subprocess.TimeoutExpired:
-        console.print("[red]❌ Превышено время ожидания (лимит 2 минуты)[/red]")
-        return json.dumps({"error": "Превышено время ожидания выполнения команды (Timeout 120s)"})
-    except Exception as e:
-        logger.exception(f"Необработанное исключение: {e}")
-        return json.dumps({"error": f"Критическая ошибка вызова подпроцесса: {str(e)}"})
-
+def handle_execute_command(args: dict, current_dir: str) -> str:
+    return execute_command(args, current_dir, approve=confirm_command,
+                           notify=console.print, logger=logger)
 
 
 class GeminiAPIClient:
@@ -410,6 +307,21 @@ class GeminiAPIClient:
         if not self._renew_session():
             return response
         return request()
+
+    def web_tool(self, kind: str, payload: dict) -> dict:
+        try:
+            response = self._authorized_request(lambda: requests.post(
+                f"{self.base_url}/tools/web/{kind}", json=payload, headers=self.headers,
+                timeout=25, allow_redirects=False))
+            with response:
+                if response.status_code != 200:
+                    return failure("network", "Веб-инструмент недоступен")
+                result = response.json()
+                if not isinstance(result, dict) or result.get("status") not in {"ok", "error"}:
+                    return failure("invalid_response", "Некорректный ответ веб-инструмента")
+                return result
+        except (requests.RequestException, ValueError):
+            return failure("network", "Сетевая ошибка веб-инструмента; автоматического повтора нет")
 
     def login(self):
         token = self._load_session_token()
@@ -625,50 +537,50 @@ def trim_history(history: List[Dict[str, str]], limit: int = 20, tool_content_li
 
 
 def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
-                         model_name: str, is_temporary: bool) -> Dict[str, Any]:
+                         model_name: str, is_temporary: bool, turn: ToolTurn | None = None,
+                         *, end_tool_turn: bool = False) -> Dict[str, Any]:
     continuing = bool(history and history[-1].get("role") == "tool")
     payload: Dict[str, Any] = {
         "message": "" if continuing else history[-1]["content"],
         "chat_id": chat_id,
         "model_name": model_name,
         "continue_after_tool": continuing,
+        "supported_tools": [name for name in CLIENT_NAMES
+                            if name != "web_search" or turn is None or turn.search_available],
     }
     if continuing:
         payload["history"] = history
+        if end_tool_turn:
+            payload["end_tool_turn"] = True
+            payload["supported_tools"] = []
     elif is_temporary:
         payload["history"] = history[:-1]
     return payload
 
 
 def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
-                       current_dir: str) -> None:
-    for call in tool_calls:
-        tool_name = call.get("name")
-        history.append({
-            "role": "model", "content": f"[Вызов локального инструмента: {tool_name}]",
-            "name": tool_name, "args": call.get("args", {}), "call_id": call.get("call_id"),
-            "thought_signature": call.get("thought_signature")
-        })
-
-    for call in tool_calls:
-        tool_name = call.get("name")
-        tool_args = call.get("args", {})
-        if tool_name == "read_local_files":
-            tool_result = handle_read_files(tool_args, current_dir)
-        elif tool_name == "write_local_files":
-            tool_result = handle_write_files(tool_args, current_dir)
-        elif tool_name == "execute_command":
-            tool_result = handle_execute_command(tool_args, current_dir)
-        else:
-            tool_result = f"Ошибка: Инструмент {tool_name} не поддерживается клиентом."
-        history.append({
-            "role": "tool", "name": tool_name, "content": tool_result,
-            "call_id": call.get("call_id")
-        })
-        logged_name = tool_name if tool_name in (
-            "read_local_files", "write_local_files", "execute_command"
-        ) else "unknown"
-        logger.info("Tool вызов: %s", logged_name)
+                       current_dir: str, *, turn: ToolTurn | None = None, api_client=None) -> None:
+    handlers = {
+        "read_local_files": handle_read_files,
+        "write_local_files": handle_write_files,
+        "execute_command": handle_execute_command,
+        "find_files": lambda args, cwd: json.dumps(find_files(args, cwd), ensure_ascii=False),
+        "replace_in_file": lambda args, cwd: json.dumps(replace_in_file(
+            args, cwd, approve=confirm_content_scope, confirm_diff=confirm_replacement), ensure_ascii=False),
+        "read_file_lines": lambda args, cwd: json.dumps(read_file_lines(args, cwd, approve=confirm_content_scope),
+                                                         ensure_ascii=False),
+        "search_text": lambda args, cwd: json.dumps(search_text(args, cwd, approve=confirm_content_scope),
+                                                     ensure_ascii=False),
+    }
+    if turn is not None and api_client is not None:
+        def web_handler(kind, args):
+            result = (turn.search(args, api_client.web_tool) if kind == "search"
+                      else turn.read(args, api_client.web_tool))
+            turn.report(kind, json.loads(result), lambda text: console.print(Text(text)))
+            return result
+        handlers["web_search"] = lambda args, _cwd: web_handler("search", args)
+        handlers["read_url"] = lambda args, _cwd: web_handler("read", args)
+    run_tool_calls(tool_calls, history, current_dir, handlers=handlers, logger=logger)
 
 
 def iter_stream_events(response):
@@ -869,9 +781,14 @@ def main():
 
             temporary_history.append({"role": "user", "content": user_input})
 
+            turn = ToolTurn()
+            tool_rounds = 0
             while True:
+                tool_rounds += 1
+                ending = tool_rounds > 12
                 temporary_history = trim_history(temporary_history, 20)
-                payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary)
+                payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary, turn,
+                                               end_tool_turn=ending)
                 has_pending_tool = payload["continue_after_tool"]
 
                 response = api_client.stream_chat(payload)
@@ -881,7 +798,11 @@ def main():
                         response, has_pending_tool)
 
                     if tool_calls_received:
-                        execute_tool_calls(tool_calls_received, temporary_history, current_dir)
+                        if ending:
+                            console.print("[yellow]Сервер не поддерживает завершение цепочки инструментов.[/yellow]")
+                            break
+                        execute_tool_calls(tool_calls_received, temporary_history, current_dir,
+                                           turn=turn, api_client=api_client)
                         console.print("[dim]Передаю результаты выполнения обратно на сервер...[/dim]")
                         continue
 

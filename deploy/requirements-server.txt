@@ -4,3 +4,5 @@ pydantic==2.13.5
 google-genai==2.27.0
 supabase==2.31.0
 python-dotenv==1.2.4
+requests==2.34.2
+trafilatura==2.3.1

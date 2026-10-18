@@ -1,0 +1,55 @@
+name: Build and publish release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    uses: ./.github/workflows/windows-client.yml
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Check package imports without server dependencies
+        run: python -B -m unittest discover -s tests -p test_package_import.py -v
+      - name: Build Linux executable
+        run: ./client/build.sh
+      - name: Check standalone executable startup
+        run: python client/check_executable.py dist/gemini-cli
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gemini-cli-linux-x64
+          path: dist/gemini-cli
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, linux]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: gemini-cli-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish checked executables and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mv release-assets/gemini-cli release-assets/gemini-cli-linux-x64
+          mv release-assets/gemini-cli.exe release-assets/gemini-cli-windows-x64.exe
+          chmod +x release-assets/gemini-cli-linux-x64
+          (cd release-assets && sha256sum gemini-cli-* > SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --draft \
+            --title "Gemini CLI $GITHUB_REF_NAME" --notes-file "docs/releases/$GITHUB_REF_NAME.md"
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest

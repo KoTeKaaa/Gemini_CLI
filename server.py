@@ -13,7 +13,12 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 from supabase.lib.client_options import SyncClientOptions
 
+from gemini_cli.tools.definitions import TOOLS, available_tools
+from gemini_cli.server.tool_history import REDACTED_READ_RESULT, persistent_tool_message
+
 load_dotenv()
+
+from gemini_cli.server.web_routes import create_web_router
 
 api = os.getenv("API_KEY")
 if not api:
@@ -27,7 +32,6 @@ if not supabase_url or not supabase_key:
 
 app = FastAPI()
 client = genai.Client(api_key=api)
-REDACTED_READ_RESULT = '{"status":"redacted","message":"Результат чтения файлов не сохраняется"}'
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,9 @@ def get_current_user(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Ошибка авторизации")
 
 
+app.include_router(create_web_router(get_current_user, api_key=os.getenv("TAVILY_API_KEY")))
+
+
 class ChatCreate(BaseModel):
     title: str
 
@@ -88,6 +95,8 @@ class StreamChatPayload(BaseModel):
     history: Optional[List[MessageItem]] = None
     current_dir: Optional[str] = None
     continue_after_tool: bool = False
+    supported_tools: Optional[List[str]] = None
+    end_tool_turn: bool = False
 
 
 class LoginPayload(BaseModel):
@@ -236,8 +245,7 @@ def save_message_to_db(
         name: Optional[str] = None,
         args: Optional[Dict[str, Any]] = None
 ):
-    if role == "tool" and name == "read_local_files":
-        content = REDACTED_READ_RESULT
+    content, args = persistent_tool_message(role, name, content, args)
     data = {
         "chat_id": chat_id,
         "role": role,
@@ -264,16 +272,13 @@ def build_history_from_db(db: Client, chat_id: str,
                     messages = messages[:index]
                     break
 
-        return build_history_from_client([
-            MessageItem(
-                role=msg["role"],
-                content=(REDACTED_READ_RESULT if msg["role"] == "tool"
-                         and msg.get("name") == "read_local_files" else msg.get("content") or ""),
-                name=msg.get("name"), args=msg.get("args"),
-                call_id=msg.get("call_id"),
-            )
-            for msg in messages
-        ])
+        restored = []
+        for msg in messages:
+            content, args = persistent_tool_message(
+                msg["role"], msg.get("name"), msg.get("content") or "", msg.get("args"))
+            restored.append(MessageItem(role=msg["role"], content=content, args=args,
+                                        name=msg.get("name"), call_id=msg.get("call_id")))
+        return build_history_from_client(restored)
     except Exception as e:
         print(f"[DB ERROR] Ошибка загрузки истории: {e}")
         raise HTTPException(status_code=503, detail="Не удалось загрузить историю чата") from e
@@ -363,54 +368,13 @@ def build_history_from_client(history: Optional[List[MessageItem]]) -> List[type
 
 
 
-def read_local_files(filepaths: List[str]) -> str:
-    """
-    Reads the content of multiple text-based files (source code, text, configs, logs) from the workspace at once.
-    ALWAYS use this when the user asks to fix, refactor, or analyze code across multiple files.
-
-    Args:
-        filepaths: A list of RELATIVE file paths starting from the current workspace root.
-                   Do NOT use absolute paths. Example: ["main.py", "utils/helpers.py"]
-    """
-    return "Пакетное чтение файлов инициировано"
-
-
-def write_local_files(files: List[dict]) -> str:
-    """
-    Creates or completely overwrites multiple text files in the workspace simultaneously.
-    Use this to save generated source code, laboratory scripts, or Markdown documentation.
-
-    CRITICAL: You must provide the FULL and COMPLETE content of the files. Do NOT truncate
-    the code with placeholders like '// ... rest of code ...'. Write everything from scratch.
-
-    Args:
-        files: A list of dictionaries. Each dict MUST strictly contain:
-               - 'filepath' (str): The relative path to the file from workspace root (e.g., 'src/app.py').
-               - 'content' (str): The exact and complete text/code content to be written.
-    """
-    return "Пакетная запись файлов инициирована"
-
-
-def execute_command(command: str) -> str:
-    """
-    Executes a SINGLE, NON-INTERACTIVE shell command in the user's terminal workspace (e.g., runs tests, compilers, pip).
-
-    CRITICAL RULES:
-    1. Do NOT string multiple commands together using '&&', '||', or ';'. Execute them one by one.
-    2. The command MUST be non-interactive. Do NOT run commands that wait for user input (e.g., bare 'python', 'git commit' without -m, 'npm init' without -y).
-    3. For Python scripts, use 'python <filename>' or 'python3 <filename>'.
-
-    Args:
-        command: The raw shell command string to execute in the workspace.
-    """
-    return "Выполнение команды инициировано"
-
-
 @app.post("/chat/stream")
 def stream_chat(
         payload: StreamChatPayload,
         user: UserContext = Depends(get_current_user),
 ):
+    if payload.end_tool_turn and not payload.continue_after_tool:
+        raise HTTPException(status_code=400, detail="Завершение допустимо только после результата инструмента")
     if payload.continue_after_tool:
         if payload.message.strip() or not payload.history or payload.history[-1].role != "tool":
             raise HTTPException(status_code=400, detail="Ожидается история с результатом инструмента")
@@ -455,12 +419,14 @@ def stream_chat(
                 "и продолжить выполнение исходной задачи пользователя. НЕ запрашивай контекст повторно, "
                 "НЕ пиши фразы в духе 'Уточните задачу' — вся хронология действий уже находится в истории чата! "
                 "ВАЖНО: Если инструмент вернул успешный результат (например, файл записан, команда выполнена), "
-                "считай задачу ВЫПОЛНЕННОЙ. НЕ повторяй вызов того же инструмента снова. "
-                "Просто сообщи пользователю об успешном выполнении текстом."
+                "оцени, выполнена ли исходная задача целиком; при необходимости продолжай другими инструментами. "
+                "Не повторяй завершённую операцию без причины. При отказе или исчерпании поиска отвечай "
+                "по доступным данным и укажи ограничение. Для веб-фактов приводи фактические ссылки из результатов."
             )
 
             config = types.GenerateContentConfig(
-                tools=[read_local_files, write_local_files, execute_command],
+                tools=available_tools(payload.supported_tools,
+                                      set(TOOLS) - ({"web_search"} if not os.getenv("TAVILY_API_KEY") else set())),
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                 system_instruction=agent_instruction
             )
@@ -485,6 +451,13 @@ def stream_chat(
                 )
 
                 full_contents = current_contents + [active_message]
+
+            if payload.end_tool_turn:
+                message = "Достигнут предел продолжений инструментов. Последние результаты сохранены; продолжите новым сообщением."
+                if payload.chat_id:
+                    save_message_to_db(user.db, payload.chat_id, "model", message)
+                yield f"data: {json.dumps({'type': 'text', 'content': message}, ensure_ascii=False)}\n\n".encode("utf-8")
+                return
 
             response_stream = client.models.generate_content_stream(
                 model=payload.model_name,
