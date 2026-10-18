@@ -25,11 +25,8 @@ from rich.text import Text
 import logging
 from datetime import datetime
 
-from gemini_cli.tools.local.workspace import (
-    file_identity,
-    is_sensitive_read_path,
-    resolve_safe_path,
-)
+from gemini_cli.tools.local.files import read_files
+from gemini_cli.tools.local.workspace import resolve_safe_path
 
 LOG_FILE = os.path.join(os.path.expanduser("~"), ".gemini_cli", "gemini_cli.log")
 
@@ -155,67 +152,21 @@ def get_server_url() -> str:
     return url
 
 
+def confirm_file_read(readable: list[tuple[str, str]]) -> bool:
+    table = Table(title="ИИ запрашивает чтение файлов")
+    table.add_column("Запрошенный путь")
+    table.add_column("Файл")
+    for path, full_path in readable:
+        table.add_row(Text(repr(path)), Text(full_path))
+    console.print(table)
+    try:
+        return input("Разрешить чтение и отправку содержимого этих файлов модели? (y/n): ").strip().lower() == "y"
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
 def handle_read_files(args: dict, current_dir: str) -> str:
-    filepaths = args.get("filepaths", [])
-    if not filepaths:
-        return json.dumps({"error": "Список файлов пуст"})
-
-    planned = []
-    for path in filepaths:
-        full_path = resolve_safe_path(current_dir, path)
-        expected_identity = None
-        if full_path is None:
-            error = "Ошибка: Доступ заблокирован песочницей"
-        elif is_sensitive_read_path(full_path):
-            error = "Ошибка: Чтение файла с секретами запрещено"
-        else:
-            error = None
-            try:
-                expected_identity = file_identity(os.stat(full_path))
-            except FileNotFoundError:
-                error = "Ошибка: Файл не найден"
-            except OSError as e:
-                error = f"Ошибка при чтении файла: {e}"
-        planned.append((path, full_path, error, expected_identity))
-
-    readable = [(path, full_path) for path, full_path, error, _ in planned if error is None]
-    approved = False
-    if readable:
-        table = Table(title="ИИ запрашивает чтение файлов")
-        table.add_column("Запрошенный путь")
-        table.add_column("Файл")
-        for path, full_path in readable:
-            table.add_row(Text(repr(path)), Text(full_path))
-        console.print(table)
-        try:
-            approved = input("Разрешить чтение и отправку содержимого этих файлов модели? (y/n): ").strip().lower() == "y"
-        except (EOFError, KeyboardInterrupt):
-            approved = False
-
-    results = {}
-    for path, full_path, error, expected_identity in planned:
-        if error:
-            results[path] = error
-            continue
-        if not approved:
-            results[path] = "Ошибка: Чтение отклонено пользователем"
-            continue
-
-        try:
-            with os.fdopen(os.open(full_path, os.O_RDONLY), "r", encoding="utf-8") as f:
-                if file_identity(os.fstat(f.fileno())) != expected_identity:
-                    results[path] = "Ошибка: Файл изменился после подтверждения"
-                    continue
-                content = f.read()
-                if file_identity(os.fstat(f.fileno())) != expected_identity:
-                    results[path] = "Ошибка: Файл изменился во время чтения"
-                    continue
-                results[path] = content
-        except Exception as e:
-            results[path] = f"Ошибка при чтении файла: {str(e)}"
-            logger.exception(f"Необработанное исключение: {e}")
-
-    return json.dumps(results, ensure_ascii=False)
+    return read_files(args, current_dir, approve=confirm_file_read, logger=logger)
 
 
 def handle_write_files(args: dict, current_dir: str) -> str:

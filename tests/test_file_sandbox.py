@@ -48,6 +48,25 @@ class FileSandboxTest(unittest.TestCase):
         self.assertIn("отклонено пользователем", result["inside.txt"])
         self.assertNotIn("inside", result["inside.txt"])
 
+    def test_missing_file_does_not_ask_for_approval(self):
+        with patch.object(self.client.console, "print"), patch("builtins.input") as prompt:
+            result = json.loads(self.client.handle_read_files(
+                {"filepaths": ["missing.txt"]}, str(self.base)
+            ))
+        prompt.assert_not_called()
+        self.assertEqual(result, {"missing.txt": "Ошибка: Файл не найден"})
+
+    def test_interrupted_approval_rejects_read(self):
+        for exception in (EOFError, KeyboardInterrupt):
+            with self.subTest(exception=exception.__name__):
+                with patch.object(self.client.console, "print"), patch(
+                    "builtins.input", side_effect=exception
+                ):
+                    result = json.loads(self.client.handle_read_files(
+                        {"filepaths": ["inside.txt"]}, str(self.base)
+                    ))
+                self.assertIn("отклонено пользователем", result["inside.txt"])
+
     def test_read_blocks_secret_paths_and_symlink_aliases(self):
         (self.base / ".env").write_text("API_KEY=secret", encoding="utf-8")
         nested = self.base / "nested"
