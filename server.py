@@ -14,6 +14,7 @@ from supabase import create_client, Client
 from supabase.lib.client_options import SyncClientOptions
 
 from gemini_cli.tools.definitions import available_tools
+from gemini_cli.server.tool_history import REDACTED_READ_RESULT, persistent_tool_message
 
 load_dotenv()
 
@@ -29,7 +30,6 @@ if not supabase_url or not supabase_key:
 
 app = FastAPI()
 client = genai.Client(api_key=api)
-REDACTED_READ_RESULT = '{"status":"redacted","message":"Результат чтения файлов не сохраняется"}'
 
 
 @dataclass(frozen=True)
@@ -239,8 +239,7 @@ def save_message_to_db(
         name: Optional[str] = None,
         args: Optional[Dict[str, Any]] = None
 ):
-    if role == "tool" and name == "read_local_files":
-        content = REDACTED_READ_RESULT
+    content, args = persistent_tool_message(role, name, content, args)
     data = {
         "chat_id": chat_id,
         "role": role,
@@ -267,16 +266,13 @@ def build_history_from_db(db: Client, chat_id: str,
                     messages = messages[:index]
                     break
 
-        return build_history_from_client([
-            MessageItem(
-                role=msg["role"],
-                content=(REDACTED_READ_RESULT if msg["role"] == "tool"
-                         and msg.get("name") == "read_local_files" else msg.get("content") or ""),
-                name=msg.get("name"), args=msg.get("args"),
-                call_id=msg.get("call_id"),
-            )
-            for msg in messages
-        ])
+        restored = []
+        for msg in messages:
+            content, args = persistent_tool_message(
+                msg["role"], msg.get("name"), msg.get("content") or "", msg.get("args"))
+            restored.append(MessageItem(role=msg["role"], content=content, args=args,
+                                        name=msg.get("name"), call_id=msg.get("call_id")))
+        return build_history_from_client(restored)
     except Exception as e:
         print(f"[DB ERROR] Ошибка загрузки истории: {e}")
         raise HTTPException(status_code=503, detail="Не удалось загрузить историю чата") from e
