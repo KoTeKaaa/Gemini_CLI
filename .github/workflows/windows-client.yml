@@ -4,6 +4,7 @@ on:
   push:
     branches: [dev]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -46,27 +47,7 @@ jobs:
           }
       - name: Check standalone executable startup
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $exe = (Resolve-Path 'dist/gemini-cli.exe').Path
-          $smokeHome = Join-Path $env:RUNNER_TEMP 'gemini-cli-smoke'
-          $config = Join-Path $smokeHome '.gemini_cli'
-          New-Item -ItemType Directory -Force $config | Out-Null
-          '{"server_url":"http://localhost:9"}' | Set-Content (Join-Path $config 'server_config.json')
-          '{"access_token":"smoke-fixture-token"}' | Set-Content (Join-Path $config 'session.json')
-          $env:USERPROFILE = $smokeHome
-          $env:HOME = $smokeHome
-          foreach ($name in 'API_KEY', 'SUPABASE_URL', 'SUPABASE_ANON_KEY', 'TAVILY_API_KEY') {
-            Remove-Item "Env:$name" -ErrorAction SilentlyContinue
-          }
-          Set-Location $smokeHome
-          $output = & $exe 2>&1 | Out-String
-          if ($LASTEXITCODE -ne 0) {
-            Write-Output $output
-            throw 'Standalone executable startup failed.'
-          }
-          if ($output -match 'Traceback|ModuleNotFoundError') { throw 'Standalone import check failed.' }
-          Write-Output 'Standalone startup passed with an offline fixture server and no server keys.'
+        run: python client/check_executable.py dist/gemini-cli.exe
       - uses: actions/upload-artifact@v7
         with:
           name: gemini-cli-windows-x64
