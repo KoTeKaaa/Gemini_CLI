@@ -46,7 +46,7 @@ class SessionRefreshTest(unittest.TestCase):
                          {"Authorization": "Bearer expired"})
         self.assertEqual(get.call_args_list[1].kwargs["headers"],
                          {"Authorization": "Bearer fresh"})
-        self.assertEqual(post.call_args.args[0], "https://example.com/auth/refresh")
+        self.assertEqual(post.call_args.args[0], "https://example.com:9443/auth/refresh")
         self.assertEqual(post.call_args.kwargs["json"], {"refresh_token": "old-refresh"})
         self.assertFalse(post.call_args.kwargs["allow_redirects"])
         self.assertEqual(json.loads(self.session_file.read_text())["refresh_token"], "new-refresh")

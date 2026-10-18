@@ -15,10 +15,14 @@ class ServerTransportTest(unittest.TestCase):
 
     def test_scheme_inference_and_https(self):
         normalize = self.client.normalize_server_url
-        self.assertEqual(normalize("example.com"), "https://example.com:8000")
+        self.assertEqual(normalize("example.com"), "https://example.com:9443")
+        self.assertEqual(normalize("example.com/"), "https://example.com:9443")
+        self.assertEqual(normalize("https://example.com"), "https://example.com:9443")
+        self.assertEqual(normalize("https://example.com:443"), "https://example.com:443")
         self.assertEqual(normalize("example.com:9443"), "https://example.com:9443")
         self.assertEqual(normalize("https://example.com:9443"), "https://example.com:9443")
         self.assertEqual(normalize("localhost"), "http://localhost:8000")
+        self.assertEqual(normalize("http://localhost"), "http://localhost:8000")
         self.assertEqual(normalize("127.0.0.1:8000"), "http://127.0.0.1:8000")
         self.assertEqual(normalize("[::1]:8000"), "http://[::1]:8000")
 
@@ -31,6 +35,17 @@ class ServerTransportTest(unittest.TestCase):
         ):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 self.client.GeminiAPIClient(url)
+
+    def test_first_setup_saves_https_default_without_contacting_server(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "server_config.json"
+            with (patch.object(self.client, "SERVER_FILE", str(config)),
+                  patch("builtins.input", return_value="example.com"),
+                  patch.object(self.client.console, "print"),
+                  patch.object(self.client.requests, "get") as request):
+                self.assertEqual(self.client.get_server_url(), "https://example.com:9443")
+            request.assert_not_called()
+            self.assertEqual(json.loads(config.read_text())["server_url"], "https://example.com:9443")
 
     def test_saved_remote_http_is_replaced_before_use(self):
         with tempfile.TemporaryDirectory() as temp:

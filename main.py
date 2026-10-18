@@ -108,8 +108,7 @@ def normalize_server_url(value: str) -> str:
         if not host:
             raise ValueError("Укажите адрес сервера")
         scheme = "http" if is_loopback_host(host) else "https"
-        port = "" if parsed.port is not None else ":8000"
-        url = f"{scheme}:{url}{port}"
+        url = f"{scheme}:{url}"
 
     parsed = urlsplit(url)
     if (parsed.scheme not in ("http", "https") or not parsed.hostname
@@ -120,7 +119,8 @@ def normalize_server_url(value: str) -> str:
         raise ValueError("Некорректный порт сервера")
     if parsed.scheme == "http" and not is_loopback_host(parsed.hostname):
         raise ValueError("Для удалённого сервера требуется HTTPS")
-    return f"{parsed.scheme}://{parsed.netloc}"
+    port = "" if parsed.port is not None else (":9443" if parsed.scheme == "https" else ":8000")
+    return f"{parsed.scheme}://{parsed.netloc}{port}"
 
 
 def is_loopback_host(host: str) -> bool:
@@ -148,7 +148,7 @@ def get_server_url() -> str:
     console.print("[yellow]Конфигурация сервера не найдена.[/yellow]")
     while True:
         try:
-            url = normalize_server_url(input("Введите URL или IP вашего сервера (например, https://YOUR_VPS_IP:8000): "))
+            url = normalize_server_url(input("Введите URL или IP вашего сервера (например, https://YOUR_VPS_IP:9443): "))
             break
         except ValueError as e:
             console.print(f"[red]{e}[/red]")
