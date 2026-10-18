@@ -30,7 +30,10 @@ from gemini_cli.tools.local.search import find_files, search_text
 from gemini_cli.tools.local.edit import replace_in_file
 from gemini_cli.tools.definitions import CLIENT_NAMES
 from gemini_cli.client.web_tools import ToolTurn
+from gemini_cli.client.terminal import configure_output
 from gemini_cli.tools.results import failure
+
+configure_output()
 
 LOG_FILE = os.path.join(os.path.expanduser("~"), ".gemini_cli", "gemini_cli.log")
 
