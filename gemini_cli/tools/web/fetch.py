@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from threading import BoundedSemaphore, Timer
 from urllib.parse import urljoin
 from urllib.parse import urlsplit, urlunsplit
+from .settings import WEB_TIMEOUT_SECONDS, WEB_MAX_BYTES, WEB_MAX_REDIRECTS
 
 
 @dataclass(frozen=True)
@@ -129,8 +130,8 @@ class FetchedPage:
     content_type: str
 
 
-def fetch_url(url: str, *, timeout=20, max_bytes=2 * 1024 * 1024,
-              redirects=3, resolver=None, connection_factory=PinnedConnection) -> FetchedPage:
+def fetch_url(url: str, *, timeout=WEB_TIMEOUT_SECONDS, max_bytes=WEB_MAX_BYTES,
+              redirects=WEB_MAX_REDIRECTS, resolver=None, connection_factory=PinnedConnection) -> FetchedPage:
     deadline = time.monotonic() + timeout
     resolver = resolver or timed_resolver(deadline)
     original = url

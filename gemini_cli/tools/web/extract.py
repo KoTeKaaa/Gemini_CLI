@@ -4,9 +4,10 @@ import json
 
 from ..results import failure, success
 from .fetch import fetch_url
+from .settings import WEB_MAX_CHARS
 
 
-def extract_page(page, *, max_chars=20000) -> dict:
+def extract_page(page, *, max_chars=WEB_MAX_CHARS) -> dict:
     if page.content_type == "text/plain":
         title, text = "", page.body.decode("utf-8", errors="replace")
     elif page.content_type in {"text/html", "application/xhtml+xml"}:

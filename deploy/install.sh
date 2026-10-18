@@ -20,6 +20,7 @@ Usage: sudo ./deploy/install.sh --host HOST --env-file ENV [--port PORT]
 
 HOST must be an IPv4 address or DNS name covered by the certificate.
 ENV must contain API_KEY, SUPABASE_URL and SUPABASE_ANON_KEY.
+Optional TAVILY_API_KEY enables Basic web search; other web limits are documented in README.
 Without --cert-mode, installation asks whether a certificate already exists.
 Issue mode obtains a Let's Encrypt certificate using public port 80 and configures renewal.
 Check mode validates an existing certificate without changing the system.
@@ -75,7 +76,7 @@ else
 fi
 [[ -f $input_env && -r $input_env ]] || die 'Cannot read --env-file'
 [[ -f $project_dir/server.py && -f $project_dir/gemini_cli/__init__.py &&
-   -f $script_dir/runtime_payload.py && -f $script_dir/requirements-server.txt &&
+   -f $script_dir/runtime_payload.py && -f $script_dir/runtime_env.py && -f $script_dir/requirements-server.txt &&
    -f $script_dir/nginx-gemini-cli.conf.in && -f $script_dir/gemini-tls-reload.service.in ]] || die 'Run from a complete Gemini_CLI checkout'
 for key in API_KEY SUPABASE_URL SUPABASE_ANON_KEY; do
     line=$(grep -m1 "^${key}=" "$input_env") || die "Missing $key in --env-file"
@@ -200,9 +201,7 @@ python3 "$script_dir/runtime_payload.py" "$project_dir" /opt/gemini-cli
 
 work_dir=$(mktemp -d)
 trap 'rm -rf -- "$work_dir"' EXIT
-for key in API_KEY SUPABASE_URL SUPABASE_ANON_KEY; do
-    grep -m1 "^${key}=" "$input_env" >> "$work_dir/server.env"
-done
+python3 "$script_dir/runtime_env.py" "$input_env" "$work_dir/server.env"
 install -m 600 "$work_dir/server.env" /etc/gemini-cli/server.env
 
 render() {

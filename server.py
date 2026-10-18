@@ -13,11 +13,12 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 from supabase.lib.client_options import SyncClientOptions
 
-from gemini_cli.server.web_routes import create_web_router
 from gemini_cli.tools.definitions import TOOLS, available_tools
 from gemini_cli.server.tool_history import REDACTED_READ_RESULT, persistent_tool_message
 
 load_dotenv()
+
+from gemini_cli.server.web_routes import create_web_router
 
 api = os.getenv("API_KEY")
 if not api:
