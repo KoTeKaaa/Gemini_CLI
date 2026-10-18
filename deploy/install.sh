@@ -74,7 +74,8 @@ else
     key_file=/etc/gemini-cli/tls/privkey.pem
 fi
 [[ -f $input_env && -r $input_env ]] || die 'Cannot read --env-file'
-[[ -f $project_dir/server.py && -f $script_dir/requirements-server.txt &&
+[[ -f $project_dir/server.py && -f $project_dir/gemini_cli/__init__.py &&
+   -f $script_dir/runtime_payload.py && -f $script_dir/requirements-server.txt &&
    -f $script_dir/nginx-gemini-cli.conf.in && -f $script_dir/gemini-tls-reload.service.in ]] || die 'Run from a complete Gemini_CLI checkout'
 for key in API_KEY SUPABASE_URL SUPABASE_ANON_KEY; do
     line=$(grep -m1 "^${key}=" "$input_env") || die "Missing $key in --env-file"
@@ -195,9 +196,7 @@ fi
 
 getent passwd gemini-cli >/dev/null || useradd --system --home /nonexistent --shell /usr/sbin/nologin gemini-cli
 install -d -m 700 /etc/gemini-cli
-if [[ $(readlink -f "$project_dir/server.py") != /opt/gemini-cli/server.py ]]; then
-    install -m 644 "$project_dir/server.py" /opt/gemini-cli/server.py
-fi
+python3 "$script_dir/runtime_payload.py" "$project_dir" /opt/gemini-cli
 
 work_dir=$(mktemp -d)
 trap 'rm -rf -- "$work_dir"' EXIT

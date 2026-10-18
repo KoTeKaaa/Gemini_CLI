@@ -118,6 +118,14 @@ sudo ./deploy/install.sh --host SERVER_IP --cert-mode existing \
 
 После установки проверьте доступность HTTPS-порта с другого устройства и откройте его в сетевых правилах хостинга, если требуется.
 
+Runtime-поставка включает `server.py` и вложенные Python-модули `gemini_cli/`.
+Тесты, скрытые каталоги, `__pycache__`, символические ссылки и файлы других
+форматов (включая `.env` и ключи) не копируются. Каталог установленного пакета
+`/opt/gemini-cli/gemini_cli` полностью управляется установщиком: при повторной
+поставке он заменяется подготовленной версией, поэтому удалённые модули не остаются.
+Не храните в нём пользовательские файлы. Соседние файлы, окружение `.venv` и
+конфигурация вне пакета при этой замене сохраняются.
+
 ### 2. Запустить CLI-клиент
 
 На Linux из каталога проекта:
@@ -217,6 +225,7 @@ python -B -m unittest discover -s tests -p test_package_import.py -v
 Остальные проверки в настроенном окружении:
 
 ```bash
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests -p test_runtime_payload.py -v
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -q
 bash tests/test_deploy_install.sh
 ```
