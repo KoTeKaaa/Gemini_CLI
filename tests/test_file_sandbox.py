@@ -86,6 +86,31 @@ class FileSandboxTest(unittest.TestCase):
         self.assertIn("изменился", result["inside.txt"])
         self.assertNotIn("secret", json.dumps(result))
 
+    def test_read_rejects_file_swapped_outside_during_approval(self):
+        def replace_file(_prompt):
+            (self.base / "inside.txt").unlink()
+            (self.base / "inside.txt").symlink_to(self.sibling / "outside.txt")
+            return "y"
+
+        with patch.object(self.client.console, "print"), patch("builtins.input", side_effect=replace_file):
+            result = json.loads(self.client.handle_read_files(
+                {"filepaths": ["inside.txt"]}, str(self.base)
+            ))
+        self.assertIn("изменился", result["inside.txt"])
+        self.assertNotIn("outside", json.dumps(result))
+
+    def test_read_rejects_content_changed_during_approval(self):
+        def change_file(_prompt):
+            (self.base / "inside.txt").write_text("replacement", encoding="utf-8")
+            return "y"
+
+        with patch.object(self.client.console, "print"), patch("builtins.input", side_effect=change_file):
+            result = json.loads(self.client.handle_read_files(
+                {"filepaths": ["inside.txt"]}, str(self.base)
+            ))
+        self.assertIn("изменился", result["inside.txt"])
+        self.assertNotIn("replacement", json.dumps(result))
+
     def test_write_resolves_paths_and_blocks_escape(self):
         files = [
             {"filepath": "new.txt", "content": "new"},
