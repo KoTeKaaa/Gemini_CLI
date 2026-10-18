@@ -11,6 +11,7 @@ class ToolTurn:
     searches: int = 0
     disabled: bool = False
     cache: dict = field(default_factory=dict)
+    sources: dict = field(default_factory=dict)
 
     @property
     def search_available(self) -> bool:
@@ -31,3 +32,27 @@ class ToolTurn:
             self.disabled = True
         self.cache[key] = json.dumps(result, ensure_ascii=False)
         return self.cache[key]
+
+    def report(self, kind: str, result: dict, notify) -> None:
+        if result.get("status") != "ok":
+            notify("Веб-инструмент не выполнен; причина передана модели.")
+            return
+        data = result.get("data", {})
+        items = data.get("results", []) if kind == "search" else [data]
+        for item in items:
+            url = item.get("url") if kind == "search" else item.get("final_url", item.get("url"))
+            if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+                continue
+            key = (kind, url)
+            if key not in self.sources:
+                self.sources[key] = item.get("title", "")
+                label = "Найден источник" if kind == "search" else "Прочитан источник"
+                notify(f"{label}: {url}")
+        if result.get("truncated"):
+            notify("Текст источника усечён по лимиту.")
+
+    def read(self, args: dict, request) -> str:
+        url = args.get("url")
+        if not isinstance(url, str) or not url:
+            return json.dumps(failure("invalid_arguments", "Не указан URL"))
+        return json.dumps(request("read", {"url": url}), ensure_ascii=False)

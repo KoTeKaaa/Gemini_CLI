@@ -541,7 +541,13 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
         "execute_command": handle_execute_command,
     }
     if turn is not None and api_client is not None:
-        handlers["web_search"] = lambda args, _cwd: turn.search(args, api_client.web_tool)
+        def web_handler(kind, args):
+            result = (turn.search(args, api_client.web_tool) if kind == "search"
+                      else turn.read(args, api_client.web_tool))
+            turn.report(kind, json.loads(result), lambda text: console.print(Text(text)))
+            return result
+        handlers["web_search"] = lambda args, _cwd: web_handler("search", args)
+        handlers["read_url"] = lambda args, _cwd: web_handler("read", args)
     run_tool_calls(tool_calls, history, current_dir, handlers=handlers, logger=logger)
 
 

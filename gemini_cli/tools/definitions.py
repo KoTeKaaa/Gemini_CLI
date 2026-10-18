@@ -63,3 +63,12 @@ def web_search(query: str, max_results: int = 5) -> str:
 
 TOOLS["web_search"] = web_search
 CLIENT_NAMES = (*LEGACY_NAMES, "web_search")
+
+
+def read_url(url: str) -> str:
+    """Read a public HTTP(S) documentation page. Returns actual source URL and bounded text."""
+    return "Чтение URL инициировано"
+
+
+TOOLS["read_url"] = read_url
+CLIENT_NAMES = (*CLIENT_NAMES, "read_url")

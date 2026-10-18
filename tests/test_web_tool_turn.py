@@ -27,3 +27,19 @@ class WebToolTurnTest(unittest.TestCase):
             turn.search({"query": "one"}, request)
             turn.search({"query": "two"}, request)
             request.assert_called_once()
+
+    def test_found_and_read_sources_remain_distinct(self):
+        turn, notify = ToolTurn(), Mock()
+        search = {"status": "ok", "data": {"results": [
+            {"title": "Docs", "url": "https://example.com"}]}}
+        read = {"status": "ok", "data": {"url": "https://example.com",
+                "final_url": "https://example.com/docs", "text": "example"}, "truncated": True}
+        turn.report("search", search, notify)
+        request = Mock(return_value=read)
+        self.assertEqual(json.loads(turn.read({"url": "https://example.com"}, request)), read)
+        turn.report("read", read, notify)
+        self.assertEqual(set(turn.sources), {("search", "https://example.com"),
+                                             ("read", "https://example.com/docs")})
+        self.assertIn("усечён", notify.call_args.args[0])
+        turn.report("read", {"status": "error"}, notify)
+        self.assertIn("не выполнен", notify.call_args.args[0])
