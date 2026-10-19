@@ -63,6 +63,12 @@ class ToolContinuationTest(unittest.TestCase):
             cls.main = importlib.import_module("main")
             cls.server = importlib.import_module("server")
 
+    def setUp(self):
+        # These tests isolate history/transport; subscription guards have HTTP tests.
+        guard = patch.object(self.server, "require_subscription", return_value={})
+        guard.start()
+        self.addCleanup(guard.stop)
+
     def test_request_tool_result_answer_has_one_original_request(self):
         for temporary in (False, True):
             with self.subTest(temporary=temporary):

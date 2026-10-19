@@ -47,13 +47,15 @@ class ReadPayload(BaseModel):
 
 
 def create_web_router(get_user, *, api_key=None, search_adapter=search, search_limit=SEARCH_PER_MINUTE,
-                      read_adapter=read_url, read_limit=READ_PER_MINUTE):
+                      read_adapter=read_url, read_limit=READ_PER_MINUTE, authorize=None):
     router = APIRouter(prefix="/tools/web")
     limiter = UserRateLimit(search_limit)
     read_limiter = UserRateLimit(read_limit)
 
     @router.post("/read")
     def web_read(payload: ReadPayload, user=Depends(get_user)):
+        if authorize:
+            authorize(user, features=("read_url",))
         if not read_limiter.allow(user.user_id):
             return failure("rate_limit", "Достигнут минутный лимит чтения URL")
         try:
@@ -63,6 +65,8 @@ def create_web_router(get_user, *, api_key=None, search_adapter=search, search_l
 
     @router.post("/search")
     def web_search(payload: SearchPayload, user=Depends(get_user)):
+        if authorize:
+            authorize(user, features=("web_search",))
         if not payload.query.strip():
             return failure("invalid_arguments", "Поисковый запрос пуст")
         if not api_key:

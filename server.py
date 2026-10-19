@@ -15,6 +15,7 @@ from supabase.lib.client_options import SyncClientOptions
 
 from gemini_cli.tools.definitions import TOOLS, available_tools
 from gemini_cli.server.tool_history import REDACTED_READ_RESULT, persistent_tool_message
+from gemini_cli.server.subscriptions import require_subscription, working_user_dependency
 
 load_dotenv()
 
@@ -66,7 +67,9 @@ def get_current_user(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Ошибка авторизации")
 
 
-app.include_router(create_web_router(get_current_user, api_key=os.getenv("TAVILY_API_KEY")))
+get_working_user = working_user_dependency(get_current_user)
+app.include_router(create_web_router(get_working_user, api_key=os.getenv("TAVILY_API_KEY"),
+                                    authorize=require_subscription))
 
 
 class ChatCreate(BaseModel):
@@ -169,7 +172,7 @@ def refresh_user_session(payload: RefreshPayload):
 
 
 @app.get("/chats", response_model=List[ChatResponse])
-def get_chats(user: UserContext = Depends(get_current_user)):
+def get_chats(user: UserContext = Depends(get_working_user)):
     try:
         response = user.db.table("chats") \
             .select("id, title, created_at") \
@@ -192,7 +195,7 @@ def get_chats(user: UserContext = Depends(get_current_user)):
 
 
 @app.post("/chats", response_model=ChatResponse)
-def create_chat(payload: ChatCreate, user: UserContext = Depends(get_current_user)):
+def create_chat(payload: ChatCreate, user: UserContext = Depends(get_working_user)):
     if not payload.title.strip():
         raise HTTPException(status_code=400, detail="Название чата не может быть пустым")
 
@@ -217,7 +220,7 @@ def create_chat(payload: ChatCreate, user: UserContext = Depends(get_current_use
 
 
 @app.delete("/chats/{chat_id}")
-def delete_chat(chat_id: str, user: UserContext = Depends(get_current_user)):
+def delete_chat(chat_id: str, user: UserContext = Depends(get_working_user)):
     try:
         chat = user.db.table("chats").select("id") \
             .eq("id", chat_id).eq("user_id", user.user_id).execute()
@@ -371,8 +374,10 @@ def build_history_from_client(history: Optional[List[MessageItem]]) -> List[type
 @app.post("/chat/stream")
 def stream_chat(
         payload: StreamChatPayload,
-        user: UserContext = Depends(get_current_user),
+        user: UserContext = Depends(get_working_user),
 ):
+    requested_tools = set(payload.supported_tools if payload.supported_tools is not None else TOOLS)
+    require_subscription(user, model=payload.model_name, features=requested_tools)
     if payload.end_tool_turn and not payload.continue_after_tool:
         raise HTTPException(status_code=400, detail="Завершение допустимо только после результата инструмента")
     if payload.continue_after_tool:
@@ -459,6 +464,7 @@ def stream_chat(
                 yield f"data: {json.dumps({'type': 'text', 'content': message}, ensure_ascii=False)}\n\n".encode("utf-8")
                 return
 
+            require_subscription(user, model=payload.model_name, features=requested_tools)
             response_stream = client.models.generate_content_stream(
                 model=payload.model_name,
                 contents=full_contents,

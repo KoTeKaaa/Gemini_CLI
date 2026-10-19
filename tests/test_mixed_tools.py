@@ -18,6 +18,9 @@ class MixedToolsTest(unittest.TestCase):
             "SUPABASE_ANON_KEY": "test-anon-key", "TAVILY_API_KEY": "fixture",
         }):
             main, server = importlib.import_module("main"), importlib.import_module("server")
+            guard = patch.object(server, "require_subscription", return_value={})
+            guard.start()
+            self.addCleanup(guard.stop)
             path = Path(root) / "file.txt"
             path.write_text("PRIVATE-OLD\n")
             db = fixtures.FakeDb()
