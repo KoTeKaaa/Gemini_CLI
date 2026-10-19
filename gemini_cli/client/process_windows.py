@@ -21,25 +21,44 @@ class WindowsJob:
         api.TerminateJobObject.restype = wintypes.BOOL
         api.CloseHandle.argtypes = [wintypes.HANDLE]
         api.CloseHandle.restype = wintypes.BOOL
+        api.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        api.WaitForSingleObject.restype = wintypes.DWORD
+        api.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        api.GetExitCodeProcess.restype = wintypes.BOOL
         self.handle = api.CreateJobObjectW(None, None)
-        process = api.OpenProcess(0x0100 | 0x0001, False, pid)
+        process = api.OpenProcess(0x100000 | 0x1000 | 0x0100 | 0x0001, False, pid)
+        self.process_handle, self.stopped = process, False
         try:
             if not self.handle or not process or not api.AssignProcessToJobObject(self.handle, process):
                 raise ctypes.WinError(ctypes.get_last_error())
         except BaseException:
             if self.handle:
                 api.CloseHandle(self.handle)
-            raise
-        finally:
             if process:
                 api.CloseHandle(process)
+            raise
+
+    def poll(self):
+        if self.api.WaitForSingleObject(self.process_handle, 0) == 258:
+            return None
+        code = wintypes.DWORD()
+        if not self.api.GetExitCodeProcess(self.process_handle, ctypes.byref(code)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return code.value
 
     def stop(self):
-        if self.handle and not self.api.TerminateJobObject(self.handle, 1):
+        if not self.handle or self.stopped:
+            return
+        if not self.api.TerminateJobObject(self.handle, 1):
             raise ctypes.WinError(ctypes.get_last_error())
+        if self.api.WaitForSingleObject(self.process_handle, 5000) != 0:
+            raise TimeoutError("Процесс Windows не завершился после остановки Job Object")
+        self.stopped = True
 
     def close(self):
         if self.handle:
+            self.api.CloseHandle(self.process_handle)
+            self.process_handle = None
             self.api.CloseHandle(self.handle)
             self.handle = None
 
@@ -72,12 +91,15 @@ class WindowsProcess(ManagedProcess):
                         time.sleep(.02)
             except EOFError:
                 pass
+            except Exception:
+                if not self._closed and self.job.poll() is None:
+                    raise
         worker = threading.Thread(target=read, daemon=True)
         self._readers.append(worker)
         worker.start()
 
     def poll(self):
-        return None if self.pty.isalive() else self.pty.get_exitstatus()
+        return self.job.poll()
 
     def write(self, text):
         self.pty.write(text)
@@ -87,7 +109,6 @@ class WindowsProcess(ManagedProcess):
 
     def stop(self):
         self.job.stop()
-        self.pty.cancel_io()
 
     def close(self):
         if self._closed:
