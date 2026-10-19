@@ -101,44 +101,47 @@ class LocalChats:
             db.execute("begin immediate")
             if not db.execute("select 1 from chats where id=?", (chat_id,)).fetchone():
                 raise LookupError("Чат не найден в локальном профиле")
-            for message in messages:
-                status = message.get("status", "legacy")
-                if status not in {"legacy", "running", "completed", "cancelled", "failed"}:
-                    raise ValueError("Некорректный статус сообщения")
-                for key in ("id", "turn_id", "request_id"):
-                    if message.get(key) is not None and (not isinstance(message[key], str) or not message[key]):
-                        raise ValueError("Некорректный идентификатор сообщения")
-                ordinal = message.get("event_index")
-                if ordinal is not None and (type(ordinal) is not int or ordinal < 0):
-                    raise ValueError("Некорректный номер события")
-                existing = db.execute("select * from messages where id=? or "
-                    "(chat_id=? and request_id=? and event_index=?)",
-                    (message.get("id"), chat_id, message.get("request_id"), ordinal)).fetchall()
-                if len(existing) > 1:
-                    raise ValueError("Идентификаторы указывают на разные сообщения")
-                previous = dict(existing[0]) if existing else None
-                if ordinal is None:
-                    ordinal = previous["event_index"] if previous else db.execute(
-                        "select coalesce(max(event_index),-1)+1 from messages where chat_id=? and request_id is ?",
-                        (chat_id, message.get("request_id"))).fetchone()[0]
-                content, args = persistent_tool_message(message["role"], message.get("name"),
-                                                        message.get("content", ""), message.get("args"))
-                row = {"chat_id": chat_id, "role": message["role"], "content": content,
-                       "name": message.get("name"), "args": json.dumps(args, sort_keys=True) if args is not None else None,
-                       "call_id": message.get("call_id"), "thought_signature": message.get("thought_signature"),
-                       "id": message.get("id") or (previous["id"] if previous else str(uuid4())),
-                       "turn_id": message.get("turn_id"), "request_id": message.get("request_id"),
-                       "event_index": ordinal, "status": status}
-                if previous:
-                    old_args = json.loads(previous["args"]) if previous["args"] is not None else None
-                    previous["args"] = json.dumps(old_args, sort_keys=True) if old_args is not None else None
-                    if any(previous[key] != value for key, value in row.items()):
-                        raise ValueError("Повтор события отличается от сохранённого сообщения")
-                    continue
-                db.execute("""insert into messages(chat_id,role,content,name,args,call_id,thought_signature,
-                              id,turn_id,request_id,event_index,status) values
-                              (:chat_id,:role,:content,:name,:args,:call_id,:thought_signature,
-                               :id,:turn_id,:request_id,:event_index,:status)""", row)
+            self._append(db, chat_id, messages)
+
+    def _append(self, db, chat_id: str, messages: list[dict]):
+        for message in messages:
+            status = message.get("status", "legacy")
+            if status not in {"legacy", "running", "completed", "cancelled", "failed"}:
+                raise ValueError("Некорректный статус сообщения")
+            for key in ("id", "turn_id", "request_id"):
+                if message.get(key) is not None and (not isinstance(message[key], str) or not message[key]):
+                    raise ValueError("Некорректный идентификатор сообщения")
+            ordinal = message.get("event_index")
+            if ordinal is not None and (type(ordinal) is not int or ordinal < 0):
+                raise ValueError("Некорректный номер события")
+            existing = db.execute("select * from messages where id=? or "
+                "(chat_id=? and request_id=? and event_index=?)",
+                (message.get("id"), chat_id, message.get("request_id"), ordinal)).fetchall()
+            if len(existing) > 1:
+                raise ValueError("Идентификаторы указывают на разные сообщения")
+            previous = dict(existing[0]) if existing else None
+            if ordinal is None:
+                ordinal = previous["event_index"] if previous else db.execute(
+                    "select coalesce(max(event_index),-1)+1 from messages where chat_id=? and request_id is ?",
+                    (chat_id, message.get("request_id"))).fetchone()[0]
+            content, args = persistent_tool_message(message["role"], message.get("name"),
+                                                    message.get("content", ""), message.get("args"))
+            row = {"chat_id": chat_id, "role": message["role"], "content": content,
+                   "name": message.get("name"), "args": json.dumps(args, sort_keys=True) if args is not None else None,
+                   "call_id": message.get("call_id"), "thought_signature": message.get("thought_signature"),
+                   "id": message.get("id") or (previous["id"] if previous else str(uuid4())),
+                   "turn_id": message.get("turn_id"), "request_id": message.get("request_id"),
+                   "event_index": ordinal, "status": status}
+            if previous:
+                old_args = json.loads(previous["args"]) if previous["args"] is not None else None
+                previous["args"] = json.dumps(old_args, sort_keys=True) if old_args is not None else None
+                if any(previous[key] != value for key, value in row.items()):
+                    raise ValueError("Повтор события отличается от сохранённого сообщения")
+                continue
+            db.execute("""insert into messages(chat_id,role,content,name,args,call_id,thought_signature,
+                          id,turn_id,request_id,event_index,status) values
+                          (:chat_id,:role,:content,:name,:args,:call_id,:thought_signature,
+                           :id,:turn_id,:request_id,:event_index,:status)""", row)
 
     def metadata(self, chat_id: str) -> dict:
         with self.connection() as db:
@@ -193,20 +196,78 @@ class LocalChats:
                 raise LookupError("Граница сводки не найдена в локальном чате")
             last_user = db.execute("select max(sequence) from messages where chat_id=? and role='user'",
                                    (chat_id,)).fetchone()[0]
-            if (not boundary["turn_id"] or boundary["role"] != "model" or boundary["name"]
-                    or boundary["status"] != "completed" or last_user is None
-                    or boundary["sequence"] >= last_user):
-                raise ValueError("Сводка допустима только до завершённого хода перед последним сообщением")
-            unsafe = db.execute("""select 1 from messages where chat_id=? and turn_id=?
-                and (status!='completed' or sequence>?) limit 1""",
-                (chat_id, boundary["turn_id"], boundary["sequence"])).fetchone()
-            if unsafe:
-                raise ValueError("Граница сводки разрывает незавершённый ход")
+            self._check_boundary(db, chat_id, boundary)
+            if last_user is None or boundary["sequence"] >= last_user:
+                raise ValueError("Сводка должна сохранять последний ход целиком")
             previous = db.execute("""select sequence from messages where chat_id=? and id=(
                 select summary_boundary from chats where id=?)""", (chat_id, chat_id)).fetchone()
             if previous and boundary["sequence"] < previous["sequence"]:
                 raise ValueError("Граница сводки не может перемещаться назад")
             db.execute("update chats set summary=?,summary_boundary=? where id=?", (summary, boundary_id, chat_id))
+
+    @staticmethod
+    def _check_boundary(db, chat_id: str, boundary):
+        if (not boundary["turn_id"] or boundary["role"] != "model" or boundary["name"]
+                or boundary["status"] != "completed"):
+            raise ValueError("Граница должна завершать полный ход")
+        unsafe = db.execute("""select 1 from messages where chat_id=? and turn_id=?
+            and (status!='completed' or sequence>?) limit 1""",
+            (chat_id, boundary["turn_id"], boundary["sequence"])).fetchone()
+        user = db.execute("select 1 from messages where chat_id=? and turn_id=? and role='user'",
+                          (chat_id, boundary["turn_id"])).fetchone()
+        if unsafe or not user:
+            raise ValueError("Граница разрывает незавершённый ход")
+        pending = []
+        turn = db.execute("select role,name,call_id from messages where chat_id=? and turn_id=? order by sequence",
+                          (chat_id, boundary["turn_id"]))
+        for row in turn:
+            if row["role"] == "model" and row["name"]:
+                pending.append((row["name"], row["call_id"]))
+            elif row["role"] == "tool":
+                matches = [call for call in pending if call[0] == row["name"]
+                           and (row["call_id"] is None or call[1] == row["call_id"])]
+                if len(matches) != 1:
+                    raise ValueError("Ход содержит несвязанный результат инструмента")
+                pending.remove(matches[0])
+        if pending:
+            raise ValueError("Ход содержит вызов инструмента без результата")
+
+    def fork(self, chat_id: str, title: str, boundary_id: str | None = None) -> dict:
+        if not isinstance(title, str) or not title.strip() or len(title) > 200:
+            raise ValueError("Некорректное название чата")
+        with self.connection() as db:
+            db.execute("begin immediate")
+            parent = db.execute("select * from chats where id=?", (chat_id,)).fetchone()
+            if parent is None:
+                raise LookupError("Чат не найден в локальном профиле")
+            rows = db.execute("select * from messages where chat_id=? order by sequence", (chat_id,)).fetchall()
+            boundary = None
+            for candidate in reversed(rows):
+                if boundary_id is not None and candidate["id"] != boundary_id:
+                    continue
+                try:
+                    self._check_boundary(db, chat_id, candidate)
+                except ValueError:
+                    if boundary_id is not None:
+                        raise
+                    continue
+                boundary = candidate
+                break
+            if boundary is None:
+                raise ValueError("Завершённая граница форка не найдена в локальном чате")
+            prefix = [dict(row) for row in rows if row["sequence"] <= boundary["sequence"]]
+            ids = {row["id"]: str(uuid4()) for row in prefix}
+            for row in prefix:
+                row["id"] = ids[row["id"]]
+                row["args"] = json.loads(row["args"]) if row["args"] else None
+            chat = {"id": str(uuid4()), "title": title.strip(),
+                    "created_at": datetime.now(timezone.utc).isoformat(), "fork_parent_id": chat_id,
+                    "fork_boundary": boundary["id"], "summary_boundary": ids.get(parent["summary_boundary"])}
+            chat["summary"] = parent["summary"] if chat["summary_boundary"] else None
+            db.execute("""insert into chats(id,title,created_at,fork_parent_id,fork_boundary,summary,summary_boundary)
+                values (:id,:title,:created_at,:fork_parent_id,:fork_boundary,:summary,:summary_boundary)""", chat)
+            self._append(db, chat["id"], prefix)
+            return chat
 
     def delete(self, chat_id: str) -> bool:
         with self.connection() as db:
