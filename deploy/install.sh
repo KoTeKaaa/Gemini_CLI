@@ -5,6 +5,7 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 project_dir=$(dirname "$script_dir")
 server_host=
 https_port=9443
+panel_port=9444
 cert_file=
 key_file=
 input_env=
@@ -14,12 +15,14 @@ cert_mode=
 usage() {
     cat <<'EOF'
 Usage: sudo ./deploy/install.sh --host HOST --env-file ENV [--port PORT]
+       Add --panel-port PORT for the separate owner/activation HTTPS site (default 9444).
        sudo ./deploy/install.sh --host HOST --env-file ENV --cert-mode existing --cert-file FULLCHAIN --key-file PRIVATE_KEY
        sudo ./deploy/install.sh --host HOST --env-file ENV --cert-mode issue
        ./deploy/install.sh --check --host HOST --cert-file FULLCHAIN --key-file PRIVATE_KEY --env-file ENV
 
 HOST must be an IPv4 address or DNS name covered by the certificate.
 ENV must contain API_KEY, SUPABASE_URL and SUPABASE_ANON_KEY.
+S0 also requires SUPABASE_SERVICE_ROLE_KEY, ADMIN_USER_ID, ADMIN_ORIGIN and ADMIN_SESSION_SECRET.
 Optional TAVILY_API_KEY enables Basic web search; other web limits are documented in README.
 Without --cert-mode, installation asks whether a certificate already exists.
 Issue mode obtains a Let's Encrypt certificate using public port 80 and configures renewal.
@@ -33,6 +36,7 @@ while (($#)); do
     case $1 in
         --host) (($# >= 2)) || die 'Missing --host value'; server_host=$2; shift 2 ;;
         --port) (($# >= 2)) || die 'Missing --port value'; https_port=$2; shift 2 ;;
+        --panel-port) (($# >= 2)) || die 'Missing --panel-port value'; panel_port=$2; shift 2 ;;
         --cert-file) (($# >= 2)) || die 'Missing --cert-file value'; cert_file=$2; shift 2 ;;
         --key-file) (($# >= 2)) || die 'Missing --key-file value'; key_file=$2; shift 2 ;;
         --env-file) (($# >= 2)) || die 'Missing --env-file value'; input_env=$2; shift 2 ;;
@@ -45,6 +49,9 @@ done
 
 [[ $server_host =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || die 'Use an IPv4 address or DNS name for --host'
 [[ $https_port =~ ^[0-9]+$ ]] && ((10#$https_port >= 1 && 10#$https_port <= 65535)) || die 'Invalid HTTPS port'
+[[ $panel_port =~ ^[0-9]+$ ]] && ((10#$panel_port >= 1 && 10#$panel_port <= 65535)) || die 'Invalid panel port'
+((10#$https_port != 10#$panel_port && 10#$panel_port != 8000 && 10#$panel_port != 80)) || die 'Panel port conflicts'
+((10#$https_port != 8000)) || die 'HTTPS port conflicts with loopback backend'
 if [[ -z $cert_mode ]]; then
     if $check_only || [[ -n $cert_file || -n $key_file ]]; then
         cert_mode=existing
@@ -78,10 +85,17 @@ fi
 [[ -f $project_dir/server.py && -f $project_dir/gemini_cli/__init__.py &&
    -f $script_dir/runtime_payload.py && -f $script_dir/runtime_env.py && -f $script_dir/requirements-server.txt &&
    -f $script_dir/nginx-gemini-cli.conf.in && -f $script_dir/gemini-tls-reload.service.in ]] || die 'Run from a complete Gemini_CLI checkout'
-for key in API_KEY SUPABASE_URL SUPABASE_ANON_KEY; do
+for key in API_KEY SUPABASE_URL SUPABASE_ANON_KEY SUPABASE_SERVICE_ROLE_KEY ADMIN_USER_ID ADMIN_ORIGIN ADMIN_SESSION_SECRET; do
     line=$(grep -m1 "^${key}=" "$input_env") || die "Missing $key in --env-file"
     [[ -n ${line#*=} ]] || die "Empty $key in --env-file"
 done
+origin=$(grep -m1 '^ADMIN_ORIGIN=' "$input_env")
+[[ ${origin#*=} == "https://$server_host:$panel_port" ]] || die 'ADMIN_ORIGIN must match the panel HTTPS origin'
+owner_id=$(grep -m1 '^ADMIN_USER_ID=' "$input_env")
+[[ ${owner_id#*=} =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || die 'ADMIN_USER_ID must be a trusted account UUID'
+session_secret=$(grep -m1 '^ADMIN_SESSION_SECRET=' "$input_env")
+((${#session_secret} >= 53)) || die 'ADMIN_SESSION_SECRET must have at least 32 characters'
+unset session_secret
 
 if ! $check_only; then
     ((EUID == 0)) || die 'Run the installer as root (sudo)'
@@ -181,6 +195,10 @@ if ss -H -ltn "sport = :$https_port" | grep -q .; then
     [[ -f /etc/nginx/conf.d/gemini-cli.conf ]] || die "Port $https_port is already in use"
     ss -H -ltnp "sport = :$https_port" | grep -q nginx || die "Port $https_port belongs to another service"
 fi
+if ss -H -ltn "sport = :$panel_port" | grep -q .; then
+    [[ -f /etc/nginx/conf.d/gemini-cli.conf ]] || die "Panel port $panel_port is already in use"
+    ss -H -ltnp "sport = :$panel_port" | grep -q nginx || die 'Panel port belongs to another service'
+fi
 if [[ -f /etc/nginx/conf.d/gemini-cli.conf ]] &&
    ! grep -Fq 'Managed by Gemini_CLI deploy/install.sh' /etc/nginx/conf.d/gemini-cli.conf &&
    ! grep -Fq 'proxy_pass http://127.0.0.1:8000;' /etc/nginx/conf.d/gemini-cli.conf; then
@@ -208,6 +226,7 @@ render() {
     local content
     content=$(<"$1")
     content=${content//@HTTPS_PORT@/$https_port}
+    content=${content//@PANEL_PORT@/$panel_port}
     content=${content//@CERT_FILE@/$cert_file}
     content=${content//@KEY_FILE@/$key_file}
     printf '%s\n' "$content" > "$2"

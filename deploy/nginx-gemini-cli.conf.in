@@ -5,14 +5,37 @@ server {
 
     ssl_certificate @CERT_FILE@;
     ssl_certificate_key @KEY_FILE@;
+    client_max_body_size 512k;
+
+    location ~ ^/(admin|activate|activation|account|panel-static)(/|$) {
+        return 404;
+    }
 
     location / {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto https;
         proxy_buffering off;
         proxy_read_timeout 310s;
     }
+}
+
+server {
+    listen @PANEL_PORT@ ssl;
+    server_name _;
+    ssl_certificate @CERT_FILE@;
+    ssl_certificate_key @KEY_FILE@;
+    client_max_body_size 32k;
+
+    location ~ ^/(admin|activate|activation|account|panel-static)(/|$) {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 60s;
+    }
+    location / { return 404; }
 }
