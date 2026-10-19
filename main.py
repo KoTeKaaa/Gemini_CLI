@@ -9,6 +9,7 @@ from typing import Optional, Dict, List, Any
 from urllib.parse import urlsplit
 
 import requests
+from gemini_cli.backends.base import Backend, StreamResult
 from prompt_toolkit import PromptSession
 from prompt_toolkit.shortcuts import radiolist_dialog
 from prompt_toolkit.key_binding import KeyBindings
@@ -241,6 +242,7 @@ def handle_execute_command(args: dict, current_dir: str) -> str:
 
 
 class GeminiAPIClient:
+    mode = "remote"
     def __init__(self, base_url: str):
         from gemini_cli.client.profiles import RemoteSessions, canonical_origin
         self.base_url = canonical_origin(normalize_server_url(base_url))
@@ -442,7 +444,7 @@ class GeminiAPIClient:
             allow_redirects=False,
         ))
 
-def show_chat_menu(client: GeminiAPIClient) -> Optional[tuple[Optional[str], bool]]:
+def show_chat_menu(client: Backend) -> Optional[tuple[Optional[str], bool]]:
     db_chats = client.get_chats()
     if db_chats is None:
         return None
@@ -553,7 +555,7 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
 
 
 def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
-                       current_dir: str, *, turn: ToolTurn | None = None, api_client=None) -> None:
+                       current_dir: str, *, turn: ToolTurn | None = None, api_client: Backend | None = None) -> None:
     handlers = {
         "read_local_files": handle_read_files,
         "write_local_files": handle_write_files,
@@ -578,6 +580,9 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
 
 
 def iter_stream_events(response):
+    if isinstance(response, StreamResult):
+        yield from response.events
+        return
     for raw_line in response.iter_lines():
         if not raw_line:
             continue
@@ -663,11 +668,12 @@ def print_banner(model: str, chat_mode: str, current_dir: str):
     ))
     console.print()
 
-def main():
-    server_url = get_server_url()
-    api_client = GeminiAPIClient(server_url)
-
-    api_client.login()
+def main(backend: Backend | None = None):
+    api_client = backend
+    if api_client is None:
+        server_url = get_server_url()
+        api_client = GeminiAPIClient(server_url)
+        api_client.login()
 
     current_model = "gemini-3.5-flash-lite"
     selected_chat = show_chat_menu(api_client)
