@@ -9,7 +9,7 @@ from .history import persistent_history_rows
 MAX_SUMMARY_CHARS = 8192
 
 
-def _completed(rows):
+def completed_turn(rows):
     if not rows or rows[0].get("role") != "user":
         return False
     if any(row.get("status", "legacy") not in (None, "legacy", "completed") for row in rows):
@@ -29,6 +29,20 @@ def _completed(rows):
             and isinstance(last.get("content"), str) and bool(last["content"].strip()))
 
 
+def completed_boundaries(history):
+    """Explicit completed turn ends for fork selection; legacy identity is unknown."""
+    groups = []
+    for row in history:
+        if row.get("role") == "user" or not groups:
+            groups.append([])
+        groups[-1].append(row)
+    return [dict(group[-1]) for group in groups if completed_turn(group)
+            and all(row.get("status") == "completed" for row in group)
+            and group[0].get("turn_id")
+            and all(row.get("turn_id") == group[0]["turn_id"] for row in group)
+            and (group[-1].get("id") or group[-1].get("event_id"))]
+
+
 def prepare_compaction(history, *, keep_turns=2) -> dict:
     """Keep recent/unfinished turns intact; require a durable boundary event ID."""
     if type(keep_turns) is not int or keep_turns < 1:
@@ -40,7 +54,7 @@ def prepare_compaction(history, *, keep_turns=2) -> dict:
         groups[-1].append(row)
     count = 0
     for group in groups[:-keep_turns]:
-        if not _completed(group):
+        if not completed_turn(group):
             break
         count += len(group)
     boundary = (history[count - 1].get("id") or history[count - 1].get("event_id")) if count else None

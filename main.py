@@ -1,8 +1,10 @@
+from gemini_cli.runtime.history import trim_history
 from gemini_cli.client.file_attachment import attach_file
 from gemini_cli.client.completion import InputCompleter
 from gemini_cli.client.input import DraftInput, result_panel
 from prompt_toolkit.key_binding import merge_key_bindings
 from gemini_cli.client.draft import Draft
+from gemini_cli.client.chat_buffers import ChatBuffers, filter_chats
 from gemini_cli.client.shell import launch_shell
 from gemini_cli.client.work_input import WorkInput
 from gemini_cli.client.work_view import WorkView
@@ -19,7 +21,7 @@ from urllib.parse import urlsplit
 
 import requests
 from gemini_cli.backends.base import Backend, StreamResult
-from gemini_cli.runtime.history import trim_history
+from gemini_cli.runtime.compaction import should_auto_compact, completed_boundaries
 from gemini_cli.runtime.turn import TurnState
 from gemini_cli.backends.cancellation import open_stream, run_cancellable
 from gemini_cli.client.settings import Settings, backend_identity
@@ -301,42 +303,63 @@ def settings_controller():
         notify=lambda message: console.print(Text(message)))
 
 
-def show_chat_menu(client: Backend) -> Optional[tuple[Optional[str], bool]]:
+def show_chat_menu(client: Backend, current_id=None, recent_ids=(), query="") -> Optional[tuple[Optional[str], bool]]:
     db_chats = client.get_chats()
     if db_chats is None:
         return None
+    while True:
+        values = [("temporary", "Войти во временный чат"),
+                  ("new", "+ Создать новую комнату диалога"),
+                  ("search", "Поиск по названию…")]
+        for chat in filter_chats(db_chats, query, current_id, recent_ids):
+            marker = " · текущий" if chat["is_current"] else ""
+            values.append((chat["id"], f"Чат: {chat['title']} ({chat['created_at'][:10]}){marker}"))
+        result = radiolist_dialog(title="Выбор комнаты",
+            text=f"Поиск: {query}" if query else "Выберите чат для работы или создайте новый:",
+            values=values).run()
+        if result == "search":
+            query = input("Название чата (пусто — все): ").strip()
+            continue
+        if result is None:
+            return None
+        if result == "temporary":
+            return None, True
+        if result == "new":
+            title = input("Введите название нового чата: ").strip() or "Новый диалог"
+            new_chat = client.create_chat(title)
+            if new_chat:
+                return new_chat["id"], False
+            console.print(result_panel("Не удалось создать чат.", title="Чаты", error=True))
+            return None
+        return result, False
 
-    values = [
-        ("temporary", "Войти во временный чат"),
-        ("new", "+ Создать новую комнату диалога"),
-    ]
 
-    for c in db_chats:
-        values.append((c["id"], f"Чат: {c['title']} ({c['created_at'][:10]})"))
+def context_payload(history, chat_id, model, summary=None):
+    payload = {"history": history, "chat_id": chat_id, "model_name": model}
+    if summary:
+        payload.update(summary=summary.get("summary"),
+                       summary_boundary=summary.get("boundary_id"))
+    return payload
 
-    result = radiolist_dialog(
-        title="Выбор комнаты",
-        text="Выберите чат для работы или создайте новый:",
-        values=values,
-    ).run()
 
-    if result is None:
-        return None
-
-    if result == "temporary":
-        return None, True
-
-    if result == "new":
-        title = input("Введите название нового чата: ").strip()
-        if not title:
-            title = "Новый диалог"
-        new_chat = client.create_chat(title)
-        if new_chat:
-            return new_chat["id"], False
-        console.print("[red]Не удалось создать чат. Переключаем во временный режим.[/red]")
-        return None, True
-
-    return result, False
+def compact_context(client, history, chat_id, model, summary=None):
+    """The worker returns a candidate; cancellation rejects late UI results."""
+    state = TurnState()
+    state.view = WorkView(console, state)
+    try:
+        with state.view.monitor():
+            result = run_cancellable(lambda: client.compact_chat(
+                context_payload(history, chat_id, model, summary),
+                cancelled=state.cancelled.is_set), state)
+        if state.cancelled.is_set():
+            raise InterruptedError("Сжатие отменено")
+        if not isinstance(result, dict):
+            raise ValueError("Backend не вернул результат сжатия")
+        return result
+    except InterruptedError:
+        return {"reason": "cancelled", "summary": None, "boundary_id": None}
+    finally:
+        state.finish()
 
 
 def show_model_selection_menu(current_model: str) -> str:
@@ -372,7 +395,9 @@ def show_model_selection_menu(current_model: str) -> str:
 
 def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
                          model_name: str, is_temporary: bool, turn: ToolTurn | None = None,
-                         *, end_tool_turn: bool = False) -> Dict[str, Any]:
+                         *, end_tool_turn: bool = False, summary=None) -> Dict[str, Any]:
+    if not history or len(history) > 1000:
+        raise ValueError("Контекст пуст или превышает 1000 событий. Используйте /compact или новый чат.")
     continuing = bool(history and history[-1].get("role") == "tool")
     payload: Dict[str, Any] = {
         "message": "" if continuing else history[-1]["content"],
@@ -391,6 +416,8 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
         payload["history"] = history[:-1]
     if not continuing and history[-1].get("images"):
         payload["images"] = history[-1]["images"]
+    if summary:
+        payload.update(summary=summary.get("summary"), summary_boundary=summary.get("boundary_id"))
     text_payload = {key: value for key, value in payload.items() if key != "images"}
     if "history" in text_payload:
         text_payload["history"] = [{key: value for key, value in row.items() if key != "images"}
@@ -721,7 +748,6 @@ def main(backend: Backend | None = None):
             while True:
                 tool_rounds += 1
                 ending = tool_rounds > 12
-                temporary_history = trim_history(temporary_history, 20)
                 payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary, turn,
                                                end_tool_turn=ending)
                 payload = state.request(payload)
