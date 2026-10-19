@@ -44,3 +44,49 @@ class CancelTests(unittest.TestCase):
         self.assertEqual(list(response.events), [])
         gate.set()
         self.assertTrue(closed.wait(1))
+
+    def test_local_completion_does_not_cancel_consumer_before_drain(self):
+        from unittest.mock import patch
+        from gemini_cli.backends.local import LocalBackend
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as root:
+            backend = LocalBackend("test", Path(root), provider=object())
+            try:
+                with patch("gemini_cli.backends.local.stream_events", return_value=iter([
+                        {"type": "text", "content": "complete"}])):
+                    state = TurnState()
+                    response = open_stream(backend, {"message": "hello"}, state)
+                    time.sleep(.1)
+                    self.assertEqual(list(response.events), [{"type": "text", "content": "complete"}])
+                    self.assertFalse(state.cancelled.is_set())
+            finally:
+                backend.close()
+
+    def test_remote_cancel_interrupts_blocked_reader(self):
+        entered, interrupted = threading.Event(), threading.Event()
+        def events():
+            entered.set()
+            interrupted.wait(2)
+            yield {"type": "text", "content": "late"}
+        class Backend:
+            def stream_chat(self, payload):
+                return StreamResult(events=events(), on_cancel=interrupted.set)
+        state = TurnState()
+        response = open_stream(Backend(), {}, state)
+        self.assertTrue(entered.wait(1))
+        state.cancel()
+        self.assertTrue(interrupted.wait(.5))
+        self.assertEqual(list(response.events), [])
+
+    def test_web_wait_is_cancelled_without_accepting_late_result(self):
+        from gemini_cli.backends.cancellation import run_cancellable
+        state, gate = TurnState(), threading.Event()
+        timer = threading.Timer(.1, state.cancel)
+        timer.start()
+        try:
+            with self.assertRaises(InterruptedError):
+                run_cancellable(lambda: gate.wait(2), state)
+        finally:
+            gate.set()
+            timer.join()

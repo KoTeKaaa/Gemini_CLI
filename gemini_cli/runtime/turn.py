@@ -14,6 +14,7 @@ class TurnState:
         self._lock = RLock()
         self._sequence = -1
         self.events = deque(maxlen=64)
+        self._callbacks = set()
 
     def record(self, event):
         # Only status metadata; no arguments, tool output or provider content.
@@ -52,11 +53,26 @@ class TurnState:
                 self._sequence = sequence
             return True
 
+    def on_cancel(self, callback):
+        with self._lock:
+            self._callbacks.add(callback)
+            cancelled = self.cancelled.is_set()
+        if cancelled:
+            callback()
+        def unregister():
+            with self._lock:
+                self._callbacks.discard(callback)
+        return unregister
+
     def cancel(self):
         with self._lock:
-            if self.status == "running":
-                self.status = "cancelled"
-                self.cancelled.set()
+            if self.status != "running":
+                return
+            self.status = "cancelled"
+            self.cancelled.set()
+            callbacks = list(self._callbacks)
+        for callback in callbacks:
+            callback()
 
     def finish(self, status="completed"):
         with self._lock:

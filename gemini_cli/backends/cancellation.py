@@ -32,15 +32,21 @@ def open_stream(backend, payload, state):
                 pass
     def produce():
         response = None
+        unregister = lambda: None
         try:
             if stopped.is_set():
                 return
             cancellable = getattr(type(backend), "stream_chat_cancellable", None)
             response = (cancellable(backend, payload, stopped) if callable(cancellable)
                         else backend.stream_chat(payload))
+            interrupt = getattr(response, "on_cancel", lambda: None)
+            unregister = state.on_cancel(lambda: Thread(target=interrupt, daemon=True).start())
             put(ready, response)
             if response.status_code == 200:
-                for event in response.events:
+                from .remote import events_from_response
+                source = events_from_response(response) if (isinstance(response, StreamResult)
+                         or hasattr(response, "iter_lines")) else ()
+                for event in source:
                     if stopped.is_set():
                         break
                     put(events, event)
@@ -48,9 +54,12 @@ def open_stream(backend, payload, state):
             put(ready, StreamResult(502, detail="Поток прерван"))
             put(events, {"type": "error", "content": "Поток прерван"})
         finally:
+            unregister()
             try:
                 if response is not None:
-                    response.close()
+                    close = getattr(response, "close", None)
+                    if close:
+                        close()
             finally:
                 put(events, None)
                 lock.release()
@@ -72,5 +81,26 @@ def open_stream(backend, payload, state):
                 yield event
         except InterruptedError:
             return
-    return StreamResult(response.status_code, generate(), response.detail,
+    return StreamResult(response.status_code, generate(), getattr(response, "detail", ""),
                         on_close=stopped.set)
+
+
+def run_cancellable(operation, state):
+    result = Queue(1)
+    def run():
+        try:
+            result.put((True, operation()))
+        except Exception as error:
+            result.put((False, error))
+    if state.cancelled.is_set():
+        raise InterruptedError("Ход отменён")
+    Thread(target=run, daemon=True).start()
+    while not state.cancelled.is_set():
+        try:
+            ok, value = result.get(timeout=.05)
+        except Empty:
+            continue
+        if ok:
+            return value
+        raise value
+    raise InterruptedError("Ход отменён")

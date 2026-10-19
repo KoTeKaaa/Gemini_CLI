@@ -4,12 +4,31 @@ from typing import Optional, List, Dict, Any
 import requests
 from pathlib import Path
 import json
+import socket
 from uuid import uuid4
 
 from ..client.profiles import canonical_origin, RemoteSessions
 from ..tools.results import failure
 from .base import StreamResult
 from ..protocol.images import IMAGE_PROTOCOL, validate_payload_images
+
+
+def interrupt_http(response):
+    # requests has no public cancel API; shutdown the active socket before close
+    # so a concurrent urllib3 read releases its buffered-reader lock promptly.
+    raw = getattr(response, "raw", None)
+    connection = getattr(raw, "_connection", None)
+    sock = getattr(connection, "sock", None)
+    if sock is None:
+        sock = raw
+        for attribute in ("_fp", "fp", "raw", "_sock"):
+            sock = getattr(sock, attribute, None)
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+    response.close()
 
 
 def decode_sse(response):
@@ -175,7 +194,8 @@ class RemoteBackend:
             f"{self.base_url}/chat/stream", json=request, headers=self.headers,
             stream=True, timeout=(10, 100), allow_redirects=False))
         if response.status_code == 200:
-            return StreamResult(events=decode_sse(response), on_close=response.close)
+            return StreamResult(events=decode_sse(response), on_close=response.close,
+                                on_cancel=lambda: interrupt_http(response))
         try:
             detail = response.json().get("detail", "Запрос отклонён сервером")
             return StreamResult(status_code=response.status_code, detail=str(detail)[:512])

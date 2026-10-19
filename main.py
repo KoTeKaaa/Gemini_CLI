@@ -23,7 +23,7 @@ import requests
 from gemini_cli.backends.base import Backend, StreamResult
 from gemini_cli.runtime.history import trim_history
 from gemini_cli.runtime.turn import TurnState
-from gemini_cli.backends.cancellation import open_stream
+from gemini_cli.backends.cancellation import open_stream, run_cancellable
 from gemini_cli.client.settings import Settings, backend_identity
 from gemini_cli.protocol.limits import TOOLS_HISTORY_THRESHOLD, TOOLS_WIRE_THRESHOLD
 from gemini_cli.backends.remote import RemoteBackend, events_from_response as iter_stream_events
@@ -253,9 +253,13 @@ def confirm_command(command: str) -> bool:
     return True
 
 
-def handle_execute_command(args: dict, current_dir: str) -> str:
-    return execute_command(args, current_dir, approve=confirm_command,
-                           notify=console.print, logger=logger)
+def handle_execute_command(args: dict, current_dir: str, *, state=None) -> str:
+    return execute_command(
+        args, current_dir, approve=confirm_command, notify=console.print, logger=logger,
+        cancelled=state.cancelled.is_set if state else lambda: False,
+        on_process=getattr(getattr(state, "view", None), "set_process", None),
+        monitor=(state.view.monitor if state is not None and hasattr(state, "view")
+                 else lambda: WorkInput(state)))
 
 
 class GeminiAPIClient(RemoteBackend):
@@ -403,12 +407,8 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
     handlers = {
         "read_local_files": handle_read_files,
         "write_local_files": handle_write_files,
-        "execute_command": lambda args, cwd: execute_command(
-            args, cwd, approve=confirm_command, notify=console.print, logger=logger,
-            cancelled=state.cancelled.is_set if state else lambda: False,
-            on_process=getattr(getattr(state, "view", None), "set_process", None),
-            monitor=(state.view.monitor if state is not None and hasattr(state, "view")
-                     else lambda: WorkInput(state))),
+        "execute_command": (handle_execute_command if state is None else
+                            lambda args, cwd: handle_execute_command(args, cwd, state=state)),
         "find_files": lambda args, cwd: json.dumps(find_files(args, cwd), ensure_ascii=False),
         "replace_in_file": lambda args, cwd: json.dumps(replace_in_file(
             args, cwd, approve=confirm_content_scope, confirm_diff=confirm_replacement), ensure_ascii=False),
@@ -419,8 +419,16 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
     }
     if turn is not None and api_client is not None:
         def web_handler(kind, args):
-            result = (turn.search(args, api_client.web_tool) if kind == "search"
-                      else turn.read(args, api_client.web_tool))
+            operation = lambda: (turn.search(args, api_client.web_tool) if kind == "search"
+                                 else turn.read(args, api_client.web_tool))
+            try:
+                if state is None:
+                    result = operation()
+                else:
+                    with state.view.monitor() if hasattr(state, "view") else WorkInput(state):
+                        result = run_cancellable(operation, state)
+            except InterruptedError:
+                return json.dumps(failure("cancelled", "Ход отменён; результат веб-вызова не принят"))
             turn.report(kind, json.loads(result), lambda text: console.print(Text(text)))
             return result
         handlers["web_search"] = lambda args, _cwd: web_handler("search", args)

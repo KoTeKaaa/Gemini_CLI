@@ -1,5 +1,6 @@
 """Listen only during agent work; approvals and /term retain their own input."""
 import asyncio
+from contextlib import closing
 import sys
 import threading
 
@@ -23,23 +24,35 @@ class WorkInput:
         def run():
             try:
                 asyncio.run(self.listen())
-            except (OSError, EOFError, RuntimeError) as error:
+            except Exception as error:
                 self.error = error
             finally:
                 self.ready.set()
         self.worker = threading.Thread(target=run, daemon=True)
         self.worker.start()
-        self.ready.wait(1)
+        if not self.ready.wait(1):
+            raise RuntimeError("Не удалось запустить чтение Esc/F2")
+        if self.error is not None:
+            raise RuntimeError("Не удалось запустить чтение Esc/F2") from self.error
         return self
 
     async def listen(self):
         from prompt_toolkit.input import create_input
         self.loop = asyncio.get_running_loop()
         self.done = asyncio.Event()
-        with create_input() as source:
-            def read():
-                for press in source.read_keys():
+        with closing(create_input()) as source:
+            flush_handle = None
+            def dispatch(presses):
+                for press in presses:
                     self.handle(press.key.value if hasattr(press.key, "value") else press.key)
+            def flush():
+                dispatch(source.flush_keys())
+            def read():
+                nonlocal flush_handle
+                dispatch(source.read_keys())
+                if flush_handle:
+                    flush_handle.cancel()
+                flush_handle = self.loop.call_later(.05, flush)
             with source.raw_mode(), source.attach(read):
                 self.ready.set()
                 await self.done.wait()

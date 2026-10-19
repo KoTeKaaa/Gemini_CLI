@@ -11,6 +11,8 @@ class StreamResult:
     detail: str = ""
     on_close: Callable[[], None] = field(default=lambda: None, repr=False)
 
+    on_cancel: Callable[[], None] = field(default=lambda: None, repr=False)
+
     def json(self):
         return {"detail": self.detail}
 

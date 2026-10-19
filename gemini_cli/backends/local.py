@@ -84,7 +84,11 @@ class LocalBackend:
         except (ValueError, TypeError, KeyError, AttributeError):
             return StreamResult(400, detail="Некорректный локальный запрос")
 
-        cancelled = cancelled if cancelled is not None else Event()
+        parent_cancelled, closed = cancelled, Event()
+        class Cancelled:
+            def is_set(self):
+                return closed.is_set() or (parent_cancelled is not None and parent_cancelled.is_set())
+        cancelled = Cancelled()
 
         def generate():
             full_text, has_calls, failed = "", False, False
@@ -127,7 +131,7 @@ class LocalBackend:
                     self.chats.append(chat_id, [{"role": "model", "content": full_text}])
             except Exception:
                 yield {"type": "error", "content": "Не удалось выполнить локальный запрос или сохранить историю"}
-        return StreamResult(events=generate(), on_close=cancelled.set)
+        return StreamResult(events=generate(), on_close=closed.set)
 
     def close(self):
         self.chats.close()

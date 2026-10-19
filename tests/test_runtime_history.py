@@ -32,3 +32,16 @@ class RuntimeHistoryTest(unittest.TestCase):
         self.assertEqual(result[1]["thought_signature"], "cw==")
         self.assertEqual(result[1]["call_id"], "c")
         self.assertNotIn("private", result[2]["content"])
+
+    def test_interrupted_persistent_batch_is_completed_without_replay(self):
+        import json
+        rows = [{"role": "user", "content": "task"},
+                {"role": "model", "name": "execute_command", "call_id": "a", "content": "call"},
+                {"role": "model", "name": "execute_command", "call_id": "b", "content": "call"},
+                {"role": "tool", "name": "execute_command", "call_id": "a", "content": "done"},
+                {"role": "user", "content": "next"}]
+        restored = persistent_history_rows(rows)
+        self.assertEqual(restored[-2]["call_id"], "b")
+        self.assertEqual(json.loads(restored[-2]["content"])["status"], "interrupted")
+        self.assertEqual(restored[-1]["content"], "next")
+        self.assertEqual(persistent_history_rows(restored), restored)
