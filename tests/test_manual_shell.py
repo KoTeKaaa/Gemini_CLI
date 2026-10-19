@@ -71,7 +71,7 @@ class ManualShellTest(unittest.TestCase):
             target = root / "папка с пробелом ' $()"
             target.mkdir()
             channel.write_bytes(str(target).encode('utf-8'))
-            self.assertEqual(shell.read_return_directory(channel), str(target))
+            self.assertEqual(shell.read_return_directory(channel), str(target.resolve()))
             target.rmdir()
             for data in [str(target).encode(), b'../relative', b'\xff', b'/a\x00b',
                          b'a' * 16385, b'__import__("os").system("false")']:
@@ -109,7 +109,7 @@ class ManualShellTest(unittest.TestCase):
                     result = subprocess.run([command[0], '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
                                             capture_output=True, timeout=15)
                     self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
-                    expected = str(target) if arguments == '--sync-dir' else None
+                    expected = str(target.resolve()) if arguments == '--sync-dir' else None
                     self.assertEqual(shell.read_return_directory(returned), expected)
 
 
