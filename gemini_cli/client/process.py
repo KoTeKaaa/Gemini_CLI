@@ -51,6 +51,14 @@ class ManagedProcess:
             self.process = subprocess.Popen(command, shell=isinstance(command, str),
                 cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, start_new_session=os.name == "posix")
+            if os.name == "nt":
+                from .process_windows import WindowsJob
+                try:
+                    self.job = WindowsJob(self.process.pid)
+                except BaseException:
+                    self.process.kill()
+                    self.process.wait()
+                    raise
             self._reader(self.process.stdout, self.stdout)
             self._reader(self.process.stderr, self.stderr)
 
@@ -99,9 +107,8 @@ class ManagedProcess:
                 os.killpg(self.process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        elif self.poll() is None:
-            subprocess.run(["taskkill", "/PID", str(self.process.pid), "/T", "/F"],
-                           capture_output=True, timeout=5)
+        else:
+            self.job.stop()
         self.process.wait(timeout=5)
 
     def wait(self, *, timeout=120, cancelled=lambda: False):
@@ -123,6 +130,8 @@ class ManagedProcess:
             return
         self._closed = True
         self.stop()
+        if os.name == "nt":
+            self.job.close()
         if self.master is not None:
             os.close(self.master)
         for pipe in (self.process.stdin, self.process.stdout, self.process.stderr):
