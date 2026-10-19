@@ -1,6 +1,6 @@
 from gemini_cli.client.file_attachment import attach_file
 from gemini_cli.client.completion import InputCompleter
-from gemini_cli.client.input import DraftInput
+from gemini_cli.client.input import DraftInput, result_panel
 from prompt_toolkit.key_binding import merge_key_bindings
 from gemini_cli.client.draft import Draft
 from gemini_cli.protocol.images import encode_images
@@ -546,16 +546,18 @@ def main(backend: Backend | None = None):
             if user_input.startswith('@'):
                 try:
                     number = attach_file(draft, user_input.strip(), current_dir,
-                                snapshots=completer.snapshots, approve=confirm_content_scope)
+                                snapshots=completer.snapshots, approve=lambda _: True)
                     result = ('Прикрепление отменено.' if number is None else
                               'Добавлено ' + draft_input.describe(number, draft.item(number)) + '. Отправка — Enter.')
                 except (ValueError, OSError) as error:
-                    result = str(error)
-                console.print(Text(result))
+                    console.print(result_panel(str(error), title="Файл не добавлен", error=True))
+                    continue
+                console.print(result_panel(result, title="Файл добавлен в черновик"))
                 continue
 
             if draft_input.command(user_input.strip()):
-                console.print(Text(draft_input.take_notice()))
+                console.print(result_panel(draft_input.take_notice(),
+                                           title="Вложения" if first_line == "/attachments" else "Черновик"))
                 continue
 
             if first_line.startswith("/help"):
@@ -565,12 +567,13 @@ def main(backend: Backend | None = None):
 
                 table.add_row("/show 1, /edit 1", "Просмотр вложения #1 (изображение — в приложении ОС); изменение текста")
                 table.add_row("Ctrl+V, /paste", "Прикрепить скриншот из буфера")
-                table.add_row("@LICENSE", "Прикрепить файл целиком после подтверждения")
-                table.add_row("@LICENSE:1-20", "Прикрепить строки с 1 по 20 включительно (без скобок)")
-                table.add_row("@LICENSE:7", "Прикрепить только строку 7")
+                table.add_row("@file", "Добавить файл целиком в черновик; отправка отдельным сообщением")
+                table.add_row("@file:1-20", "Прикрепить строки с 1 по 20 включительно (без скобок)")
+                table.add_row("@file:7", "Прикрепить только строку 7")
                 table.add_row("/attachments", "Общий список файлов, изображений и вставок с номерами")
                 table.add_row("/remove 1", "Удалить вложение #1 любого типа; номера остальных сохраняются")
-                table.add_row("/show, /edit, /remove", "Без номера: одно вложение выбирается само, иначе показывается список")
+                table.add_row("/show, /edit", "Без номера: выбрать единственное вложение или показать список")
+                table.add_row("/remove", "Показать номера для выбора; без номера ничего не удаляет")
                 table.add_row("/help", "Показать эту справку")
                 table.add_row("/model", "Сменить ИИ модель")
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")

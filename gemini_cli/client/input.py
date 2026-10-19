@@ -1,5 +1,7 @@
 """Действия черновика: клавиши не отправляют запрос и не запускают backend."""
 
+from rich.panel import Panel
+from rich.text import Text
 from prompt_toolkit.key_binding import KeyBindings
 from .preview import ImagePreview
 from .paste import PasteBlock, is_large, view_text, edit_text
@@ -10,6 +12,12 @@ from .clipboard import get_clipboard, ClipboardError
 
 def safe_label(text: str) -> str:
     return ''.join(char if char.isprintable() else '?' for char in text)
+
+
+def result_panel(message: str, *, title='Черновик', error=False) -> Panel:
+    color = 'yellow' if error else '#4285F4'
+    return Panel(Text(message), title=Text(title, style=color), border_style=color,
+                 padding=(0, 1), expand=False)
 
 
 class DraftInput:
@@ -73,11 +81,13 @@ class DraftInput:
     def listing(self) -> str:
         items = self.draft.items()
         if not items:
-            return 'Вложений нет. Ctrl+V — вставить; @LICENSE:1-20 — добавить строки файла.'
+            return 'Вложений нет. Ctrl+V — вставить; @file:1-20 — добавить строки файла.'
         return '\n'.join(self.describe(number, item) for number, item in items) + '\n/show N · /edit N · /remove N'
 
     def close(self) -> str | None:
-        return self.preview.close()
+        from .text_editor import cleanup_pending
+        warnings = [self.preview.close(), cleanup_pending()]
+        return "\n".join(message for message in warnings if message) or None
 
     def take_notice(self) -> str:
         self.preview.prune({image.id for image in self.draft.images})
@@ -102,7 +112,7 @@ class DraftInput:
                 self.notice = self.listing()
                 return True
             try:
-                if len(parts) == 1 and len(self.draft.items()) == 1:
+                if len(parts) == 1 and action != '/remove' and len(self.draft.items()) == 1:
                     number, item = self.draft.items()[0]
                 elif len(parts) == 2:
                     value = parts[1].removeprefix('#')

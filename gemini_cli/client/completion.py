@@ -66,6 +66,6 @@ class InputCompleter(Completer):
                         except (ValueError, OSError):
                             continue
                         self.snapshots[(self.root(), relative)] = expected
-                        yield Completion('@' + relative, start_position=-len(text), display_meta=f'Строки: @{relative}:1-20')
+                        yield Completion('@' + relative, start_position=-len(text), display_meta='Файл целиком')
         except OSError:
             return

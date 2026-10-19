@@ -75,7 +75,10 @@ class DraftInputTest(unittest.TestCase):
         self.assertNotIn('Удалено', ui.status())
         ui.command('/remove #3')
         self.assertEqual(draft.text, 'keep')
-        ui.command('/remove')  # Единственное оставшееся вложение выбирается автоматически.
+        ui.command('/remove')
+        self.assertEqual(len(draft.items()), 1)
+        self.assertIn('Выберите номер: /remove 2', ui.notice)
+        ui.command('/remove 2')
         self.assertEqual(draft.items(), [])
         self.assertIn('Удалено #2', ui.notice)
 
@@ -96,3 +99,15 @@ class DraftInputTest(unittest.TestCase):
         self.assertNotIn('Нет вложения #9', ui.notice)
         self.assertNotIn('Нет вложения #9', ui.take_notice())
         self.assertNotIn('LICENSE', ui.status())  # Полный список не дублируется в toolbar.
+
+    def test_result_panel_keeps_user_text_literal(self):
+        from io import StringIO
+        from rich.console import Console
+        from gemini_cli.client.input import result_panel
+        output = StringIO()
+        console = Console(file=output, width=80, color_system=None)
+        console.print(result_panel('#1 — файл [red]file.txt', title='Вложения'))
+        rendered = output.getvalue()
+        self.assertIn('Вложения', rendered)
+        self.assertIn('[red]file.txt', rendered)
+        self.assertIn('─', rendered)

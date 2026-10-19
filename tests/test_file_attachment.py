@@ -50,7 +50,7 @@ class FileAttachmentTest(unittest.TestCase):
             attach_file(draft, '@LICENSE:1', root, snapshots={}, approve=lambda _: True)
             self.assertEqual(draft.files[1], ('LICENSE:1-1', 'one\n'))
             for selection in ('@LICENSE[1-20]', '@LICENSE[:1-20]', '@LICENSE 1-20'):
-                with self.assertRaisesRegex(ValueError, '@LICENSE:1-20'):
+                with self.assertRaisesRegex(ValueError, '@file:1-20'):
                     attach_file(draft, selection, root, snapshots={}, approve=lambda _: True)
             before = draft.items()
             result = attach_file(draft, '@LICENSE', root, snapshots={}, approve=lambda _: False)

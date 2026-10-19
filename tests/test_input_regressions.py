@@ -80,11 +80,11 @@ class InputRegressionTest(unittest.TestCase):
             with patch.object(self.app, 'show_chat_menu', return_value=(None, True)), \
                  patch.object(self.app, 'PromptSession') as session, \
                  patch.object(self.app.os, 'getcwd', return_value=root), \
-                 patch.object(self.app, 'confirm_content_scope', return_value=True), \
+                 patch.object(self.app, 'confirm_content_scope', side_effect=AssertionError('extra confirmation')), \
                  patch.object(self.app, 'print_banner'), patch.object(self.app.console, 'print') as printed:
                 session.return_value.prompt.side_effect = commands
                 self.app.main(backend)
-                results = [str(call.args[0]) for call in printed.call_args_list]
+                results = [str(getattr(call.args[0], 'renderable', call.args[0])) for call in printed.call_args_list]
                 self.assertEqual(sum('Добавлено #1' in result for result in results), 1)
                 self.assertEqual(sum('Удалено #1' in result for result in results), 1)
                 self.assertTrue(any('#1 — файл LICENSE:1-2' in result for result in results))

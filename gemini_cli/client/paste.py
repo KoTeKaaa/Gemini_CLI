@@ -43,5 +43,5 @@ def view_text(text: str) -> None:
 
 
 def edit_text(text: str) -> str:
-    from prompt_toolkit.shortcuts import prompt
-    return prompt('Редактирование (Alt+Enter — готово): ', default=text, multiline=True)
+    from .text_editor import edit_external
+    return edit_external(text)

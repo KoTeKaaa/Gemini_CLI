@@ -49,7 +49,7 @@ Run on Windows, Linux Wayland and X11, using the actual executables and terminal
    request. Missing utilities, blocked clipboard and invalid images preserve drafts.
 4. Ask a second question about the image and exercise a tool continuation. Restart
    the client: image metadata is retained, missing bytes require reattachment.
-5. Select `@LICENSE:1-20`, `@LICENSE:7`, `@путь с пробелом.py:1-5`; reject confirmation, then allow it. Change the
+5. Select `@file:1-20`, `@file:7`, `@путь с пробелом.py:1-5`; verify addition without a second confirmation and without sending a model request. Change the
    file after selection and verify rejection. Secret paths must not appear.
 6. Paste a long multiline block, resize the terminal, view/edit/remove it and send.
    Verify line endings, command completion and ordinary arrow-key history.
@@ -61,7 +61,7 @@ production database change or release publication is part of this sprint branch.
 ## Input usability follow-up
 
 A shared draft registry supplies stable numbers to all attachment types. `/show`,
-`/edit`, `/remove` auto-select a sole attachment; multiple attachments prompt a choice.
+`/edit` auto-select a sole attachment; `/remove` always requires an explicit number.
 `/attachments` prints one item per line, while the input toolbar only shows a count.
 Action results are consumed once; file errors cannot repeat stale command guidance.
 Completion offers attachment numbers and literal range examples. Text edits operate
@@ -76,3 +76,22 @@ Independent subagent review found no new P1/P2 issues. Regression cases include 
 reported file-range/stale-hint sequence, mixed-type removal with stable numbers,
 vertical listing, system-preview failure and a viewer holding a temporary file.
 Updated Windows/Linux CI includes the preview and input regression modules.
+
+## Explicit selection and command presentation
+
+File completion now describes exactly what it inserts: the whole-file path.
+Examples use `@file:1-20` and `@file:7`; range metadata is not advertised as an
+inserted completion. `/remove` without a number only lists choices. Local command
+results and file errors are framed Rich panels with literal, untrusted text.
+Selecting a file with `@` authorizes reading it into the draft without a second
+prompt; model-requested file reads still require their existing approval. Secret
+path restrictions and snapshot verification remain. Nothing is sent until the
+user submits the actual message.
+
+Text editing opens a separate editor window. Linux uses GNOME Text Editor, gedit
+or VS Code with standalone/wait options. Windows uses Notepad and an explicit Enter
+in the CLI after saving, because recent Notepad launchers can return before the
+document closes. No silent inline-editor fallback. Only a private temporary copy
+is edited; original workspace files are untouched. Real GUI acceptance is pending.
+
+Final editor/presentation checks: 231 tests OK (one real-Supabase skip); external-editor review findings fixed and rechecked. GUI acceptance remains pending.

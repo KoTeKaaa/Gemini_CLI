@@ -38,4 +38,5 @@ class CompletionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             (Path(root) / 'LICENSE').write_text('text')
             result = list(InputCompleter(lambda: root).get_completions(Document('@LIC'), None))
-            self.assertIn('@LICENSE:1-20', result[0].display_meta_text)
+            self.assertEqual(result[0].text, '@LICENSE')
+            self.assertEqual(result[0].display_meta_text, 'Файл целиком')
