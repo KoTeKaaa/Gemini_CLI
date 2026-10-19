@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
+from google.genai import types
 
 
 class FakeQuery:
@@ -251,13 +252,13 @@ class ToolContinuationTest(unittest.TestCase):
         def generate_content_stream(**kwargs):
             seen_contents.append(kwargs["contents"])
             if len(seen_contents) == 1:
-                part = self.server.types.Part(
-                    function_call=self.server.types.FunctionCall(
+                part = types.Part(
+                    function_call=types.FunctionCall(
                         name="execute_command", args={"command": "pwd"}, id="call-1"),
                     thought_signature=signature,
                 )
                 yield SimpleNamespace(candidates=[SimpleNamespace(
-                    content=self.server.types.Content(role="model", parts=[part])
+                    content=types.Content(role="model", parts=[part])
                 )], function_calls=[part.function_call], text=None)
             else:
                 yield SimpleNamespace(function_calls=None, text="Done")

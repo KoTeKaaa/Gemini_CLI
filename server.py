@@ -1,6 +1,4 @@
 import os
-import base64
-import binascii
 from typing import List, Optional, Literal, Dict, Any
 import json
 from dataclasses import dataclass
@@ -9,16 +7,14 @@ import secrets
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from pydantic import BaseModel, Field, field_validator
-from google import genai
-from google.genai import types
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from supabase.lib.client_options import SyncClientOptions
 
-from gemini_cli.tools.definitions import TOOLS, available_tools
+from gemini_cli.tools.definitions import TOOLS, LEGACY_NAMES
 from gemini_cli.server.tool_history import REDACTED_READ_RESULT, persistent_tool_message
 from gemini_cli.runtime.history import persistent_history_rows
-from gemini_cli.backends.genai import to_gemini
+from gemini_cli.backends.genai import to_gemini, create_provider, stream_events
 from gemini_cli.server.subscriptions import require_subscription, working_user_dependency
 from gemini_cli.server.budgets import reserve_request
 from gemini_cli.server.admin.sessions import WebSessions, session_router, owner_dependency
@@ -48,8 +44,7 @@ app.add_middleware(BodyLimit)
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("ADMIN_SESSION_SECRET") or secrets.token_hex(32),
                    session_cookie="gemini_admin", https_only=True, same_site="strict", max_age=1800)
 app.add_middleware(PanelHeaders)
-client = genai.Client(api_key=api, http_options=types.HttpOptions(
-    timeout=45000, retry_options=types.HttpRetryOptions(attempts=1)))
+client = create_provider(api)
 
 
 @dataclass(frozen=True)
@@ -294,7 +289,7 @@ def save_message_to_db(
 
 
 def build_history_from_db(db: Client, chat_id: str,
-                          before_user_content: Optional[str] = None) -> List[types.Content]:
+                          before_user_content: Optional[str] = None) -> List[Any]:
     try:
         response = db.table("messages").select("*").eq("chat_id", chat_id).order("created_at").execute()
         messages = response.data
@@ -306,7 +301,7 @@ def build_history_from_db(db: Client, chat_id: str,
         raise HTTPException(status_code=503, detail="Не удалось загрузить историю чата") from e
 
 
-def build_history_from_client(history: Optional[List[MessageItem]]) -> List[types.Content]:
+def build_history_from_client(history: Optional[List[MessageItem]]) -> List[Any]:
     try:
         return to_gemini([item.model_dump() for item in history or []])
     except ValueError:
@@ -320,7 +315,7 @@ def stream_chat(
         payload: StreamChatPayload,
         user: UserContext = Depends(get_working_user),
 ):
-    requested_tools = set(payload.supported_tools if payload.supported_tools is not None else TOOLS)
+    requested_tools = set(payload.supported_tools if payload.supported_tools is not None else LEGACY_NAMES)
     rights = require_subscription(user, model=payload.model_name, features=requested_tools)
     if payload.end_tool_turn and not payload.continue_after_tool:
         raise HTTPException(status_code=400, detail="Завершение допустимо только после результата инструмента")
@@ -360,27 +355,6 @@ def stream_chat(
             if payload.chat_id and not payload.continue_after_tool:
                 save_message_to_db(user.db, payload.chat_id, "user", payload.message.strip())
 
-            agent_instruction = (
-                "Ты — продвинутый AI-ассистент разработчика с доступом к локальной файловой системе и терминалу. "
-                "Когда ты запрашиваешь вызов инструмента (чтение, запись файлов или выполнение команд), клиент "
-                "выполняет его и возвращает тебе результат в блоке истории с ролью 'user' (технический ответ функции). "
-                "КРИТИЧЕСКОЕ ПРАВИЛО: Получив ответ инструмента, ты должен сразу проанализировать этот результат "
-                "и продолжить выполнение исходной задачи пользователя. НЕ запрашивай контекст повторно, "
-                "НЕ пиши фразы в духе 'Уточните задачу' — вся хронология действий уже находится в истории чата! "
-                "ВАЖНО: Если инструмент вернул успешный результат (например, файл записан, команда выполнена), "
-                "оцени, выполнена ли исходная задача целиком; при необходимости продолжай другими инструментами. "
-                "Не повторяй завершённую операцию без причины. При отказе или исчерпании поиска отвечай "
-                "по доступным данным и укажи ограничение. Для веб-фактов приводи фактические ссылки из результатов."
-            )
-
-            config = types.GenerateContentConfig(
-                max_output_tokens=8192,
-                tools=available_tools(payload.supported_tools,
-                                      set(TOOLS) - ({"web_search"} if not os.getenv("TAVILY_API_KEY") else set())),
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                system_instruction=agent_instruction
-            )
-
             current_contents = list(history_content)
 
             if payload.continue_after_tool:
@@ -395,10 +369,7 @@ def stream_chat(
                         )
                 full_contents = current_contents
             else:
-                active_message = types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=payload.message)]
-                )
+                active_message = to_gemini([{"role": "user", "content": payload.message}])[0]
 
                 full_contents = current_contents + [active_message]
 
@@ -412,52 +383,23 @@ def stream_chat(
             require_subscription(user, model=payload.model_name, features=requested_tools)
             reserve_request(user, operation="gemini", request_id=payload.request_id,
                             model=payload.model_name, features=requested_tools)
-            response_stream = client.models.generate_content_stream(
-                model=payload.model_name,
-                contents=full_contents,
-                config=config
-            )
-
-            tool_calls = []
-            for chunk in response_stream:
-                candidates = getattr(chunk, "candidates", None) or []
-                content = getattr(candidates[0], "content", None) if candidates else None
-                parts = getattr(content, "parts", None) or []
-                call_parts = [part for part in parts if getattr(part, "function_call", None)]
-                if call_parts:
-                    tool_calls.extend((part.function_call, part.thought_signature)
-                                      for part in call_parts)
-                    continue
-                if chunk.function_calls:
-                    tool_calls.extend((call, None) for call in chunk.function_calls)
-                    continue
-
-                if chunk.text:
-                    full_response += chunk.text
-                    text_event = {
-                        "type": "text",
-                        "content": chunk.text
-                    }
-                    yield f"data: {json.dumps(text_event, ensure_ascii=False)}\n\n".encode("utf-8")
-
-            for call, signature in tool_calls:
-                tool_event = {
-                    "type": "tool_call", "name": call.name,
-                    "args": call.args, "call_id": getattr(call, "id", None),
-                    "thought_signature": base64.b64encode(signature).decode("ascii")
-                    if signature else None,
-                }
-                if payload.chat_id:
-                    save_message_to_db(
-                        user.db, payload.chat_id,
-                        "model", f"[Вызов локального инструмента: {call.name}]",
-                        call.name, call.args
-                    )
-                yield f"data: {json.dumps(tool_event, ensure_ascii=False)}\n\n".encode("utf-8")
-            if tool_calls:
-                return
-
-            if payload.chat_id and full_response:
+            has_calls, failed = False, False
+            permitted = set(TOOLS) - ({"web_search"} if not os.getenv("TAVILY_API_KEY") else set())
+            for event in stream_events(client, model=payload.model_name, contents=full_contents,
+                                       supported_tools=payload.supported_tools, permitted_tools=permitted):
+                if event["type"] == "text":
+                    full_response += event["content"]
+                elif event["type"] == "error":
+                    failed = True
+                elif event["type"] == "tool_call":
+                    if not has_calls and full_response and payload.chat_id:
+                        save_message_to_db(user.db, payload.chat_id, "model", full_response)
+                    has_calls = True
+                    if payload.chat_id:
+                        save_message_to_db(user.db, payload.chat_id, "model",
+                            f"[Вызов локального инструмента: {event['name']}]", event["name"], event["args"])
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
+            if payload.chat_id and full_response and not has_calls and not failed:
                 save_message_to_db(user.db, payload.chat_id, "model", full_response)
 
         except Exception as e:

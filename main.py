@@ -586,6 +586,8 @@ def main(backend: Backend | None = None):
                         if ending:
                             console.print("[yellow]Сервер не поддерживает завершение цепочки инструментов.[/yellow]")
                             break
+                        if full_response:
+                            temporary_history.append({"role": "model", "content": full_response})
                         execute_tool_calls(tool_calls_received, temporary_history, current_dir,
                                            turn=turn, api_client=api_client)
                         console.print("[dim]Передаю результаты выполнения обратно на сервер...[/dim]")
