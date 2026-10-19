@@ -369,7 +369,7 @@ def stream_chat(
         full_response = ""
         try:
             if payload.chat_id and not payload.continue_after_tool:
-                save_message_to_db(user.db, payload.chat_id, "user", payload.message.strip())
+                save_message_to_db(user.db, payload.chat_id, "user", payload.message)
 
             current_contents = list(history_content)
 

@@ -43,6 +43,8 @@ def decode_images(parts: list[dict], model: str) -> list[ImageAttachment]:
 def validate_payload_images(payload: dict) -> bool:
     model = payload.get('model_name', MODEL_IDS[0])
     rows = [payload, *(payload.get('history') or [])]
+    if sum(len(row.get('images', [])) for row in rows) > MAX_IMAGES:
+        raise ValueError('В контексте не больше 4 изображений')
     total = 0
     found = False
     for row in rows:

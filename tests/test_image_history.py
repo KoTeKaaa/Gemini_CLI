@@ -6,6 +6,7 @@ from gemini_cli.client.draft import Draft
 from gemini_cli.client.local_chats import LocalChats
 from gemini_cli.runtime.attachments import attachment_text, restore_images, missing_image_note
 from gemini_cli.protocol.images import encode_images
+from gemini_cli.protocol.attachments import ImageAttachment
 import importlib
 import os
 from unittest.mock import patch
@@ -47,3 +48,63 @@ class ImageHistoryTest(unittest.TestCase):
         self.assertEqual(continuation['history'][0]['images'], row['images'])
         following = self.app.build_stream_payload([row, {'role': 'user', 'content': 'again'}], 'chat', 'gemini-3.5-flash-lite', False)
         self.assertEqual(following['history'], [row])
+
+    def test_both_backends_preserve_image_followup_without_persisting_bytes(self):
+        from types import SimpleNamespace
+        from gemini_cli.backends.local import LocalBackend
+        from tests.test_tool_continuation import FakeDb
+        with patch.dict(os.environ, {'API_KEY': 'test', 'SUPABASE_URL': 'https://example.supabase.co',
+                                     'SUPABASE_ANON_KEY': 'test'}):
+            server = importlib.import_module('server')
+        draft = Draft('  look\r\n')
+        draft.add_image('screen', png())
+        row = {'role': 'user', 'content': attachment_text(draft.text, draft.images),
+               'images': encode_images(draft.images)}
+        for mode in ('local', 'remote'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as root:
+                seen = []
+                def stream(provider, **kwargs):
+                    seen.append(kwargs['contents'])
+                    yield {'type': 'text', 'content': 'ok'}
+                if mode == 'local':
+                    backend = LocalBackend('test', Path(root), provider=object())
+                    chat_id = backend.create_chat('images')['id']
+                    send = lambda payload: list(backend.stream_chat(payload).events)
+                    read = lambda: backend.chats.read(chat_id)
+                    patches = [patch('gemini_cli.backends.local.stream_events', stream)]
+                else:
+                    db = FakeDb()
+                    chat_id = 'chat-1'
+                    user = server.UserContext('user-1', db)
+                    def send(payload):
+                        return list(server.stream_chat(server.StreamChatPayload(**payload), user).body_iterator)
+                    read = lambda: db.messages
+                    patches = [patch.object(server, 'stream_events', stream),
+                               patch.object(server, 'require_subscription', return_value={'features': list(server.TOOLS)}),
+                               patch.object(server, 'reserve_request'),
+                               patch.object(server, 'StreamingResponse', side_effect=lambda source, **kw: SimpleNamespace(body_iterator=source))]
+                from contextlib import ExitStack
+                with ExitStack() as stack:
+                    for item in patches:
+                        stack.enter_context(item)
+                    send(self.app.build_stream_payload([row], chat_id, 'gemini-3.5-flash-lite', False))
+                    send(self.app.build_stream_payload([row, {'role': 'user', 'content': 'again'}], chat_id, 'gemini-3.5-flash-lite', False))
+                    self.assertTrue(any(part.inline_data for msg in seen[-1] for part in msg.parts))
+                    self.assertEqual(read()[0]['content'], row['content'])
+                    self.assertNotIn(row['images'][0]['data'], json.dumps(read()))
+                    send({'message': 'after restart', 'chat_id': chat_id, 'supported_tools': []})
+                    self.assertFalse(any(part.inline_data for msg in seen[-1] for part in msg.parts))
+                    self.assertTrue(any('повторно' in (part.text or '') for msg in seen[-1] for part in msg.parts))
+                if mode == 'local':
+                    backend.close()
+
+    def test_context_image_count_is_bounded(self):
+        from gemini_cli.runtime.attachments import bound_image_history
+        from gemini_cli.protocol.images import validate_payload_images
+        images = encode_images([ImageAttachment('screen', png())])
+        rows = [{'role': 'user', 'content': str(i), 'images': images} for i in range(5)]
+        with self.assertRaises(ValueError):
+            validate_payload_images({'history': rows})
+        bound_image_history(rows)
+        self.assertNotIn('images', rows[0])
+        self.assertTrue(validate_payload_images({'history': rows}))

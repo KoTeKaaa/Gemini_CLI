@@ -1,7 +1,7 @@
 """Метаданные в тексте истории; восстановление байтов только из памяти клиента."""
 
 import json
-from ..protocol.attachments import MAX_TOTAL_BYTES
+from ..protocol.attachments import MAX_TOTAL_BYTES, MAX_IMAGES
 
 MARKER = '\n[Вложения; без байтов при восстановлении: '
 
@@ -20,14 +20,15 @@ def restore_images(stored: list[dict], live: list[dict]) -> list[dict]:
 
 
 def bound_image_history(history: list[dict]) -> None:
-    total = 0
+    total, count = 0, 0
     for row in reversed(history):
         parts = row.get('images', [])
         size = sum(part.get('size', 0) for part in parts)
-        if total + size > MAX_TOTAL_BYTES:
+        if total + size > MAX_TOTAL_BYTES or count + len(parts) > MAX_IMAGES:
             row.pop('images', None)
         else:
             total += size
+            count += len(parts)
 
 
 def missing_image_note(row: dict) -> str:
