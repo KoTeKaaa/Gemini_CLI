@@ -1,7 +1,7 @@
 from gemini_cli.runtime.history import trim_history
 from gemini_cli.client.file_attachment import attach_file
 from gemini_cli.client.completion import InputCompleter
-from gemini_cli.client.input import DraftInput, result_panel
+from gemini_cli.client.input import DraftInput, result_panel, safe_label
 from prompt_toolkit.key_binding import merge_key_bindings
 from gemini_cli.client.draft import Draft
 from gemini_cli.client.chat_buffers import ChatBuffers, filter_chats
@@ -363,6 +363,29 @@ def compact_context(client, history, chat_id, model, summary=None):
         state.finish()
 
 
+def fork_context(client, chat_id, title=""):
+    history = client.get_history(chat_id)
+    if not isinstance(history, list):
+        raise ValueError("История исходного чата недоступна")
+    boundaries = completed_boundaries(history)
+    if not boundaries:
+        raise ValueError("Нет завершённых ходов с достоверными идентификаторами для форка")
+    values = [(index, f"{index + 1}. {safe_label(row.get('content', ''))[:90]}")
+              for index, row in enumerate(boundaries)]
+    choice = radiolist_dialog(title="Граница форка", text="Включить историю до выбранного завершённого хода:",
+                              values=values, default=len(values) - 1).run()
+    if choice is None:
+        return None
+    title = title.strip() or input("Название нового чата: ").strip()
+    if not title:
+        return None
+    selected = boundaries[choice]
+    result = client.fork_chat(chat_id, title, selected.get("id") or selected.get("event_id"))
+    if not isinstance(result, dict) or not result.get("id"):
+        raise ValueError("Не удалось создать форк чата")
+    return result
+
+
 def show_model_selection_menu(current_model: str) -> str:
     available_models = [
         ("gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite"),
@@ -716,6 +739,41 @@ def main(backend: Backend | None = None):
 
             if first_line.startswith("/model"):
                 current_model = show_model_selection_menu(current_model)
+                continue
+
+            if first_line.split()[0] == "/compact":
+                if user_input.strip() != "/compact":
+                    console.print(result_panel("Использование: /compact (без аргументов).", title="Контекст", error=True))
+                    continue
+                try:
+                    result = compact_context(api_client, temporary_history, chat_id, current_model, summary)
+                    if result.get("summary") and result.get("boundary_id") and result.get("reason") == "ready":
+                        summary = result
+                        remember()
+                        message = "Сводка обновлена. Полная история сохранена."
+                    else:
+                        message = {"cancelled": "Сжатие отменено. Контекст сохранён.",
+                                   "no_completed_boundary": "Недостаточно завершённых ходов для сжатия."}.get(
+                                       result.get("reason"), "Сжатие не выполнено. Контекст сохранён.")
+                    console.print(result_panel(message, title="Контекст", error=not bool(result.get("summary"))))
+                except Exception:
+                    console.print(result_panel("Не удалось сжать контекст. История сохранена.", title="Контекст", error=True))
+                continue
+
+            if first_line.split()[0] == "/fork":
+                if is_temporary:
+                    console.print(result_panel("/fork доступна только в постоянном чате.", title="Форк", error=True))
+                    continue
+                try:
+                    fork = fork_context(api_client, chat_id, first_line.partition(" ")[2])
+                    if fork:
+                        remember()
+                        saved = load_buffer(api_client, fork["id"])
+                        chat_id, is_temporary = fork["id"], False
+                        apply_buffer(saved)
+                        console.print(result_panel("Форк создан; история скопирована без повторного выполнения действий.", title="Форк"))
+                except Exception:
+                    console.print(result_panel("Не удалось открыть форк. Исходный чат и черновик сохранены.", title="Форк", error=True))
                 continue
 
             if first_line.split()[0] == "/clear":

@@ -112,3 +112,54 @@ class UIContextTests(unittest.TestCase):
             self.assertNotEqual(rows[0]["id"], rows[1]["id"])
             for row in rows:
                 UUID(row["id"])
+
+    def test_fork_chooses_completed_boundary_and_never_replays(self):
+        backend = Mock()
+        backend.get_history.return_value = [
+            {'role': role, 'content': text, 'id': event_id, 'turn_id': 'turn', 'status': 'completed'}
+            for role, text, event_id in [('user', 'q', 'u'), ('model', 'a', 'm')]]
+        backend.fork_chat.return_value = {'id': 'fork'}
+        with patch.object(self.app, 'radiolist_dialog') as dialog, patch('builtins.input') as prompt:
+            dialog.return_value.run.return_value = 0
+            self.assertEqual(self.app.fork_context(backend, 'source', 'New title'), {'id': 'fork'})
+            backend.fork_chat.assert_called_once_with('source', 'New title', 'm')
+            self.assertEqual(dialog.call_args.kwargs['default'], 0)
+            prompt.assert_not_called()
+            backend.stream_chat.assert_not_called()
+
+    def test_fork_cancel_does_not_create_chat(self):
+        backend = Mock()
+        backend.get_history.return_value = [
+            {'role': role, 'content': 'text', 'id': role, 'turn_id': 'turn', 'status': 'completed'}
+            for role in ['user', 'model']]
+        with patch.object(self.app, 'radiolist_dialog') as dialog:
+            dialog.return_value.run.return_value = None
+            self.assertIsNone(self.app.fork_context(backend, 'source', 'title'))
+            backend.fork_chat.assert_not_called()
+
+    def test_manual_compact_keeps_full_archive_and_sends_summary(self):
+        backend = Mock(mode='local')
+        candidate = {'summary': 'safe context', 'boundary_id': 'boundary', 'reason': 'ready'}
+        with patch.object(self.app, 'show_chat_menu', return_value=(None, True)), \
+             patch.object(self.app, 'PromptSession') as session, \
+             patch.object(self.app, 'print_banner'), patch.object(self.app.console, 'print'), \
+             patch.object(self.app.console, 'rule'), patch.object(self.app, 'WorkView'), \
+             patch.object(self.app, 'open_stream') as stream, \
+             patch.object(self.app, 'display_stream_response', return_value=('answer', [])), \
+             patch.object(self.app, 'compact_context', return_value=candidate) as compact:
+            stream.return_value.status_code = 200
+            session.return_value.prompt.side_effect = ['first', '/compact', 'second', 'exit']
+            self.app.main(backend)
+            self.assertEqual(len(compact.call_args.args[1]), 4)
+            self.assertEqual(stream.call_args.args[1]['summary'], 'safe context')
+            self.assertEqual(stream.call_args.args[1]['summary_boundary'], 'boundary')
+
+    def test_temporary_fork_refused_without_backend_call(self):
+        backend = Mock(mode='local')
+        with patch.object(self.app, 'show_chat_menu', return_value=(None, True)), \
+             patch.object(self.app, 'PromptSession') as session, \
+             patch.object(self.app, 'print_banner'), patch.object(self.app.console, 'print'):
+            session.return_value.prompt.side_effect = ['/fork title', 'exit']
+            self.app.main(backend)
+            backend.fork_chat.assert_not_called()
+            backend.stream_chat.assert_not_called()
