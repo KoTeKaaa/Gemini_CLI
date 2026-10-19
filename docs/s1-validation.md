@@ -14,7 +14,7 @@ exact pasted line endings and paste editing/removal. CI builds Linux Python 3.10
 and Windows Python 3.12 executables and checks startup separately from unit tests.
 Final integration on 19 October 2026:
 
-- Full regression: 210 tests, OK, one real-Supabase integration skipped.
+- Full regression: 212 tests, OK, one real-Supabase integration skipped.
 - `bash tests/test_deploy_install.sh`: deployment preflight PASS.
 - `git diff --check`: PASS (whitespace only).
 - Local Linux executable: build and offline standalone startup PASS.
@@ -26,7 +26,9 @@ Final integration on 19 October 2026:
   Windows snapshots now consistently use descriptor metadata without reading file
   contents at selection; binary reads preserve Ctrl+Z and line endings. Background:
   [CPython issue 157671](https://github.com/python/cpython/issues/157671).
-- CI run results and executable artifacts are linked from the draft PR. Build and
+- CI build, contract tests and standalone startup PASS on Linux Python 3.10 and
+  Windows Python 3.12 for code commit `40c9b2c`:
+  [verified CI run and executable artifacts](https://github.com/KoTeKaaa/Gemini_CLI/actions/runs/39228748559). Build and
   startup checks are distinct from real terminal/clipboard/provider acceptance.
 
 The sandbox stalled the existing TestClient/anyio portal before endpoint execution;
