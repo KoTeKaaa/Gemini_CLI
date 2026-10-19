@@ -1,0 +1,14 @@
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#11191b;color:#e6eded}
+body{margin:0}main{max-width:1100px;margin:5vh auto;padding:24px}
+header{border-bottom:1px solid #344547;padding-bottom:22px;margin-bottom:34px}
+.eyebrow{font-size:12px;letter-spacing:.16em;color:#90b7ad}h1{font-size:36px;letter-spacing:-.03em}
+p{color:#b6c9c5;line-height:1.6}.heading{display:flex;align-items:center;justify-content:space-between;gap:16px}
+form{max-width:500px}label{display:block;margin:18px 0;font-size:14px}
+input,select,textarea{display:block;box-sizing:border-box;width:100%;margin-top:8px;background:#1b282b;color:inherit;border:1px solid #526765;border-radius:5px;padding:12px;font:inherit}
+button{background:#a4dbc7;color:#10241d;border:0;border-radius:5px;padding:12px 20px;font:inherit;cursor:pointer}
+button:disabled{opacity:.5}button:focus-visible,input:focus-visible{outline:2px solid #e6c289;outline-offset:3px}
+.table{overflow-x:auto;border:1px solid #344547;border-radius:6px}table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:16px;border-bottom:1px solid #344547;vertical-align:top}th{color:#90b7ad}
+code{font-size:12px;word-break:break-all}#notice{white-space:pre-wrap;color:#e6c289}
+section{border-top:1px solid #344547;margin-top:40px;padding-top:20px}td button{font-size:12px;padding:8px;margin-top:10px}
+select[multiple]{min-height:130px}h2{font-size:24px}input[readonly]{color:#e6c289}

@@ -64,6 +64,12 @@ class StreamChatOwnershipTest(unittest.TestCase):
             cls.server = importlib.import_module("server")
 
     def setUp(self):
+        guard = patch.object(self.server, "require_subscription", return_value={"features": list(self.server.TOOLS)})
+        guard.start()
+        self.addCleanup(guard.stop)
+        budget = patch.object(self.server, "reserve_request")
+        budget.start()
+        self.addCleanup(budget.stop)
         self.db = FakeDb()
         self.user = self.server.UserContext(user_id="user-a", db=self.db)
 

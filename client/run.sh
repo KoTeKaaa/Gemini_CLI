@@ -6,12 +6,14 @@ venv_dir="$project_dir/.venv"
 requirements="$project_dir/client/requirements.txt"
 stamp="$venv_dir/.client-requirements.sha256"
 
-if [[ ${1:-} == --setup-only ]]; then
-    setup_only=true
-    shift
-else
-    setup_only=false
-fi
+setup_only=false
+while (($#)); do
+    case $1 in
+        --setup-only) setup_only=true; shift ;;
+        --with-local) requirements="$project_dir/client/requirements-local.txt"; shift ;;
+        *) break ;;
+    esac
+done
 
 python_cmd=${PYTHON:-python3}
 if ! command -v "$python_cmd" >/dev/null 2>&1; then
@@ -30,7 +32,7 @@ if [[ ! -x $venv_dir/bin/python ]]; then
     }
 fi
 
-requirements_hash=$(sha256sum "$requirements" | cut -d ' ' -f 1)
+requirements_hash=$(sha256sum "$requirements" "$project_dir/client/requirements.txt" | sha256sum | cut -d ' ' -f 1)
 if [[ ! -f $stamp || $(<"$stamp") != "$requirements_hash" ]]; then
     "$venv_dir/bin/python" -m pip install -r "$requirements"
     "$venv_dir/bin/python" -m pip check

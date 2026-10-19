@@ -3,11 +3,17 @@ import sys
 import json
 import ipaddress
 import tempfile
+from pathlib import Path
 from contextlib import nullcontext
 from typing import Optional, Dict, List, Any
 from urllib.parse import urlsplit
 
 import requests
+from gemini_cli.backends.base import Backend, StreamResult
+from gemini_cli.runtime.history import trim_history
+from gemini_cli.client.settings import Settings, backend_identity
+from gemini_cli.protocol.limits import TOOLS_HISTORY_THRESHOLD, TOOLS_WIRE_THRESHOLD
+from gemini_cli.backends.remote import RemoteBackend, events_from_response as iter_stream_events
 from prompt_toolkit import PromptSession
 from prompt_toolkit.shortcuts import radiolist_dialog
 from prompt_toolkit.key_binding import KeyBindings
@@ -239,216 +245,48 @@ def handle_execute_command(args: dict, current_dir: str) -> str:
                            notify=console.print, logger=logger)
 
 
-class GeminiAPIClient:
+class GeminiAPIClient(RemoteBackend):
     def __init__(self, base_url: str):
-        self.base_url = normalize_server_url(base_url)
-        self.token: Optional[str] = None
+        super().__init__(normalize_server_url(base_url),
+                         profile_root=Path(SESSION_FILE).parent / "profiles",
+                         legacy_session=Path(SESSION_FILE), credentials=prompt_credentials,
+                         notify=lambda message: console.print(Text(message)))
 
-    def set_token(self, token: str):
-        self.token = token
 
-    @property
-    def headers(self) -> Dict[str, str]:
-        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
+def prompt_credentials():
+    console.print("[bold cyan]Авторизируйтесь через email. Регистрация — по приглашению владельца.[/bold cyan]")
+    try:
+        return input("Email: ").strip(), PromptSession().prompt("Пароль: ", is_password=True)
+    except (KeyboardInterrupt, EOFError):
+        return None
 
-    def _load_session_token(self) -> Optional[str]:
-        if not os.path.exists(SESSION_FILE):
+
+def choose_setting(title, values):
+    try:
+        return radiolist_dialog(title=title, text="Esc — отмена", values=values).run()
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+
+def settings_controller():
+    def server_origin(previous, force):
+        if not force:
+            return previous or get_server_url()
+        try:
+            return normalize_server_url(PromptSession().prompt("HTTPS-сервер: ", default=previous or ""))
+        except (EOFError, KeyboardInterrupt):
             return None
+    return Settings(Path(APP_DIR), remote_factory=GeminiAPIClient,
+        choose_mode=lambda: choose_setting("Режим работы", [("local", "Local — личные ключи"),
+                                                            ("remote", "Remote — подписка сервера")]),
+        read_server=server_origin,
+        choose_storage=lambda title: choose_setting(title, [("keyring", "Защищённое хранилище ОС"),
+                                                            ("memory", "Только в памяти до закрытия")]),
+        read_secret=lambda label: PromptSession().prompt(label, is_password=True),
+        notify=lambda message: console.print(Text(message)))
 
-        try:
-            with open(SESSION_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("access_token")
-        except Exception as e:
-            logger.exception(f"Необработанное исключение: {e}")
-            return None
 
-    def _renew_session(self) -> bool:
-        try:
-            with open(SESSION_FILE, "r", encoding="utf-8") as file:
-                refresh_token = json.load(file).get("refresh_token")
-        except (OSError, ValueError, AttributeError):
-            refresh_token = None
-
-        if refresh_token:
-            try:
-                response = requests.post(
-                    f"{self.base_url}/auth/refresh",
-                    json={"refresh_token": refresh_token}, timeout=30,
-                    allow_redirects=False,
-                )
-            except requests.RequestException as e:
-                console.print(f"[red]Не удалось обновить сессию: {e}[/red]")
-                return False
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("access_token") and data.get("refresh_token"):
-                    save_session(data)
-                    self.set_token(data["access_token"])
-                    return True
-            elif response.status_code not in (400, 401, 403):
-                console.print("[red]Сервер временно не может обновить сессию.[/red]")
-                return False
-
-        self.token = None
-        try:
-            os.unlink(SESSION_FILE)
-        except FileNotFoundError:
-            pass
-        console.print("[yellow]Сессия истекла. Войдите снова.[/yellow]")
-        self.login()
-        return bool(self.token)
-
-    def _authorized_request(self, request):
-        response = request()
-        if response.status_code != 401:
-            return response
-        response.close()
-        if not self._renew_session():
-            return response
-        return request()
-
-    def web_tool(self, kind: str, payload: dict) -> dict:
-        try:
-            response = self._authorized_request(lambda: requests.post(
-                f"{self.base_url}/tools/web/{kind}", json=payload, headers=self.headers,
-                timeout=25, allow_redirects=False))
-            with response:
-                if response.status_code != 200:
-                    return failure("network", "Веб-инструмент недоступен")
-                result = response.json()
-                if not isinstance(result, dict) or result.get("status") not in {"ok", "error"}:
-                    return failure("invalid_response", "Некорректный ответ веб-инструмента")
-                return result
-        except (requests.RequestException, ValueError):
-            return failure("network", "Сетевая ошибка веб-инструмента; автоматического повтора нет")
-
-    def login(self):
-        token = self._load_session_token()
-        if token:
-            self.set_token(token)
-            return
-
-        console.print("[bold cyan]Авторизируйтесь через email:[/bold cyan]")
-        while True:
-            email = input("Email: ").strip()
-            password = PromptSession().prompt("Пароль: ", is_password=True).strip()
-
-            if not email or not password:
-                console.print("[yellow]Email и пароль не должны быть пустыми.[/yellow]")
-                continue
-
-            try:
-                url = f"{self.base_url}/auth/login"
-                payload = {"email": email, "password": password}
-                r = requests.post(url, json=payload, timeout=30, allow_redirects=False)
-
-                if r.status_code == 200:
-                    res_data = r.json()
-                    token = res_data.get("access_token")
-                    if not token:
-                        console.print("[red]Сервер не вернул access_token[/red]")
-                        continue
-
-                    save_session(res_data)
-
-                    self.set_token(token)
-                    console.print("[green]Вход выполнен успешно.[/green]")
-                    logger.info(f"Пользователь авторизован")
-                    break
-                else:
-                    if r.status_code == 401:
-                        console.print(
-                            "[yellow]Не удалось войти: проверьте email, пароль или подтверждение на почте.[/yellow]")
-                        ans = input("Создать новый аккаунт? (y/n): ").strip().lower()
-                        if ans == "y":
-                            s = requests.post(f"{self.base_url}/auth/signup", json=payload, timeout=30,
-                                              allow_redirects=False)
-                            if s.status_code in (200, 201):
-                                try:
-                                    data = s.json()
-                                except Exception as e:
-                                    logger.exception(f"Необработанное исключение: {e}")
-                                    data = {}
-
-                                token = data.get("access_token") or (data.get("session") or {}).get("access_token")
-                                if token:
-                                    save_session(data.get("session") or data)
-                                    self.set_token(token)
-                                    console.print("[green]Аккаунт создан и вход выполнен.[/green]")
-                                    logger.info("Новый аккаунт создан и авторизован")
-                                    break
-                                else:
-                                    console.print(
-                                        "[yellow]Аккаунт создан. Проверьте почту и подтвердите email.[/yellow]")
-                            else:
-                                console.print("[red]Не удалось создать аккаунт. Попробуйте позже.[/red]")
-                        continue
-
-                    console.print("[red]Не удалось выполнить вход. Попробуйте ещё раз.[/red]")
-
-            except requests.RequestException:
-                console.print("[red]Не удалось связаться с сервером. Проверьте, что сервер запущен.[/red]")
-            except Exception as e:
-                console.print("[red]Произошла непредвиденная ошибка входа.[/red]")
-                logger.exception(f"Необработанное исключение: {e}")
-
-    def get_chats(self) -> Optional[List[Dict[str, Any]]]:
-        try:
-            r = self._authorized_request(lambda: requests.get(
-                f"{self.base_url}/chats", headers=self.headers, timeout=30,
-                allow_redirects=False))
-            if r.status_code == 200:
-                return r.json()
-            if r.status_code == 401:
-                console.print("[red]Сессия истекла. Войдите снова.[/red]")
-            else:
-                console.print(f"[red]Не удалось получить список чатов (код {r.status_code}).[/red]")
-            return None
-        except Exception as e:
-            console.print(f"[red]Ошибка при получении чатов: {e}[/red]")
-            logger.exception(f"Необработанное исключение: {e}")
-            return None
-
-    def create_chat(self, title: str) -> Optional[Dict[str, Any]]:
-        try:
-            r = self._authorized_request(lambda: requests.post(
-                f"{self.base_url}/chats",
-                json={"title": title},
-                headers=self.headers,
-                timeout=30,
-                allow_redirects=False,
-            ))
-            if r.status_code == 200:
-                return r.json()
-            return None
-        except Exception as e:
-            console.print(f"[red]Ошибка при создании чата: {e}[/red]")
-            logger.exception(f"Необработанное исключение: {e}")
-            return None
-
-    def delete_chat(self, chat_id: str) -> bool:
-        try:
-            r = self._authorized_request(lambda: requests.delete(
-                f"{self.base_url}/chats/{chat_id}",
-                headers=self.headers,
-                timeout=30,
-                allow_redirects=False,
-            ))
-            return r.status_code == 200
-        except Exception as e:
-            logger.error(f"Ошибка при удалении чата: {e}")
-            console.print(f"[red]Ошибка при удалении чата: {e}[/red]")
-            return False
-
-    def stream_chat(self, payload: Dict[str, Any]):
-        return self._authorized_request(lambda: requests.post(
-            f"{self.base_url}/chat/stream", json=payload,
-            headers=self.headers, stream=True, timeout=300,
-            allow_redirects=False,
-        ))
-
-def show_chat_menu(client: GeminiAPIClient) -> Optional[tuple[Optional[str], bool]]:
+def show_chat_menu(client: Backend) -> Optional[tuple[Optional[str], bool]]:
     db_chats = client.get_chats()
     if db_chats is None:
         return None
@@ -516,25 +354,6 @@ def show_model_selection_menu(current_model: str) -> str:
     return result
 
 
-def trim_history(history: List[Dict[str, str]], limit: int = 20, tool_content_limit: int = 4) -> List[Dict[str, str]]:
-    last_user = next((index for index in range(len(history) - 1, -1, -1)
-                      if history[index].get("role") == "user"), len(history))
-    start = min(max(0, len(history) - limit), last_user)
-    trimmed = history[start:]
-    while trimmed and trimmed[0].get("role") != "user":
-        trimmed = trimmed[1:]
-
-    tool_count = 0
-    current_turn_start = next((index for index in range(len(trimmed) - 1, -1, -1)
-                               if trimmed[index].get("role") == "user"), len(trimmed))
-    for msg in reversed(trimmed[:current_turn_start]):
-        if msg.get("role") == "tool":
-            tool_count += 1
-            if tool_count > tool_content_limit:
-                msg["content"] = '{"status": "already_processed"}'
-
-    return trimmed
-
 
 def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
                          model_name: str, is_temporary: bool, turn: ToolTurn | None = None,
@@ -555,11 +374,13 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
             payload["supported_tools"] = []
     elif is_temporary:
         payload["history"] = history[:-1]
+    if len(history) > TOOLS_HISTORY_THRESHOLD or len(json.dumps(payload).encode()) > TOOLS_WIRE_THRESHOLD:
+        payload["supported_tools"] = []
     return payload
 
 
 def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
-                       current_dir: str, *, turn: ToolTurn | None = None, api_client=None) -> None:
+                       current_dir: str, *, turn: ToolTurn | None = None, api_client: Backend | None = None) -> None:
     handlers = {
         "read_local_files": handle_read_files,
         "write_local_files": handle_write_files,
@@ -582,18 +403,6 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
         handlers["read_url"] = lambda args, _cwd: web_handler("read", args)
     run_tool_calls(tool_calls, history, current_dir, handlers=handlers, logger=logger)
 
-
-def iter_stream_events(response):
-    for raw_line in response.iter_lines():
-        if not raw_line:
-            continue
-        try:
-            line = raw_line.decode("utf-8").strip()
-            if not line.startswith("data: "):
-                continue
-            yield json.loads(line[6:])
-        except (ValueError, UnicodeError) as e:
-            logger.exception(f"Некорректное событие потока: {e}")
 
 
 def display_stream_response(response, has_pending_tool: bool):
@@ -629,6 +438,9 @@ def display_stream_response(response, has_pending_tool: bool):
                     break
         finally:
             status.stop()
+            close = getattr(response, "close", None)
+            if close:
+                close()
             if started_text and not line_ended:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
@@ -669,15 +481,19 @@ def print_banner(model: str, chat_mode: str, current_dir: str):
     ))
     console.print()
 
-def main():
-    server_url = get_server_url()
-    api_client = GeminiAPIClient(server_url)
-
-    api_client.login()
+def main(backend: Backend | None = None):
+    api_client = backend
+    settings = settings_controller() if backend is None else None
+    if api_client is None:
+        api_client = settings.configure()
+        if api_client is None:
+            return
 
     current_model = "gemini-3.5-flash-lite"
     selected_chat = show_chat_menu(api_client)
     if selected_chat is None:
+        if settings:
+            settings.close()
         return
     chat_id, is_temporary = selected_chat
     current_dir = os.getcwd()
@@ -687,13 +503,15 @@ def main():
     session = PromptSession(key_bindings=bindings, style=my_style)
 
     temporary_history: List[Dict[str, str]] = []
+    states = {}
+    console.print(Text(f"Backend: {api_client.mode}"))
 
     while True:
         try:
             dir_name = os.path.basename(current_dir) or current_dir
             prompt_text = f" {dir_name} › "
             user_input = session.prompt(HTML(
-                f"<ansiblue>[{current_model}]</ansiblue>"
+                f"<ansiblue>[{api_client.mode} · {current_model}]</ansiblue>"
                 f"<ansigray>{prompt_text}</ansigray>"
             ))
 
@@ -712,12 +530,26 @@ def main():
 
                 table.add_row("/help", "Показать эту справку")
                 table.add_row("/model", "Сменить ИИ модель")
+                table.add_row("/settings", "Local/Remote, сервер и личные ключи")
                 table.add_row("/chat", "Сменить или создать комнату диалога")
                 table.add_row("/delete", "Удалить текущий постоянный чат")
                 table.add_row("/cd {путь}", "Изменить текущую рабочую папку для Gemini")
                 table.add_row("exit, quit, q", "Выход из приложения")
 
                 console.print(Panel(table, title="[bold green]Справка[/bold green]", expand=False))
+                continue
+
+            if first_line.strip() == "/settings":
+                if settings is None:
+                    console.print("Настройки недоступны для внедрённого backend")
+                    continue
+                replacement = settings.configure(force=True)
+                if replacement is not None:
+                    states[backend_identity(api_client)] = (chat_id, is_temporary, temporary_history, current_model)
+                    api_client = replacement
+                    chat_id, is_temporary, temporary_history, current_model = states.get(
+                        backend_identity(api_client), (None, True, [], current_model))
+                    console.print(Text(f"Backend: {api_client.mode}; история профиля восстановлена"))
                 continue
 
             if first_line.startswith("/delete"):
@@ -801,6 +633,8 @@ def main():
                         if ending:
                             console.print("[yellow]Сервер не поддерживает завершение цепочки инструментов.[/yellow]")
                             break
+                        if full_response:
+                            temporary_history.append({"role": "model", "content": full_response})
                         execute_tool_calls(tool_calls_received, temporary_history, current_dir,
                                            turn=turn, api_client=api_client)
                         console.print("[dim]Передаю результаты выполнения обратно на сервер...[/dim]")
@@ -831,6 +665,10 @@ def main():
             console.print(f"\n[red]Произошла ошибка соединения: {e}[/red]\n")
             logger.exception(f"Необработанное исключение: {e}")
             break
+
+
+    if settings:
+        settings.close()
 
 
 if __name__ == "__main__":

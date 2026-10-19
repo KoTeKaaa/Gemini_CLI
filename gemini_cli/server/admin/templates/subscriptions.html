@@ -1,0 +1,47 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading"><h1>Подписки</h1><button id="logout" type="button">Выйти</button></div>
+<p>Доступ связан с аккаунтом. Бюджет подписки ограничивает запросы к серверу.</p>
+<div class="table"><table>
+  <thead><tr><th>Подписка / аккаунт</th><th>Состояние</th><th>До</th><th>Бюджет</th><th>Версия</th></tr></thead>
+  <tbody>{% for row in subscriptions %}<tr>
+    <td><code>{{ row.id }}</code><br>{{ row.user_id or 'Ожидает активации' }}</td>
+    <td>{{ row.status }}</td><td>{{ row.expires_at }}</td>
+    <td>{{ row.request_limit }} / {{ row.window_seconds }} сек.</td><td>{{ row.rights_version }}<br>
+      <button type="button" data-edit="{{ row | tojson | forceescape }}">Изменить</button>
+      {% if not row.user_id %}<button type="button" data-invite="{{ row.id }}">Ссылка</button>{% endif %}
+    </td>
+  </tr>{% else %}<tr><td colspan="5">Подписок пока нет</td></tr>{% endfor %}</tbody>
+</table></div>
+<section>
+<h2 id="form-title">Новая подписка</h2>
+<form id="subscription">
+  <input name="id" type="hidden"><input name="rights_version" type="hidden">
+  <label>UUID аккаунта (пусто — активация по ссылке)<input name="user_id"></label>
+  <label>Состояние<select name="status"><option value="active">Активна</option><option value="suspended">Приостановлена</option><option value="revoked">Отозвана</option></select></label>
+  <label>Срок действия<input name="expires_at" type="datetime-local" required></label>
+  <label>Разрешённые модели<select name="models" multiple required>
+    {% for model in models %}<option value="{{ model }}">{{ model }}</option>{% endfor %}
+  </select></label>
+  <label>Возможности<select name="features" multiple>
+    {% for feature in features %}<option value="{{ feature }}">{{ feature }}</option>{% endfor %}
+  </select></label>
+  <label>Запросов на окно<input name="request_limit" type="number" value="100" min="0" max="1000000" required></label>
+  <label>Окно, секунд<input name="window_seconds" type="number" value="86400" min="60" max="2678400" required></label>
+  <label>Параллельных генераций<input name="parallel_limit" type="number" value="1" min="1" max="8" required></label>
+  <p>Отзыв закрывает новые рабочие запросы и продолжения. Уже начатый вызов может завершиться.</p>
+  <button type="submit">Сохранить</button> <button id="new-subscription" type="button">Новая</button>
+</form>
+</section>
+<section id="invitation-result" hidden>
+  <h2>Одноразовая ссылка</h2>
+  <p>Скопируйте сейчас. Повторная выдача заменит прежнюю неиспользованную ссылку.</p>
+  <input id="invitation-url" readonly aria-label="Одноразовая ссылка">
+  <button id="copy-invitation" type="button">Скопировать</button>
+</section>
+<section><h2>Пригласить аккаунт</h2>
+<p>Письмо создаёт аккаунт. Доступ к серверу выдаётся отдельной ссылкой подписки.</p>
+<form id="account-invitation"><label>Почта<input name="email" type="email" required maxlength="320"></label>
+  <button type="submit">Отправить приглашение аккаунта</button>
+</form></section>
+{% endblock %}

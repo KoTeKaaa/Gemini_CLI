@@ -29,12 +29,15 @@ class SessionRefreshTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.client = self.app.GeminiAPIClient("https://example.com")
+        self.client.sessions.save({"access_token": "expired", "refresh_token": "old-refresh",
+                                   "user": {"id": "user-a"}})
+        self.session_file = self.client.sessions.token_path
         self.client.set_token("expired")
 
     def test_expired_token_retries_chat_list_and_stream(self):
         refreshed = Mock(status_code=200)
         refreshed.json.return_value = {
-            "access_token": "fresh", "refresh_token": "new-refresh",
+            "access_token": "fresh", "refresh_token": "new-refresh", "user": {"id": "user-a"},
         }
         unauthorized = Mock(status_code=401)
         success = Mock(status_code=200)
@@ -56,7 +59,7 @@ class SessionRefreshTest(unittest.TestCase):
         with patch.object(self.app.requests, "post", side_effect=[
             unauthorized, refreshed, success,
         ]) as post:
-            self.assertIs(self.client.stream_chat({"message": "hello"}), success)
+            self.assertEqual(self.client.stream_chat({"message": "hello"}).status_code, 200)
         self.assertEqual(post.call_args_list[0].kwargs["headers"],
                          {"Authorization": "Bearer expired"})
         self.assertEqual(post.call_args_list[2].kwargs["headers"],

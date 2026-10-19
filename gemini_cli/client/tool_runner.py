@@ -6,6 +6,7 @@ from typing import Callable, Mapping
 
 from ..tools.definitions import TOOLS
 from ..tools.results import failure
+from ..runtime.history import bounded_tool_result
 
 
 def execute_tool_calls(
@@ -31,7 +32,7 @@ def execute_tool_calls(
         else:
             tool_result = f"Ошибка: Инструмент {tool_name} не поддерживается клиентом."
         history.append({
-            "role": "tool", "name": tool_name, "content": tool_result,
+            "role": "tool", "name": tool_name, "content": bounded_tool_result(tool_result),
             "call_id": call.get("call_id")
         })
         logged_name = tool_name if tool_name in TOOLS else "unknown"

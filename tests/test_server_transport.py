@@ -59,9 +59,9 @@ class ServerTransportTest(unittest.TestCase):
                              "https://example.com:9443")
 
     def test_https_login_and_token_request_do_not_follow_redirects(self):
-        client = self.client.GeminiAPIClient("https://example.com:9443")
         response = Mock(status_code=200)
-        response.json.return_value = {"access_token": "test-token"}
+        response.json.return_value = {"access_token": "test-token", "refresh_token": "refresh",
+                                      "user": {"id": "user-a"}}
         with tempfile.TemporaryDirectory() as temp, \
                 patch.object(self.client, "SESSION_FILE", str(Path(temp) / "session.json")), \
                 patch("builtins.input", return_value="user@example.com"), \
@@ -69,6 +69,7 @@ class ServerTransportTest(unittest.TestCase):
                 patch.object(self.client.console, "print"), \
                 patch.object(self.client.requests, "post", return_value=response) as post:
             prompt.return_value.prompt.return_value = "test-password"
+            client = self.client.GeminiAPIClient("https://example.com:9443")
             client.login()
         self.assertEqual(client.token, "test-token")
         self.assertEqual(post.call_args.args[0], "https://example.com:9443/auth/login")

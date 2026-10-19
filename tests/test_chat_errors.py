@@ -22,6 +22,15 @@ class ChatErrorsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home}):
             cls.main = importlib.import_module("main")
 
+    def setUp(self):
+        # These tests isolate history/transport; subscription guards have HTTP tests.
+        guard = patch.object(self.server, "require_subscription", return_value={"features": list(self.server.TOOLS)})
+        guard.start()
+        self.addCleanup(guard.stop)
+        budget = patch.object(self.server, "reserve_request")
+        budget.start()
+        self.addCleanup(budget.stop)
+
     def test_failed_message_insert_reaches_stream_client(self):
         db = Mock()
         db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [

@@ -57,6 +57,23 @@ class RuntimePayloadTest(unittest.TestCase):
         self.assertEqual((self.destination / "gemini_cli/server/routes.py")
                          .read_text(encoding="utf-8"), "value = 1\n")
 
+    def test_only_declared_panel_asset_locations_are_copied(self):
+        for name in ("gemini_cli/server/admin/templates/login.html", "gemini_cli/server/admin/static/panel.js",
+                     "gemini_cli/server/admin/static/panel.css"):
+            self.write(self.source, name, "asset")
+        self.write(self.source, "gemini_cli/client/private.html", "private")
+        self.write(self.source, "gemini_cli/server/admin/static/private.json", "secret")
+        self.write(self.source, "gemini_cli/client/secrets.py", "private")
+        self.write(self.source, "gemini_cli/backends/remote.py", "unneeded")
+        self.write(self.source, "gemini_cli/backends/genai.py", "provider")
+        self.install()
+        self.assertEqual((self.destination / "gemini_cli/server/admin/templates/login.html").read_text(), "asset")
+        self.assertFalse((self.destination / "gemini_cli/client/private.html").exists())
+        self.assertFalse((self.destination / "gemini_cli/server/admin/static/private.json").exists())
+        self.assertFalse((self.destination / "gemini_cli/client/secrets.py").exists())
+        self.assertFalse((self.destination / "gemini_cli/backends/remote.py").exists())
+        self.assertTrue((self.destination / "gemini_cli/backends/genai.py").exists())
+
     def test_reinstall_removes_stale_package_only(self):
         old = self.write(self.source, "gemini_cli/server/obsolete.py", "old = 1\n")
         self.install()

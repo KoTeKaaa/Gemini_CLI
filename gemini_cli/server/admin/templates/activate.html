@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Активировать доступ</h1>
+<p>Ссылка привяжет подписку к выбранному аккаунту. Просмотр страницы ничего не активирует.</p>
+<form id="login">
+  <label>Почта<input name="email" type="email" autocomplete="username" required></label>
+  <label>Пароль<input name="password" type="password" autocomplete="current-password" required></label>
+  <button type="submit">Войти</button>
+</form>
+<section id="activation" hidden>
+  <p>Аккаунт: <code id="activation-account"></code></p>
+  <button id="activate-access" type="button">Подтвердить активацию</button>
+  <button id="logout" type="button">Выйти и сменить аккаунт</button>
+</section>
+<p>Секрет хранится только до закрытия страницы. После перезагрузки откройте исходную ссылку снова.</p>
+{% endblock %}

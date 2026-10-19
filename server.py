@@ -1,20 +1,31 @@
 import os
-import base64
-import binascii
 from typing import List, Optional, Literal, Dict, Any
 import json
 from dataclasses import dataclass
-from fastapi import FastAPI, HTTPException, Header, Depends
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from google import genai
-from google.genai import types
+from uuid import UUID
+import secrets
+from starlette.middleware.sessions import SessionMiddleware
+from fastapi import FastAPI, HTTPException, Header, Depends, Request
+from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from supabase.lib.client_options import SyncClientOptions
 
-from gemini_cli.tools.definitions import TOOLS, available_tools
+from gemini_cli.tools.definitions import TOOLS, LEGACY_NAMES
 from gemini_cli.server.tool_history import REDACTED_READ_RESULT, persistent_tool_message
+from gemini_cli.runtime.history import persistent_history_rows
+from gemini_cli.backends.genai import to_gemini, create_provider, stream_events
+from gemini_cli.server.subscriptions import require_subscription, working_user_dependency
+from gemini_cli.server.budgets import reserve_request
+from gemini_cli.server.admin.sessions import WebSessions, session_router, owner_dependency
+from gemini_cli.server.admin.subscriptions import subscription_router
+from gemini_cli.server.admin.invitations import invitation_router
+from gemini_cli.server.admin.accounts import account_router
+from gemini_cli.server.admin.pages import page_router, PanelHeaders
+from gemini_cli.server.auth_limits import AUTH_LIMITS
+from gemini_cli.protocol.models import ModelName
+from gemini_cli.protocol.limits import MAX_HISTORY_CONTENT_CHARS
+from gemini_cli.server.limits import BodyLimit, StreamJob, BoundedStreamingResponse as StreamingResponse
 
 load_dotenv()
 
@@ -31,7 +42,11 @@ if not supabase_url or not supabase_key:
     raise RuntimeError("Данные Supabase (URL/KEY) не найдены в переменных окружения")
 
 app = FastAPI()
-client = genai.Client(api_key=api)
+app.add_middleware(BodyLimit)
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("ADMIN_SESSION_SECRET") or secrets.token_hex(32),
+                   session_cookie="gemini_admin", https_only=True, same_site="strict", max_age=1800)
+app.add_middleware(PanelHeaders)
+client = create_provider(api)
 
 
 @dataclass(frozen=True)
@@ -40,7 +55,7 @@ class UserContext:
     db: Client
 
 
-def get_current_user(authorization: Optional[str] = Header(None)):
+def get_current_user(authorization: Optional[str] = Header(None), request: Request = None):
     if not authorization:
         raise HTTPException(status_code=401, detail="Отсутствует заголовок Authorization")
 
@@ -50,6 +65,9 @@ def get_current_user(authorization: Optional[str] = Header(None)):
             raise HTTPException(status_code=401, detail="Неверный тип токена. Ожидается Bearer")
     except ValueError:
         raise HTTPException(status_code=401, detail="Неверный формат заголовка Authorization")
+
+    if request is not None:
+        AUTH_LIMITS.check(request, "bearer", token, 90)
 
     try:
         db = create_client(
@@ -62,15 +80,17 @@ def get_current_user(authorization: Optional[str] = Header(None)):
             raise HTTPException(status_code=401, detail="Неверный токен сессии")
         return UserContext(user_id=user_response.user.id, db=db)
     except Exception as e:
-        print(f"[AUTH ERROR] Ошибка валидации токена: {e}")
+        print("[AUTH ERROR] Ошибка валидации токена")
         raise HTTPException(status_code=401, detail="Ошибка авторизации")
 
 
-app.include_router(create_web_router(get_current_user, api_key=os.getenv("TAVILY_API_KEY")))
+get_working_user = working_user_dependency(get_current_user)
+app.include_router(create_web_router(get_working_user, api_key=os.getenv("TAVILY_API_KEY"),
+                                    authorize=require_subscription, reserve=reserve_request))
 
 
 class ChatCreate(BaseModel):
-    title: str
+    title: str = Field(max_length=200)
 
 
 class ChatResponse(BaseModel):
@@ -81,7 +101,7 @@ class ChatResponse(BaseModel):
 
 class MessageItem(BaseModel):
     role: Literal["user", "model", "tool"]
-    content: str
+    content: str = Field(max_length=MAX_HISTORY_CONTENT_CHARS)
     name: Optional[str] = None
     args: Optional[Dict[str, Any]] = None
     call_id: Optional[str] = None
@@ -89,49 +109,43 @@ class MessageItem(BaseModel):
 
 
 class StreamChatPayload(BaseModel):
-    message: str = ""
+    request_id: Optional[UUID] = None
+    message: str = Field(default="", max_length=32768)
     chat_id: Optional[str] = None
-    model_name: Optional[str] = "gemini-3.5-flash-lite"
-    history: Optional[List[MessageItem]] = None
+    model_name: ModelName = "gemini-3.5-flash-lite"
+    history: Optional[List[MessageItem]] = Field(default=None, max_length=100)
     current_dir: Optional[str] = None
     continue_after_tool: bool = False
-    supported_tools: Optional[List[str]] = None
+    supported_tools: Optional[List[str]] = Field(default=None, max_length=32)
     end_tool_turn: bool = False
+
+    @field_validator("supported_tools")
+    @classmethod
+    def known_tools(cls, value):
+        if value is not None and (len(set(value)) != len(value) or not set(value) <= set(TOOLS)):
+            raise ValueError("Неизвестные или повторяющиеся инструменты")
+        return value
 
 
 class LoginPayload(BaseModel):
-    email: str
-    password: str
+    email: str = Field(max_length=320)
+    password: str = Field(max_length=1024, repr=False)
 
 
 class RefreshPayload(BaseModel):
-    refresh_token: str
+    refresh_token: str = Field(max_length=8192, repr=False)
 
 
 from fastapi import status
 
 @app.post("/auth/signup", status_code=status.HTTP_201_CREATED)
 def signup_user(payload: LoginPayload):
-    if not payload.email or not payload.password:
-        raise HTTPException(status_code=400, detail="Email и пароль обязательны")
-
-    try:
-        resp = create_client(supabase_url, supabase_key).auth.sign_up({
-            "email": payload.email.strip(),
-            "password": payload.password.strip(),
-        })
-
-        if hasattr(resp, "session") and resp.session:
-            return resp.session.model_dump()
-
-        return {"detail": "Пользователь создан. Проверьте почту для подтверждения."}
-
-    except Exception as e:
-        print(f"[AUTH ERROR] Signup failed for {payload.email!r}: {e}")
-        raise HTTPException(status_code=400, detail="Не удалось создать пользователя")
+    raise HTTPException(status_code=403, detail="Регистрация доступна только по приглашению владельца")
 
 @app.post("/auth/login")
-def login_user(payload: LoginPayload):
+def login_user(payload: LoginPayload, request: Request = None):
+    if request is not None:
+        AUTH_LIMITS.check(request, "login", payload.email.strip().casefold())
     if not payload.email or not payload.password:
         raise HTTPException(status_code=400, detail="Email и пароль обязательны")
 
@@ -147,12 +161,14 @@ def login_user(payload: LoginPayload):
         return auth_response.session.model_dump()
 
     except Exception as e:
-        print(f"[AUTH ERROR] Login failed for {payload.email!r}: {e}")
+        print("[AUTH ERROR] Не удалось выполнить вход")
         raise HTTPException(status_code=401, detail="Не удалось выполнить вход")
 
 
 @app.post("/auth/refresh")
-def refresh_user_session(payload: RefreshPayload):
+def refresh_user_session(payload: RefreshPayload, request: Request = None):
+    if request is not None:
+        AUTH_LIMITS.check(request, "refresh", payload.refresh_token, 30)
     if not payload.refresh_token:
         raise HTTPException(status_code=401, detail="Не удалось обновить сессию")
     try:
@@ -162,14 +178,23 @@ def refresh_user_session(payload: RefreshPayload):
             raise HTTPException(status_code=401, detail="Не удалось обновить сессию")
         return response.session.model_dump()
     except Exception as e:
-        print(f"[AUTH ERROR] Session refresh failed: {e}")
+        print("[AUTH ERROR] Не удалось обновить сессию")
         status_code = (401 if isinstance(e, HTTPException) or
                        getattr(e, "status", None) in (400, 401, 403) else 503)
         raise HTTPException(status_code=status_code, detail="Не удалось обновить сессию")
 
 
+web_sessions = WebSessions(get_current_user)
+get_admin = owner_dependency(get_current_user)
+app.include_router(session_router(web_sessions, login_user))
+app.include_router(subscription_router(get_current_user, get_admin, web_sessions))
+app.include_router(invitation_router(web_sessions))
+app.include_router(account_router(web_sessions))
+app.include_router(page_router(web_sessions))
+
+
 @app.get("/chats", response_model=List[ChatResponse])
-def get_chats(user: UserContext = Depends(get_current_user)):
+def get_chats(user: UserContext = Depends(get_working_user)):
     try:
         response = user.db.table("chats") \
             .select("id, title, created_at") \
@@ -187,12 +212,12 @@ def get_chats(user: UserContext = Depends(get_current_user)):
         return chats
 
     except Exception as e:
-        print(f"[SERVER ERROR] Ошибка получения чатов: {e}")
+        print("[SERVER ERROR] Ошибка получения чатов")
         raise HTTPException(status_code=500, detail="Не удалось получить список чатов")
 
 
 @app.post("/chats", response_model=ChatResponse)
-def create_chat(payload: ChatCreate, user: UserContext = Depends(get_current_user)):
+def create_chat(payload: ChatCreate, user: UserContext = Depends(get_working_user)):
     if not payload.title.strip():
         raise HTTPException(status_code=400, detail="Название чата не может быть пустым")
 
@@ -212,12 +237,12 @@ def create_chat(payload: ChatCreate, user: UserContext = Depends(get_current_use
         )
 
     except Exception as e:
-        print(f"[SERVER ERROR] Ошибка при создании чата: {e}")
+        print("[SERVER ERROR] Ошибка создания чата")
         raise HTTPException(status_code=500, detail="Не удалось создать чат")
 
 
 @app.delete("/chats/{chat_id}")
-def delete_chat(chat_id: str, user: UserContext = Depends(get_current_user)):
+def delete_chat(chat_id: str, user: UserContext = Depends(get_working_user)):
     try:
         chat = user.db.table("chats").select("id") \
             .eq("id", chat_id).eq("user_id", user.user_id).execute()
@@ -233,8 +258,12 @@ def delete_chat(chat_id: str, user: UserContext = Depends(get_current_user)):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[SERVER ERROR] Ошибка удаления чата: {e}")
+        print("[SERVER ERROR] Ошибка удаления чата")
         raise HTTPException(status_code=500, detail="Не удалось удалить чат")
+
+
+class MessageStorageError(RuntimeError):
+    pass
 
 
 def save_message_to_db(
@@ -256,123 +285,39 @@ def save_message_to_db(
     try:
         db.table("messages").insert(data).execute()
     except Exception as e:
-        print(f"[DB ERROR] Не удалось сохранить сообщение: {e}")
-        raise RuntimeError("Не удалось сохранить сообщение в БД") from e
+        print("[DB ERROR] Не удалось сохранить сообщение")
+        raise MessageStorageError("Не удалось сохранить сообщение в БД") from None
 
 
 def build_history_from_db(db: Client, chat_id: str,
-                          before_user_content: Optional[str] = None) -> List[types.Content]:
+                          before_user_content: Optional[str] = None) -> List[Any]:
     try:
         response = db.table("messages").select("*").eq("chat_id", chat_id).order("created_at").execute()
         messages = response.data
 
-        if before_user_content is not None:
-            for index in range(len(messages) - 1, -1, -1):
-                if messages[index].get("role") == "user" and messages[index].get("content") == before_user_content:
-                    messages = messages[:index]
-                    break
-
-        restored = []
-        for msg in messages:
-            content, args = persistent_tool_message(
-                msg["role"], msg.get("name"), msg.get("content") or "", msg.get("args"))
-            restored.append(MessageItem(role=msg["role"], content=content, args=args,
-                                        name=msg.get("name"), call_id=msg.get("call_id")))
-        return build_history_from_client(restored)
+        return to_gemini(persistent_history_rows(messages, before_user_content))
     except Exception as e:
-        print(f"[DB ERROR] Ошибка загрузки истории: {e}")
+        print("[DB ERROR] Ошибка загрузки истории")
         raise HTTPException(status_code=503, detail="Не удалось загрузить историю чата") from e
 
 
-def build_history_from_client(history: Optional[List[MessageItem]]) -> List[types.Content]:
-    history_content: List[types.Content] = []
-    if not history:
-        return history_content
+def build_history_from_client(history: Optional[List[MessageItem]]) -> List[Any]:
+    try:
+        return to_gemini([item.model_dump() for item in history or []])
+    except ValueError:
+        raise HTTPException(400, "Некорректная подпись вызова инструмента") from None
 
-    last_user = next((index for index in range(len(history) - 1, -1, -1)
-                      if history[index].role == "user"), len(history))
-    start = min(max(0, len(history) - 20), last_user)
-    for item in history[start:]:
-        msg = item.model_dump() if hasattr(item, "model_dump") else item.dict()
-
-        role = msg.get("role")
-        content = msg.get("content", "")
-        name = msg.get("name")
-        args = msg.get("args")
-        call_id = msg.get("call_id")
-
-        if role == "user":
-            history_content.append(
-                types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=content)],
-                )
-            )
-
-        elif role == "model":
-            if name:
-                signature = msg.get("thought_signature")
-                if signature:
-                    try:
-                        signature = base64.b64decode(signature, validate=True)
-                    except (ValueError, binascii.Error) as exc:
-                        raise HTTPException(status_code=400, detail="Некорректная подпись вызова инструмента") from exc
-                part = types.Part(function_call=types.FunctionCall(
-                    name=name, args=args or {}, id=call_id
-                ), thought_signature=signature)
-                if history_content and history_content[-1].role == "model" and all(
-                    previous.function_call is not None for previous in history_content[-1].parts
-                ):
-                    history_content[-1].parts.append(part)
-                else:
-                    history_content.append(types.Content(role="model", parts=[part]))
-            else:
-                history_content.append(
-                    types.Content(
-                        role="model",
-                        parts=[types.Part.from_text(text=content)],
-                    )
-                )
-
-        elif role == "tool":
-            try:
-                parsed_result = json.loads(content)
-                if not isinstance(parsed_result, dict):
-                    parsed_result = {"output": parsed_result}
-            except Exception:
-                parsed_result = {"output": content}
-
-            part = types.Part(function_response=types.FunctionResponse(
-                name=name or "unknown_tool", response=parsed_result, id=call_id
-            ))
-            if history_content and history_content[-1].role == "user" and all(
-                previous.function_response is not None for previous in history_content[-1].parts
-            ):
-                history_content[-1].parts.append(part)
-            else:
-                history_content.append(types.Content(role="user", parts=[part]))
-
-    while history_content and history_content[0].role != "user":
-        history_content.pop(0)
-
-    while (
-            history_content
-            and history_content[0].role == "user"
-            and history_content[0].parts
-            and hasattr(history_content[0].parts[0], "function_response")
-            and history_content[0].parts[0].function_response is not None
-    ):
-        history_content.pop(0)
-
-    return history_content
 
 
 
 @app.post("/chat/stream")
 def stream_chat(
         payload: StreamChatPayload,
-        user: UserContext = Depends(get_current_user),
+        user: UserContext = Depends(get_working_user),
 ):
+    requested_tools = set(payload.supported_tools if payload.supported_tools is not None else LEGACY_NAMES)
+    rights = require_subscription(user, model=payload.model_name)
+    requested_tools &= set(rights["features"])
     if payload.end_tool_turn and not payload.continue_after_tool:
         raise HTTPException(status_code=400, detail="Завершение допустимо только после результата инструмента")
     if payload.continue_after_tool:
@@ -411,26 +356,6 @@ def stream_chat(
             if payload.chat_id and not payload.continue_after_tool:
                 save_message_to_db(user.db, payload.chat_id, "user", payload.message.strip())
 
-            agent_instruction = (
-                "Ты — продвинутый AI-ассистент разработчика с доступом к локальной файловой системе и терминалу. "
-                "Когда ты запрашиваешь вызов инструмента (чтение, запись файлов или выполнение команд), клиент "
-                "выполняет его и возвращает тебе результат в блоке истории с ролью 'user' (технический ответ функции). "
-                "КРИТИЧЕСКОЕ ПРАВИЛО: Получив ответ инструмента, ты должен сразу проанализировать этот результат "
-                "и продолжить выполнение исходной задачи пользователя. НЕ запрашивай контекст повторно, "
-                "НЕ пиши фразы в духе 'Уточните задачу' — вся хронология действий уже находится в истории чата! "
-                "ВАЖНО: Если инструмент вернул успешный результат (например, файл записан, команда выполнена), "
-                "оцени, выполнена ли исходная задача целиком; при необходимости продолжай другими инструментами. "
-                "Не повторяй завершённую операцию без причины. При отказе или исчерпании поиска отвечай "
-                "по доступным данным и укажи ограничение. Для веб-фактов приводи фактические ссылки из результатов."
-            )
-
-            config = types.GenerateContentConfig(
-                tools=available_tools(payload.supported_tools,
-                                      set(TOOLS) - ({"web_search"} if not os.getenv("TAVILY_API_KEY") else set())),
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-                system_instruction=agent_instruction
-            )
-
             current_contents = list(history_content)
 
             if payload.continue_after_tool:
@@ -445,10 +370,7 @@ def stream_chat(
                         )
                 full_contents = current_contents
             else:
-                active_message = types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=payload.message)]
-                )
+                active_message = to_gemini([{"role": "user", "content": payload.message}])[0]
 
                 full_contents = current_contents + [active_message]
 
@@ -459,60 +381,38 @@ def stream_chat(
                 yield f"data: {json.dumps({'type': 'text', 'content': message}, ensure_ascii=False)}\n\n".encode("utf-8")
                 return
 
-            response_stream = client.models.generate_content_stream(
-                model=payload.model_name,
-                contents=full_contents,
-                config=config
-            )
-
-            tool_calls = []
-            for chunk in response_stream:
-                candidates = getattr(chunk, "candidates", None) or []
-                content = getattr(candidates[0], "content", None) if candidates else None
-                parts = getattr(content, "parts", None) or []
-                call_parts = [part for part in parts if getattr(part, "function_call", None)]
-                if call_parts:
-                    tool_calls.extend((part.function_call, part.thought_signature)
-                                      for part in call_parts)
-                    continue
-                if chunk.function_calls:
-                    tool_calls.extend((call, None) for call in chunk.function_calls)
-                    continue
-
-                if chunk.text:
-                    full_response += chunk.text
-                    text_event = {
-                        "type": "text",
-                        "content": chunk.text
-                    }
-                    yield f"data: {json.dumps(text_event, ensure_ascii=False)}\n\n".encode("utf-8")
-
-            for call, signature in tool_calls:
-                tool_event = {
-                    "type": "tool_call", "name": call.name,
-                    "args": call.args, "call_id": getattr(call, "id", None),
-                    "thought_signature": base64.b64encode(signature).decode("ascii")
-                    if signature else None,
-                }
-                if payload.chat_id:
-                    save_message_to_db(
-                        user.db, payload.chat_id,
-                        "model", f"[Вызов локального инструмента: {call.name}]",
-                        call.name, call.args
-                    )
-                yield f"data: {json.dumps(tool_event, ensure_ascii=False)}\n\n".encode("utf-8")
-            if tool_calls:
-                return
-
-            if payload.chat_id and full_response:
+            require_subscription(user, model=payload.model_name, features=requested_tools)
+            reserve_request(user, operation="gemini", request_id=payload.request_id,
+                            model=payload.model_name, features=requested_tools)
+            has_calls, failed = False, False
+            permitted = set(TOOLS) - ({"web_search"} if not os.getenv("TAVILY_API_KEY") else set())
+            for event in stream_events(client, model=payload.model_name, contents=full_contents,
+                                       supported_tools=sorted(requested_tools), permitted_tools=permitted):
+                if event["type"] == "text":
+                    full_response += event["content"]
+                elif event["type"] == "error":
+                    failed = True
+                elif event["type"] == "tool_call":
+                    if not has_calls and full_response and payload.chat_id:
+                        save_message_to_db(user.db, payload.chat_id, "model", full_response)
+                    has_calls = True
+                    if payload.chat_id:
+                        save_message_to_db(user.db, payload.chat_id, "model",
+                            f"[Вызов локального инструмента: {event['name']}]", event["name"], event["args"])
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
+            if payload.chat_id and full_response and not has_calls and not failed:
                 save_message_to_db(user.db, payload.chat_id, "model", full_response)
 
         except Exception as e:
             error_msg = str(e)
-            if "429" in error_msg or "ResourceExhausted" in error_msg:
+            if isinstance(e, MessageStorageError):
+                content = "[Ошибка сервера: Не удалось сохранить сообщение в БД]"
+            elif isinstance(e, HTTPException):
+                content = e.detail
+            elif "429" in error_msg or "ResourceExhausted" in error_msg:
                 content = "Бесплатные токены или запросы для модели закончились. Пожалуйста, смените модель с помощью /model"
             else:
-                content = f"[Ошибка сервера: {error_msg}]"
+                content = "Сервер временно не смог обработать запрос"
 
             error_event = {
                 "type": "error",
@@ -520,8 +420,10 @@ def stream_chat(
             }
             yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n".encode("utf-8")
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    job = StreamJob(event_generator(), user.user_id, rights.get("parallel_limit", 1))
+    return StreamingResponse(job, media_type="text/event-stream")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000, proxy_headers=True,
+                forwarded_allow_ips="127.0.0.1")
