@@ -563,7 +563,7 @@ def main(backend: Backend | None = None):
                 table.add_column("Команда", style="cyan")
                 table.add_column("Описание", style="white")
 
-                table.add_row("/show 1, /edit 1", "Просмотреть или изменить текст вложения #1")
+                table.add_row("/show 1, /edit 1", "Просмотр вложения #1 (изображение — в приложении ОС); изменение текста")
                 table.add_row("Ctrl+V, /paste", "Прикрепить скриншот из буфера")
                 table.add_row("@LICENSE", "Прикрепить файл целиком после подтверждения")
                 table.add_row("@LICENSE:1-20", "Прикрепить строки с 1 по 20 включительно (без скобок)")
@@ -733,6 +733,9 @@ def main(backend: Backend | None = None):
             break
 
 
+    preview_warning = draft_input.close()
+    if preview_warning:
+        console.print(Text(preview_warning))
     if settings:
         settings.close()
 

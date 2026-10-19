@@ -68,6 +68,7 @@ class DraftInputTest(unittest.TestCase):
         self.assertIn('#1 — файл LICENSE:1-20', ui.notice)
         self.assertIn('#2 — изображение', ui.notice)
         self.assertIn('#3 — вставка', ui.notice)
+        self.assertEqual([line[:2] for line in ui.notice.splitlines()[:3]], ['#1', '#2', '#3'])
         ui.command('/remove 1')
         self.assertEqual(draft.files, [])
         self.assertIn('Удалено #1', ui.take_notice())

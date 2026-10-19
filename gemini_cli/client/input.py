@@ -1,6 +1,7 @@
 """Действия черновика: клавиши не отправляют запрос и не запускают backend."""
 
 from prompt_toolkit.key_binding import KeyBindings
+from .preview import ImagePreview
 from .paste import PasteBlock, is_large, view_text, edit_text
 from prompt_toolkit.keys import Keys
 from ..protocol.attachments import ImageAttachment
@@ -17,6 +18,7 @@ class DraftInput:
         self.clipboard_factory = clipboard_factory or get_clipboard
         self.notice = ''
         self.pasted_text = None
+        self.preview = ImagePreview()
         self.bindings = KeyBindings()
         self.bindings.add('c-v')(self.paste_key)
         self.bindings.add(Keys.BracketedPaste)(self.bracketed_paste)
@@ -74,7 +76,11 @@ class DraftInput:
             return 'Вложений нет. Ctrl+V — вставить; @LICENSE:1-20 — добавить строки файла.'
         return '\n'.join(self.describe(number, item) for number, item in items) + '\n/show N · /edit N · /remove N'
 
+    def close(self) -> str | None:
+        return self.preview.close()
+
     def take_notice(self) -> str:
+        self.preview.prune({image.id for image in self.draft.images})
         result, self.notice = self.notice, ''
         return result
 
@@ -112,8 +118,11 @@ class DraftInput:
                     self.draft.remove_number(number)
                     self.notice = f'Удалено {label}'
                 elif isinstance(item, ImageAttachment):
-                    self.notice = label + ('\nИзображение нельзя редактировать как текст.' if action == '/edit'
-                                           else '\nПредпросмотр изображения в терминале недоступен.')
+                    if action == '/show':
+                        self.preview.show(item)
+                        self.notice = f'Открываю {label} в системном просмотрщике.'
+                    else:
+                        self.notice = 'Изображение нельзя редактировать как текст. Просмотр: /show ' + str(number)
                 else:
                     content = item[1] if isinstance(item, tuple) else item.text
                     if action == '/show':
