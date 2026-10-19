@@ -14,8 +14,9 @@ from ..tools.results import failure
 class LocalBackend:
     mode = "local"
 
-    def __init__(self, api_key: str, root: Path, *, profile="default", provider=None, chats=None):
+    def __init__(self, api_key: str, root: Path, *, profile="default", provider=None, chats=None, tavily_key=None):
         self.api_key, self.provider = api_key, provider
+        self.tavily_key = tavily_key
         self.chats = chats or LocalChats(root, profile)
 
     def get_chats(self):
@@ -28,7 +29,18 @@ class LocalBackend:
         return self.chats.delete(chat_id)
 
     def web_tool(self, kind, payload):
-        return failure("unavailable", "Локальный веб-инструмент не настроен")
+        if kind == "read":
+            from ..tools.web.extract import read_url
+            return read_url(payload.get("url"))
+        if kind == "search":
+            if not self.tavily_key:
+                return failure("unavailable", "Личный ключ Tavily не настроен; чтение URL доступно")
+            from ..tools.web.search import search
+            result = search(payload.get("query"), payload.get("max_results", 5), api_key=self.tavily_key)
+            if result.get("status") == "error" and result.get("error", {}).get("code") == "unavailable":
+                return failure("unavailable", "Проверьте личный ключ Tavily в /settings")
+            return result
+        return failure("invalid_arguments", "Неизвестный веб-инструмент")
 
     def stream_chat(self, payload: dict) -> StreamResult:
         try:
@@ -86,7 +98,8 @@ class LocalBackend:
                 if self.provider is None:
                     self.provider = create_provider(self.api_key)
                 for event in stream_events(self.provider, model=payload.get("model_name", MODEL_IDS[0]),
-                                           contents=contents, supported_tools=payload.get("supported_tools")):
+                                           contents=contents, supported_tools=payload.get("supported_tools"),
+                                           permitted_tools=set(TOOLS) - ({"web_search"} if not self.tavily_key else set())):
                     if event["type"] == "text":
                         full_text += event["content"]
                     elif event["type"] == "tool_call":
@@ -110,3 +123,4 @@ class LocalBackend:
         if close:
             close()
         self.api_key, self.provider = "", None
+        self.tavily_key = None
