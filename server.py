@@ -17,6 +17,7 @@ from supabase.lib.client_options import SyncClientOptions
 
 from gemini_cli.tools.definitions import TOOLS, available_tools
 from gemini_cli.server.tool_history import REDACTED_READ_RESULT, persistent_tool_message
+from gemini_cli.runtime.history import persistent_history_rows
 from gemini_cli.server.subscriptions import require_subscription, working_user_dependency
 from gemini_cli.server.budgets import reserve_request
 from gemini_cli.server.admin.sessions import WebSessions, session_router, owner_dependency
@@ -297,18 +298,7 @@ def build_history_from_db(db: Client, chat_id: str,
         response = db.table("messages").select("*").eq("chat_id", chat_id).order("created_at").execute()
         messages = response.data
 
-        if before_user_content is not None:
-            for index in range(len(messages) - 1, -1, -1):
-                if messages[index].get("role") == "user" and messages[index].get("content") == before_user_content:
-                    messages = messages[:index]
-                    break
-
-        restored = []
-        for msg in messages:
-            content, args = persistent_tool_message(
-                msg["role"], msg.get("name"), msg.get("content") or "", msg.get("args"))
-            restored.append(MessageItem(role=msg["role"], content=content, args=args,
-                                        name=msg.get("name"), call_id=msg.get("call_id")))
+        restored = [MessageItem(**row) for row in persistent_history_rows(messages, before_user_content)]
         return build_history_from_client(restored)
     except Exception as e:
         print("[DB ERROR] Ошибка загрузки истории")

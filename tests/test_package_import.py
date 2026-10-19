@@ -25,6 +25,7 @@ import gemini_cli
 from gemini_cli.tools.local import command, edit, files, search, workspace
 from gemini_cli.client import tool_runner, web_tools
 from gemini_cli.backends import base
+from gemini_cli.runtime import history
 from gemini_cli.tools import definitions, results
 assert set(definitions.CLIENT_NAMES) == set(definitions.TOOLS)
 assert Path(gemini_cli.__file__).resolve() == (

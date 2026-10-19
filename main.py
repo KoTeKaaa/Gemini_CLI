@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 import requests
 from gemini_cli.backends.base import Backend, StreamResult
+from gemini_cli.runtime.history import trim_history
 from gemini_cli.backends.remote import RemoteBackend, events_from_response as iter_stream_events
 from prompt_toolkit import PromptSession
 from prompt_toolkit.shortcuts import radiolist_dialog
@@ -325,25 +326,6 @@ def show_model_selection_menu(current_model: str) -> str:
     logger.info(f"Модель изменена на: {result}")
     return result
 
-
-def trim_history(history: List[Dict[str, str]], limit: int = 20, tool_content_limit: int = 4) -> List[Dict[str, str]]:
-    last_user = next((index for index in range(len(history) - 1, -1, -1)
-                      if history[index].get("role") == "user"), len(history))
-    start = min(max(0, len(history) - limit), last_user)
-    trimmed = history[start:]
-    while trimmed and trimmed[0].get("role") != "user":
-        trimmed = trimmed[1:]
-
-    tool_count = 0
-    current_turn_start = next((index for index in range(len(trimmed) - 1, -1, -1)
-                               if trimmed[index].get("role") == "user"), len(trimmed))
-    for msg in reversed(trimmed[:current_turn_start]):
-        if msg.get("role") == "tool":
-            tool_count += 1
-            if tool_count > tool_content_limit:
-                msg["content"] = '{"status": "already_processed"}'
-
-    return trimmed
 
 
 def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
