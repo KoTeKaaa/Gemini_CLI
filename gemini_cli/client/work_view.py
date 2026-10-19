@@ -3,6 +3,8 @@ from contextlib import contextmanager
 from threading import RLock
 from rich.live import Live
 from rich.text import Text
+from rich.console import Group
+from rich.spinner import Spinner
 from .process import ProcessLog
 from .work_input import WorkInput
 
@@ -14,6 +16,7 @@ class WorkView:
         self.process, self.text = None, ""
         self.archived = ProcessLog()
         self.lock = RLock()
+        self.spinner = Spinner("dots", text="✨ Gemini думает...", style="green")
 
     def handle(self, key):
         with self.lock:
@@ -38,7 +41,7 @@ class WorkView:
     def render(self):
         with self.lock:
             header = "Esc — отмена · F2 — вывод · PgUp/PgDn — прокрутка"
-            if self.state.cancelled.is_set():
+            if self.state is not None and self.state.cancelled.is_set():
                 header += " · отменено"
             text = self.text
             if self.expanded:
@@ -46,7 +49,7 @@ class WorkView:
                 if self.process is not None:
                     text += self.process.stdout.read() + self.process.stderr.read()
                 text = text or "Вывода инструментов пока нет"
-            steps = self.state.steps()
+            steps = self.state.steps() if self.state is not None and self.expanded else []
             if steps:
                 labels = {"queued": "ожидает", "running": "выполняется", "completed": "готово",
                           "failed": "ошибка", "cancelled": "отменено", "skipped": "пропущено"}
@@ -61,8 +64,8 @@ class WorkView:
     @contextmanager
     def screen(self):
         if self.console.is_terminal and not self.console.is_dumb_terminal:
-            with Live(console=self.console, screen=True, refresh_per_second=10,
-                      transient=True, get_renderable=self.render):
+            with Live(console=self.console, screen=False, refresh_per_second=10,
+                      transient=True, get_renderable=lambda: Group(self.spinner, self.render())):
                 yield
         else:
             yield

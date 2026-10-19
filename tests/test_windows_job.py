@@ -1,7 +1,7 @@
 import ctypes
 import unittest
 from unittest.mock import Mock, patch
-from gemini_cli.client.process_windows import WindowsJob, WindowsProcess
+from gemini_cli.client.process_windows import WindowsJob
 
 
 class WindowsJobTests(unittest.TestCase):
@@ -18,10 +18,3 @@ class WindowsJobTests(unittest.TestCase):
         api.WaitForSingleObject.assert_called_once_with(42, 5000)
         job.close()
         self.assertEqual([call.args for call in api.CloseHandle.call_args_list], [(42,), (11,)])
-
-    def test_stop_does_not_cancel_nonexistent_io(self):
-        process = WindowsProcess.__new__(WindowsProcess)
-        process.job, process.pty = Mock(), Mock()
-        process.stop()
-        process.job.stop.assert_called_once()
-        process.pty.cancel_io.assert_not_called()

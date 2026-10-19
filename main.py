@@ -4,7 +4,6 @@ from gemini_cli.client.input import DraftInput, result_panel
 from prompt_toolkit.key_binding import merge_key_bindings
 from gemini_cli.client.draft import Draft
 from gemini_cli.client.shell import launch_shell
-from gemini_cli.client.sessions import SessionManager, session_command
 from gemini_cli.client.work_input import WorkInput
 from gemini_cli.client.work_view import WorkView
 from gemini_cli.protocol.images import encode_images
@@ -15,7 +14,6 @@ import json
 import ipaddress
 import tempfile
 from pathlib import Path
-from contextlib import nullcontext
 from typing import Optional, Dict, List, Any
 from urllib.parse import urlsplit
 
@@ -441,18 +439,12 @@ def display_stream_response(response, has_pending_tool: bool, state=None):
     full_response = ""
     tool_calls_received = []
     error_content = None
-    status_text = ("[bold yellow]⚙️  Ожидаю ответ инструмента...[/bold yellow]"
-                   if has_pending_tool else "[bold green]✨ Gemini думает...[/bold green]")
-    use_screen = (console.is_terminal and not console.is_dumb_terminal
-                  and not console.legacy_windows)
-    view = getattr(state, "view", None) if use_screen else None
-    with WorkInput(state, view.handle if view else None), (view.screen() if view else
-            console.screen() if use_screen else nullcontext()):
-        status = console.status(status_text, spinner="dots")
+    use_preview = console.is_terminal and not console.is_dumb_terminal
+    view = getattr(state, "view", None) or WorkView(console, state)
+    view.update_text("")
+    with view.monitor():
         started_text = False
         line_ended = False
-        if view is None:
-            status.start()
         try:
             for event in iter_stream_events(response):
                 if state is not None and not state.accepts(event):
@@ -462,10 +454,8 @@ def display_stream_response(response, has_pending_tool: bool, state=None):
                     fragment = event.get("content", "")
                     if fragment:
                         full_response += fragment
-                        if not started_text:
-                            status.stop()
-                            started_text = True
-                        if view is not None:
+                        started_text = True
+                        if use_preview:
                             view.update_text(full_response)
                         else:
                             sys.stdout.write(fragment)
@@ -477,11 +467,10 @@ def display_stream_response(response, has_pending_tool: bool, state=None):
                     error_content = event.get("content")
                     break
         finally:
-            status.stop()
             close = getattr(response, "close", None)
             if close:
                 close()
-            if view is None and started_text and not line_ended:
+            if not use_preview and started_text and not line_ended:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
     if state is not None and state.cancelled.is_set():
@@ -489,7 +478,7 @@ def display_stream_response(response, has_pending_tool: bool, state=None):
     if error_content is not None:
         console.print(f"[bold red]Ошибка:[/] {error_content}")
         return "", []
-    if use_screen and full_response and not tool_calls_received:
+    if use_preview and full_response and not tool_calls_received:
         console.print(Markdown(full_response))
     return full_response, tool_calls_received
 
@@ -552,7 +541,6 @@ def main(backend: Backend | None = None):
 
     temporary_history: List[Dict[str, str]] = []
     states = {}
-    sessions = SessionManager()
     console.print(Text(f"Backend: {api_client.mode}"))
 
     while True:
@@ -586,12 +574,12 @@ def main(backend: Backend | None = None):
                 except (ValueError, OSError) as error:
                     console.print(result_panel(str(error), title="Файл не добавлен", error=True))
                     continue
-                console.print(result_panel(result, title="Файл добавлен в черновик"))
+                console.print(result_panel(result, title="Вложения"))
                 continue
 
             if draft_input.command(user_input.strip()):
                 console.print(result_panel(draft_input.take_notice(),
-                                           title="Вложения" if first_line == "/attachments" else "Черновик"))
+                                           title="Вложения"))
                 continue
 
             if first_line.startswith("/help"):
@@ -614,31 +602,24 @@ def main(backend: Backend | None = None):
                 table.add_row("/chat", "Сменить или создать комнату диалога")
                 table.add_row("/delete", "Удалить текущий постоянный чат")
                 table.add_row("/cd {путь}", "Изменить текущую рабочую папку для Gemini")
-                table.add_row("/session", "list/start NAME/attach NAME/stop NAME; Ctrl+] — detach")
                 table.add_row("/term", "Открыть оболочку; exit-to-cli возвращает в этот чат")
+                table.add_row("Esc / F2", "Во время ответа: отменить ход / показать или скрыть вывод инструментов")
                 table.add_row("exit, quit, q", "Выход из приложения")
 
                 console.print(Panel(table, title="[bold green]Справка[/bold green]", expand=False))
                 continue
 
-            if first_line.split()[0] == "/session":
-                try:
-                    session_command(sessions, user_input, current_dir, lambda text: console.print(Text(text)))
-                except (ValueError, OSError) as error:
-                    console.print(Text(str(error)))
-                continue
-
             if first_line.split()[0] == "/term":
                 if user_input.strip() != "/term":
-                    console.print(Text("Использование: /term (без аргументов)."))
+                    console.print(result_panel("Использование: /term (без аргументов).", title="Терминал", error=True))
                     continue
                 try:
-                    directory = launch_shell(current_dir, announce=lambda message: console.print(Text(message)))
+                    directory = launch_shell(current_dir, announce=lambda message: console.print(result_panel(message, title="Терминал")))
                     if directory is not None:
                         current_dir = directory
-                        console.print(Text(f"Текущая папка сменена на: {current_dir}"))
-                except ValueError as exc:
-                    console.print(Text(str(exc)))
+                        console.print(result_panel(f"Текущая папка сменена на: {current_dir}", title="Терминал"))
+                except (ValueError, OSError) as exc:
+                    console.print(result_panel(str(exc), title="Терминал", error=True))
                 continue
 
             if first_line.strip() == "/settings":
@@ -747,8 +728,11 @@ def main(backend: Backend | None = None):
                 has_pending_tool = payload["continue_after_tool"]
 
                 try:
+                    state.view.update_text("")
                     with state.view.monitor():
                         response = open_stream(api_client, payload, state)
+                except InterruptedError:
+                    break
                 except Exception:
                     console.print(Text("Соединение прервано. Черновик сохранён; повторите отправку."))
                     break
@@ -805,7 +789,6 @@ def main(backend: Backend | None = None):
             break
 
 
-    sessions.close()
     preview_warning = draft_input.close()
     if preview_warning:
         console.print(Text(preview_warning))

@@ -4,8 +4,8 @@ import os
 from prompt_toolkit.completion import Completer, Completion
 from ..tools.local.workspace import resolve_safe_path, is_sensitive_read_path, plan_text_file
 
-COMMANDS = ('/help', '/model', '/settings', '/chat', '/delete', '/cd', '/term', '/session', '/paste',
-            '/attachments', '/show', '/edit', '/remove')
+COMMANDS = ('/help', '/model', '/chat', '/settings', '/term', '/paste',
+            '/attachments', '/show', '/edit', '/remove', '/cd', '/delete')
 SKIP = {'node_modules', 'build', 'dist', 'venv', '__pycache__'}
 
 
