@@ -21,6 +21,7 @@ from gemini_cli.server.subscriptions import require_subscription, working_user_d
 from gemini_cli.server.budgets import reserve_request
 from gemini_cli.server.admin.sessions import WebSessions, session_router, owner_dependency
 from gemini_cli.server.admin.subscriptions import subscription_router
+from gemini_cli.server.admin.invitations import invitation_router
 from gemini_cli.server.limits import BodyLimit, StreamJob, BoundedStreamingResponse as StreamingResponse
 
 load_dotenv()
@@ -194,6 +195,7 @@ web_sessions = WebSessions(get_current_user)
 get_admin = owner_dependency(get_current_user)
 app.include_router(session_router(web_sessions, login_user))
 app.include_router(subscription_router(get_current_user, get_admin, web_sessions))
+app.include_router(invitation_router(web_sessions))
 
 
 @app.get("/chats", response_model=List[ChatResponse])
