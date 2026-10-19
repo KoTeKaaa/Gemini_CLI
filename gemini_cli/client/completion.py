@@ -5,7 +5,7 @@ from prompt_toolkit.completion import Completer, Completion
 from ..tools.local.workspace import resolve_safe_path, is_sensitive_read_path, plan_text_file
 
 COMMANDS = ('/help', '/model', '/settings', '/chat', '/delete', '/cd', '/paste',
-            '/attachments', '/remove', '/remove-file', '/paste-show', '/paste-edit', '/paste-remove')
+            '/attachments', '/show', '/edit', '/remove')
 SKIP = {'node_modules', 'build', 'dist', 'venv', '__pycache__'}
 
 
@@ -22,12 +22,19 @@ def allowed_path(root: str, relative: str) -> str | None:
 
 
 class InputCompleter(Completer):
-    def __init__(self, root):
+    def __init__(self, root, attachment_choices=lambda: ()):
         self.root = root
+        self.attachment_choices = attachment_choices
         self.snapshots = {}
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
+        action, separator, fragment = text.partition(' ')
+        if action in {'/remove', '/show', '/edit'} and separator:
+            for number, description in self.attachment_choices():
+                if str(number).startswith(fragment.removeprefix('#')):
+                    yield Completion(str(number), start_position=-len(fragment), display_meta=description)
+            return
         if text.startswith('/') and ' ' not in text:
             for command in COMMANDS:
                 if command.startswith(text):
@@ -59,6 +66,6 @@ class InputCompleter(Completer):
                         except (ValueError, OSError):
                             continue
                         self.snapshots[(self.root(), relative)] = expected
-                        yield Completion('@' + relative, start_position=-len(text), display_meta=':1-20 — диапазон строк')
+                        yield Completion('@' + relative, start_position=-len(text), display_meta=f'Строки: @{relative}:1-20')
         except OSError:
             return

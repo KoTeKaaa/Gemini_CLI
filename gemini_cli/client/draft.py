@@ -35,9 +35,11 @@ class Draft:
         except KeyError:
             raise ValueError(f'Нет вложения #{number}. Список: /attachments') from None
 
-    def _add(self, value) -> None:
-        self._items[self._next_number] = value
+    def _add(self, value) -> int:
+        number = self._next_number
+        self._items[number] = value
         self._next_number += 1
+        return number
 
     def add_paste(self, text: str) -> PasteBlock:
         block = PasteBlock.create(text)
@@ -65,10 +67,10 @@ class Draft:
             self.text = self.text.replace(item.token, '')
         del self._items[number]
 
-    def add_text_file(self, name: str, text: str) -> None:
+    def add_text_file(self, name: str, text: str) -> int:
         if sum(len(value.encode('utf-8')) for _, value in self.files) + len(text.encode('utf-8')) > 24000:
             raise ValueError('Текстовые вложения превышают 24000 байт')
-        self._add((name, text))
+        return self._add((name, text))
 
     def message(self, text: str) -> str:
         result = expand_blocks(text, self.pastes) + ''.join(f'\nФайл {name!r}:\n{value}' for name, value in self.files)

@@ -1,4 +1,4 @@
-"""Выбор @путь[:N-M]: проверка снимка, согласие, однократное чтение."""
+"""Выбор @LICENSE:1-20: проверка снимка, согласие, однократное чтение."""
 
 import re
 from pathlib import Path
@@ -8,18 +8,23 @@ from ..tools.local.workspace import plan_text_file, read_binary_snapshot
 TEXT_LIMIT = 24000
 
 
-def attach_file(draft, selection: str, root: str, *, snapshots: dict, approve) -> None:
+def attach_file(draft, selection: str, root: str, *, snapshots: dict, approve) -> int | None:
     raw = selection.removeprefix('@')
-    match = re.fullmatch(r'(.+):(\d+)-(\d+)', raw)
+    match = re.fullmatch(r'(.+):(\d+)(?:-(\d+))?', raw)
+    if not match and re.search(r'(\[[:\d-]+\]|\s+\d+-\d+)$', raw):
+        raise ValueError('Диапазон указывается без скобок и пробела: @LICENSE:1-20')
     relative = match[1] if match else raw
-    start, end = (int(match[2]), int(match[3])) if match else (None, None)
+    start, end = (int(match[2]), int(match[3] or match[2])) if match else (None, None)
     if start is not None and not 1 <= start <= end:
         raise ValueError('Диапазон строк начинается с 1 и не может быть обратным')
     if not allowed_path(root, relative):
         raise ValueError('Доступ к файлу запрещён')
-    expected = snapshots.get((root, relative)) or plan_text_file(root, relative)
-    if plan_text_file(root, relative) != expected:
-        raise ValueError('Файл изменился после выбора; выберите его повторно')
+    try:
+        expected = snapshots.get((root, relative)) or plan_text_file(root, relative)
+        if plan_text_file(root, relative) != expected:
+            raise ValueError('Файл изменился после выбора; выберите его повторно')
+    except FileNotFoundError:
+        raise ValueError(f'Файл {relative!r} не найден. Пример диапазона: @LICENSE:1-20') from None
     if not approve(f'Файл {relative!r}' + (f', строки {start}-{end}' if match else ', целиком')):
         return
     data = read_binary_snapshot(root, relative, expected)
@@ -27,8 +32,8 @@ def attach_file(draft, selection: str, root: str, *, snapshots: dict, approve) -
     if extension in {'.png', '.jpg', '.jpeg', '.webp'}:
         if match:
             raise ValueError('Изображение не имеет диапазона строк')
-        draft.add_image(Path(relative).name, data)
-        return
+        image = draft.add_image(Path(relative).name, data)
+        return draft.number_of(image)
     if b'\0' in data:
         raise ValueError('Бинарный файл не поддерживается')
     try:
@@ -42,4 +47,5 @@ def attach_file(draft, selection: str, root: str, *, snapshots: dict, approve) -
         text = ''.join(lines[start - 1:end])
     if len(text.encode('utf-8')) > TEXT_LIMIT:
         raise ValueError('Текст больше 24000 байт; выберите меньший диапазон')
-    draft.add_text_file(relative, text)
+    name = f'{relative}:{start}-{end}' if match else relative
+    return draft.add_text_file(name, text)

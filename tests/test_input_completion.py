@@ -28,3 +28,14 @@ class CompletionTest(unittest.TestCase):
             self.assertEqual(list(completer.get_completions(Document('@../'), None)), [])
             self.assertEqual(list(completer.get_completions(Document('@outside/'), None)), [])
             self.assertEqual(list(completer.get_completions(Document('@привет мир.py:1-3'), None)), [])
+
+    def test_attachment_numbers_and_exact_range_examples(self):
+        choices = lambda: [(2, 'изображение screen.png'), (4, 'файл LICENSE:1-20')]
+        completer = InputCompleter(lambda: '.', attachment_choices=choices)
+        result = list(completer.get_completions(Document('/remove '), None))
+        self.assertEqual([item.text for item in result], ['2', '4'])
+        self.assertEqual([item.text for item in completer.get_completions(Document('/show #4'), None)], ['4'])
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / 'LICENSE').write_text('text')
+            result = list(InputCompleter(lambda: root).get_completions(Document('@LIC'), None))
+            self.assertIn('@LICENSE:1-20', result[0].display_meta_text)

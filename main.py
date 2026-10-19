@@ -515,7 +515,8 @@ def main(backend: Backend | None = None):
 
     draft = Draft()
     draft_input = DraftInput(draft)
-    completer = InputCompleter(lambda: current_dir)
+    completer = InputCompleter(lambda: current_dir, attachment_choices=lambda: [
+        (number, draft_input.describe(number, item)) for number, item in draft.items()])
     session = PromptSession(completer=completer, complete_while_typing=True,
                             key_bindings=merge_key_bindings([bindings, draft_input.bindings]),
                             style=my_style, bottom_toolbar=draft_input.status)
@@ -544,11 +545,13 @@ def main(backend: Backend | None = None):
 
             if user_input.startswith('@'):
                 try:
-                    attach_file(draft, user_input.strip(), current_dir,
+                    number = attach_file(draft, user_input.strip(), current_dir,
                                 snapshots=completer.snapshots, approve=confirm_content_scope)
+                    result = ('Прикрепление отменено.' if number is None else
+                              'Добавлено ' + draft_input.describe(number, draft.item(number)) + '. Отправка — Enter.')
                 except (ValueError, OSError) as error:
-                    console.print(Text(str(error)))
-                console.print(Text(draft_input.status()))
+                    result = str(error)
+                console.print(Text(result))
                 continue
 
             if draft_input.command(user_input.strip()):
@@ -560,10 +563,14 @@ def main(backend: Backend | None = None):
                 table.add_column("Команда", style="cyan")
                 table.add_column("Описание", style="white")
 
-                table.add_row("/paste-show N, /paste-edit N, /paste-remove N", "Раскрыть, изменить или удалить большую вставку")
+                table.add_row("/show 1, /edit 1", "Просмотреть или изменить текст вложения #1")
                 table.add_row("Ctrl+V, /paste", "Прикрепить скриншот из буфера")
-                table.add_row("@путь[:N-M], /remove-file N", "Прикрепить файл или удалить текстовое вложение")
-                table.add_row("/attachments, /remove N", "Список вложений и удаление")
+                table.add_row("@LICENSE", "Прикрепить файл целиком после подтверждения")
+                table.add_row("@LICENSE:1-20", "Прикрепить строки с 1 по 20 включительно (без скобок)")
+                table.add_row("@LICENSE:7", "Прикрепить только строку 7")
+                table.add_row("/attachments", "Общий список файлов, изображений и вставок с номерами")
+                table.add_row("/remove 1", "Удалить вложение #1 любого типа; номера остальных сохраняются")
+                table.add_row("/show, /edit, /remove", "Без номера: одно вложение выбирается само, иначе показывается список")
                 table.add_row("/help", "Показать эту справку")
                 table.add_row("/model", "Сменить ИИ модель")
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")
@@ -652,8 +659,6 @@ def main(backend: Backend | None = None):
                 console.print(Text("Неизвестная команда. Используйте /help; сообщение не отправлено."))
                 continue
 
-            console.print("\n[bold cyan]Gemini:[/bold cyan]")
-
             draft.text = user_input
             try:
                 content = attachment_text(draft.message(user_input), draft.images)
@@ -665,6 +670,7 @@ def main(backend: Backend | None = None):
             except ValueError as error:
                 console.print(Text(str(error)))
                 continue
+            console.print("\n[bold cyan]Gemini:[/bold cyan]")
             temporary_history.append(row)
             bound_image_history(temporary_history)
 

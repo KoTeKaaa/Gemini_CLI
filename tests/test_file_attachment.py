@@ -39,3 +39,20 @@ class FileAttachmentTest(unittest.TestCase):
             (base / 'image.png').write_bytes(png())
             attach_file(draft, '@image.png', root, snapshots={}, approve=lambda _: True)
             self.assertEqual(len(draft.images), 1)
+
+    def test_range_is_named_and_bad_syntax_explains_correct_input(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / 'LICENSE').write_text('one\ntwo\nthree\n')
+            draft = Draft()
+            number = attach_file(draft, '@LICENSE:2-3', root, snapshots={}, approve=lambda _: True)
+            self.assertEqual(number, 1)
+            self.assertEqual(draft.files, [('LICENSE:2-3', 'two\nthree\n')])
+            attach_file(draft, '@LICENSE:1', root, snapshots={}, approve=lambda _: True)
+            self.assertEqual(draft.files[1], ('LICENSE:1-1', 'one\n'))
+            for selection in ('@LICENSE[1-20]', '@LICENSE[:1-20]', '@LICENSE 1-20'):
+                with self.assertRaisesRegex(ValueError, '@LICENSE:1-20'):
+                    attach_file(draft, selection, root, snapshots={}, approve=lambda _: True)
+            before = draft.items()
+            result = attach_file(draft, '@LICENSE', root, snapshots={}, approve=lambda _: False)
+            self.assertIsNone(result)
+            self.assertEqual(draft.items(), before)
