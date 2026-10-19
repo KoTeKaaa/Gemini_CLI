@@ -1,3 +1,4 @@
+from gemini_cli.client.completion import InputCompleter
 from gemini_cli.client.input import DraftInput
 from prompt_toolkit.key_binding import merge_key_bindings
 from gemini_cli.client.draft import Draft
@@ -509,7 +510,9 @@ def main(backend: Backend | None = None):
 
     draft = Draft()
     draft_input = DraftInput(draft)
-    session = PromptSession(key_bindings=merge_key_bindings([bindings, draft_input.bindings]),
+    completer = InputCompleter(lambda: current_dir)
+    session = PromptSession(completer=completer, complete_while_typing=True,
+                            key_bindings=merge_key_bindings([bindings, draft_input.bindings]),
                             style=my_style, bottom_toolbar=draft_input.status)
 
     temporary_history: List[Dict[str, str]] = []
