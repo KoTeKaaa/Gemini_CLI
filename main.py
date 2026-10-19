@@ -557,6 +557,10 @@ def main(backend: Backend | None = None):
 
     while True:
         try:
+            # Reauthentication belongs to the UI thread, outside raw work input.
+            if isinstance(api_client, RemoteBackend) and not api_client.token:
+                if not api_client.login():
+                    break
             draft_input.take_notice()
             dir_name = os.path.basename(current_dir) or current_dir
             prompt_text = f" {dir_name} › "
