@@ -22,6 +22,7 @@ class ProfilesTest(unittest.TestCase):
             first = a.token_path
             self.assertEqual(b.load(), {})
             a.save({"access_token": "b", "refresh_token": "r", "user": {"id": "two"}})
+            self.assertEqual(a.load("one")["access_token"], "a")
             self.assertNotEqual(first, a.token_path)
             with self.assertRaises(ValueError):
                 a.save({"access_token": "x", "refresh_token": "r", "user": {"id": "three"}}, expected_account="two")

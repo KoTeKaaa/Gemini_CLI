@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 import requests
 from gemini_cli.backends.base import Backend, StreamResult
 from gemini_cli.runtime.history import trim_history
+from gemini_cli.client.settings import Settings, backend_identity
 from gemini_cli.backends.remote import RemoteBackend, events_from_response as iter_stream_events
 from prompt_toolkit import PromptSession
 from prompt_toolkit.shortcuts import radiolist_dialog
@@ -259,6 +260,28 @@ def prompt_credentials():
         return None
 
 
+def choose_setting(title, values):
+    return radiolist_dialog(title=title, text="Esc — отмена", values=values).run()
+
+
+def settings_controller():
+    def server_origin(previous, force):
+        if not force:
+            return previous or get_server_url()
+        try:
+            return normalize_server_url(PromptSession().prompt("HTTPS-сервер: ", default=previous or ""))
+        except (EOFError, KeyboardInterrupt):
+            return None
+    return Settings(Path(APP_DIR), remote_factory=GeminiAPIClient,
+        choose_mode=lambda: choose_setting("Режим работы", [("local", "Local — личные ключи"),
+                                                            ("remote", "Remote — подписка сервера")]),
+        read_server=server_origin,
+        choose_storage=lambda title: choose_setting(title, [("keyring", "Защищённое хранилище ОС"),
+                                                            ("memory", "Только в памяти до закрытия")]),
+        read_secret=lambda label: PromptSession().prompt(label, is_password=True),
+        notify=lambda message: console.print(Text(message)))
+
+
 def show_chat_menu(client: Backend) -> Optional[tuple[Optional[str], bool]]:
     db_chats = client.get_chats()
     if db_chats is None:
@@ -454,15 +477,17 @@ def print_banner(model: str, chat_mode: str, current_dir: str):
 
 def main(backend: Backend | None = None):
     api_client = backend
+    settings = settings_controller() if backend is None else None
     if api_client is None:
-        server_url = get_server_url()
-        api_client = GeminiAPIClient(server_url)
-        if not api_client.login():
+        api_client = settings.configure()
+        if api_client is None:
             return
 
     current_model = "gemini-3.5-flash-lite"
     selected_chat = show_chat_menu(api_client)
     if selected_chat is None:
+        if settings:
+            settings.close()
         return
     chat_id, is_temporary = selected_chat
     current_dir = os.getcwd()
@@ -472,13 +497,15 @@ def main(backend: Backend | None = None):
     session = PromptSession(key_bindings=bindings, style=my_style)
 
     temporary_history: List[Dict[str, str]] = []
+    states = {}
+    console.print(Text(f"Backend: {api_client.mode}"))
 
     while True:
         try:
             dir_name = os.path.basename(current_dir) or current_dir
             prompt_text = f" {dir_name} › "
             user_input = session.prompt(HTML(
-                f"<ansiblue>[{current_model}]</ansiblue>"
+                f"<ansiblue>[{api_client.mode} · {current_model}]</ansiblue>"
                 f"<ansigray>{prompt_text}</ansigray>"
             ))
 
@@ -497,12 +524,26 @@ def main(backend: Backend | None = None):
 
                 table.add_row("/help", "Показать эту справку")
                 table.add_row("/model", "Сменить ИИ модель")
+                table.add_row("/settings", "Local/Remote, сервер и личные ключи")
                 table.add_row("/chat", "Сменить или создать комнату диалога")
                 table.add_row("/delete", "Удалить текущий постоянный чат")
                 table.add_row("/cd {путь}", "Изменить текущую рабочую папку для Gemini")
                 table.add_row("exit, quit, q", "Выход из приложения")
 
                 console.print(Panel(table, title="[bold green]Справка[/bold green]", expand=False))
+                continue
+
+            if first_line.strip() == "/settings":
+                if settings is None:
+                    console.print("Настройки недоступны для внедрённого backend")
+                    continue
+                replacement = settings.configure(force=True)
+                if replacement is not None:
+                    states[backend_identity(api_client)] = (chat_id, is_temporary, temporary_history, current_model)
+                    api_client = replacement
+                    chat_id, is_temporary, temporary_history, current_model = states.get(
+                        backend_identity(api_client), (None, True, [], current_model))
+                    console.print(Text(f"Backend: {api_client.mode}; история профиля восстановлена"))
                 continue
 
             if first_line.startswith("/delete"):
@@ -618,6 +659,10 @@ def main(backend: Backend | None = None):
             console.print(f"\n[red]Произошла ошибка соединения: {e}[/red]\n")
             logger.exception(f"Необработанное исключение: {e}")
             break
+
+
+    if settings:
+        settings.close()
 
 
 if __name__ == "__main__":

@@ -71,10 +71,10 @@ class RemoteSessions:
             return None
         return self.directory / (hashlib.sha256(account.encode()).hexdigest() + ".json")
 
-    def load(self) -> dict:
-        path = self.token_path
+    def load(self, account_id=None) -> dict:
+        account = account_id or read_json(self.pointer).get("account_id")
+        path = self.directory / (hashlib.sha256(account.encode()).hexdigest() + ".json") if isinstance(account, str) else None
         data = read_json(path) if path else {}
-        account = read_json(self.pointer).get("account_id")
         if (not isinstance(data.get("user"), dict)
                 or data.get("_binding") != {"origin": self.origin, "account_id": account}
                 or (data.get("user") or {}).get("id") != account):
@@ -95,11 +95,13 @@ class RemoteSessions:
         private_json(path, {**data, "_binding": {"origin": self.origin, "account_id": account}})
         private_json(self.pointer, {"account_id": account})
 
-    def clear(self):
-        path = self.token_path
+    def clear(self, account_id=None):
+        path = (self.directory / (hashlib.sha256(account_id.encode()).hexdigest() + ".json")
+                if account_id else self.token_path)
         if path:
             path.unlink(missing_ok=True)
-        self.pointer.unlink(missing_ok=True)
+        if account_id is None or read_json(self.pointer).get("account_id") == account_id:
+            self.pointer.unlink(missing_ok=True)
 
     def migrate(self, legacy: Path):
         data = read_json(legacy)

@@ -64,6 +64,7 @@ class RemoteBackend:
         self.base_url = canonical_origin(base_url)
         self.notify, self.transport = notify, transport or requests
         self.token = None
+        self.account_id = None
         root = profile_root or Path.home() / ".gemini_cli" / "profiles"
         self.sessions = RemoteSessions(root, self.base_url)
         self.legacy_session = legacy_session or root.parent / "session.json"
@@ -71,11 +72,15 @@ class RemoteBackend:
 
     def set_token(self, token: str):
         self.token = token
+        if self.account_id is None:
+            self.account_id = (self.sessions.load().get("user") or {}).get("id")
 
     def _load_session_token(self):
         if not self.sessions.load():
             self.sessions.migrate(self.legacy_session)
-        return self.sessions.load().get("access_token")
+        data = self.sessions.load(self.account_id)
+        self.account_id = (data.get("user") or {}).get("id")
+        return data.get("access_token")
 
     def login(self) -> bool:
         token = self._load_session_token()
@@ -104,6 +109,7 @@ class RemoteBackend:
                     data = response.json()
                     self.sessions.save(data)
                     self.token = data["access_token"]
+                    self.account_id = data["user"]["id"]
                     return True
                 finally:
                     response.close()
@@ -113,7 +119,7 @@ class RemoteBackend:
         return False
 
     def _renew_session(self) -> bool:
-        previous = self.sessions.load()
+        previous = self.sessions.load(self.account_id)
         refresh = previous.get("refresh_token")
         if refresh:
             try:
@@ -134,7 +140,7 @@ class RemoteBackend:
                 self.notify("Не удалось обновить привязанную сессию")
                 return False
         self.token = None
-        self.sessions.clear()
+        self.sessions.clear(self.account_id)
         self.notify("Сессия истекла. Войдите снова.")
         self.login()
         return bool(self.token)
