@@ -1,0 +1,16 @@
+[Unit]
+Description=Deploy a verified dev to main Gemini CLI release
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/gemini-cli-deploy/poller.py --config /etc/gemini-cli/deploy.json
+TimeoutStartSec=20min
+TimeoutStopSec=90
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/gemini-cli-deploy /opt/gemini-cli-releases /etc/systemd/system/gemini-cli.service.d

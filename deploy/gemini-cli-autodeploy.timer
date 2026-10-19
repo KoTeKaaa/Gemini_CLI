@@ -1,0 +1,11 @@
+[Unit]
+Description=Check verified Gemini CLI releases every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+AccuracySec=10s
+Unit=gemini-cli-autodeploy.service
+
+[Install]
+WantedBy=timers.target
