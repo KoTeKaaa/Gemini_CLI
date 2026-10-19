@@ -3,7 +3,7 @@ import io
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from rich.console import Console
 
 from gemini_cli.backends.base import Backend, StreamResult
@@ -34,3 +34,14 @@ class BackendContractTest(unittest.TestCase):
         result = StreamResult(on_close=lambda: closed.append(True))
         result.close()
         self.assertEqual(closed, [True])
+
+    def test_remote_chat_adapter_uses_explicit_transport(self):
+        from gemini_cli.backends.remote import RemoteBackend
+        transport = Mock()
+        transport.get.return_value.status_code = 200
+        transport.get.return_value.json.return_value = [{"id": "own"}]
+        backend = RemoteBackend("https://example.com:9443", transport=transport)
+        backend.token = "fixture"
+        self.assertEqual(backend.get_chats(), [{"id": "own"}])
+        self.assertFalse(transport.get.call_args.kwargs["allow_redirects"])
+        self.assertEqual(transport.get.call_args.kwargs["headers"], {"Authorization": "Bearer fixture"})

@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 import requests
 from gemini_cli.backends.base import Backend, StreamResult
+from gemini_cli.backends.remote import RemoteBackend
 from prompt_toolkit import PromptSession
 from prompt_toolkit.shortcuts import radiolist_dialog
 from prompt_toolkit.key_binding import KeyBindings
@@ -241,11 +242,12 @@ def handle_execute_command(args: dict, current_dir: str) -> str:
                            notify=console.print, logger=logger)
 
 
-class GeminiAPIClient:
+class GeminiAPIClient(RemoteBackend):
     mode = "remote"
     def __init__(self, base_url: str):
         from gemini_cli.client.profiles import RemoteSessions, canonical_origin
-        self.base_url = canonical_origin(normalize_server_url(base_url))
+        super().__init__(canonical_origin(normalize_server_url(base_url)),
+                         notify=lambda message: console.print(Text(message)))
         self.sessions = RemoteSessions(Path(SESSION_FILE).parent / "profiles", self.base_url)
         self.token: Optional[str] = None
 
@@ -303,21 +305,6 @@ class GeminiAPIClient:
         if not self._renew_session():
             return response
         return request()
-
-    def web_tool(self, kind: str, payload: dict) -> dict:
-        try:
-            response = self._authorized_request(lambda: requests.post(
-                f"{self.base_url}/tools/web/{kind}", json=payload, headers=self.headers,
-                timeout=25, allow_redirects=False))
-            with response:
-                if response.status_code != 200:
-                    return failure("network", "Веб-инструмент недоступен")
-                result = response.json()
-                if not isinstance(result, dict) or result.get("status") not in {"ok", "error"}:
-                    return failure("invalid_response", "Некорректный ответ веб-инструмента")
-                return result
-        except (requests.RequestException, ValueError):
-            return failure("network", "Сетевая ошибка веб-инструмента; автоматического повтора нет")
 
     def login(self):
         token = self._load_session_token()
@@ -388,54 +375,6 @@ class GeminiAPIClient:
             except Exception as e:
                 console.print("[red]Произошла непредвиденная ошибка входа.[/red]")
                 logger.exception(f"Необработанное исключение: {e}")
-
-    def get_chats(self) -> Optional[List[Dict[str, Any]]]:
-        try:
-            r = self._authorized_request(lambda: requests.get(
-                f"{self.base_url}/chats", headers=self.headers, timeout=30,
-                allow_redirects=False))
-            if r.status_code == 200:
-                return r.json()
-            if r.status_code == 401:
-                console.print("[red]Сессия истекла. Войдите снова.[/red]")
-            else:
-                console.print(f"[red]Не удалось получить список чатов (код {r.status_code}).[/red]")
-            return None
-        except Exception as e:
-            console.print(f"[red]Ошибка при получении чатов: {e}[/red]")
-            logger.exception(f"Необработанное исключение: {e}")
-            return None
-
-    def create_chat(self, title: str) -> Optional[Dict[str, Any]]:
-        try:
-            r = self._authorized_request(lambda: requests.post(
-                f"{self.base_url}/chats",
-                json={"title": title},
-                headers=self.headers,
-                timeout=30,
-                allow_redirects=False,
-            ))
-            if r.status_code == 200:
-                return r.json()
-            return None
-        except Exception as e:
-            console.print(f"[red]Ошибка при создании чата: {e}[/red]")
-            logger.exception(f"Необработанное исключение: {e}")
-            return None
-
-    def delete_chat(self, chat_id: str) -> bool:
-        try:
-            r = self._authorized_request(lambda: requests.delete(
-                f"{self.base_url}/chats/{chat_id}",
-                headers=self.headers,
-                timeout=30,
-                allow_redirects=False,
-            ))
-            return r.status_code == 200
-        except Exception as e:
-            logger.error(f"Ошибка при удалении чата: {e}")
-            console.print(f"[red]Ошибка при удалении чата: {e}[/red]")
-            return False
 
     def stream_chat(self, payload: Dict[str, Any]):
         return self._authorized_request(lambda: requests.post(
