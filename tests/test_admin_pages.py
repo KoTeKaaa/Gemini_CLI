@@ -44,3 +44,7 @@ class AdminPagesTest(unittest.TestCase):
         http = self.client(allowed=False)
         self.assertEqual(http.get("/admin/").status_code, 401)
         self.assertEqual(http.get("/admin/login").status_code, 200)
+        with patch("gemini_cli.server.admin.invitations.safe_admin_call") as activation:
+            self.assertEqual(http.get("/activate").status_code, 200)
+            activation.assert_not_called()
+        self.assertEqual(http.get("/account/confirm").status_code, 200)

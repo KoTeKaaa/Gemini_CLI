@@ -1,5 +1,17 @@
 "use strict";
 const notice = document.getElementById("notice");
+const activation = document.getElementById("activation");
+let activationToken = activation ? location.hash.slice(1) : "";
+const confirmationForm = document.getElementById("account-confirmation");
+let confirmation = confirmationForm ? Object.fromEntries(new URLSearchParams(location.hash.slice(1))) : {};
+if (activation || confirmationForm) history.replaceState(null, "", location.pathname);
+async function activationIdentity() {
+  const response = await fetch("/activation/session", {cache: "no-store"});
+  if (!response.ok) { activation.hidden = true; login.hidden = false; return; }
+  const account = await response.json();
+  document.getElementById("activation-account").textContent = account.user_id;
+  activation.hidden = false; login.hidden = true;
+}
 async function api(path, data, method = "POST") {
   const session = await fetch("/admin/session", {cache: "no-store"}).then(r => r.json());
   const response = await fetch(path, {method, headers: {"Content-Type": "application/json",
@@ -15,12 +27,17 @@ if (login) login.addEventListener("submit", async event => {
   try {
     await api("/admin/login", values);
     login.reset();
-    location.assign(new URLSearchParams(location.search).get("next") === "activate" ? "/activate" : "/admin/");
+    if (activation) await activationIdentity();
+    else location.assign("/admin/");
   } catch (error) { notice.textContent = error.message; }
 });
 const logout = document.getElementById("logout");
 if (logout) logout.addEventListener("click", async () => {
-  try { await api("/admin/logout", {}); location.assign("/admin/login"); }
+  try {
+    await api("/admin/logout", {});
+    if (activation) { activation.hidden = true; login.hidden = false; }
+    else location.assign("/admin/login");
+  }
   catch (error) { notice.textContent = error.message; }
 });
 const subscription = document.getElementById("subscription");
@@ -78,4 +95,28 @@ if (accountInvitation) accountInvitation.addEventListener("submit", async event 
   event.preventDefault();
   try { notice.textContent = (await api("/admin/api/accounts/invite", Object.fromEntries(new FormData(accountInvitation)))).detail; }
   catch (error) { notice.textContent = error.message; }
+});
+if (activation) {
+  activationIdentity().catch(() => { notice.textContent = "Не удалось проверить вход. Повторите попытку."; });
+  document.getElementById("activate-access").addEventListener("click", async () => {
+    if (!activationToken) { notice.textContent = "Откройте исходную ссылку приглашения снова."; return; }
+    try {
+      await api("/activate", {token: activationToken});
+      activationToken = "";
+      document.getElementById("activate-access").disabled = true;
+      notice.textContent = "Доступ активирован. Теперь войдите в этот аккаунт в CLI.";
+    } catch (error) { notice.textContent = error.message; }
+  });
+}
+if (confirmationForm) confirmationForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  if (!confirmation.access_token || !confirmation.refresh_token) {
+    notice.textContent = "Откройте действующую ссылку из письма приглашения."; return;
+  }
+  try {
+    const result = await api("/account/confirm", {access_token: confirmation.access_token,
+      refresh_token: confirmation.refresh_token, password: new FormData(confirmationForm).get("password")});
+    confirmation = {}; confirmationForm.reset(); confirmationForm.hidden = true;
+    notice.textContent = result.detail;
+  } catch (error) { notice.textContent = error.message; }
 });

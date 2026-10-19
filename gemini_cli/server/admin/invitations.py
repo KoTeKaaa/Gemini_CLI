@@ -41,6 +41,10 @@ def issue_invitation(user, payload):
 def invitation_router(sessions):
     router = APIRouter()
 
+    @router.get("/activation/session")
+    def identity(user=Depends(sessions.current_user)):
+        return {"user_id": user.user_id}
+
     @router.post("/admin/api/invitations")
     def issue(payload: InvitationInput, request: Request, user=Depends(sessions.owner)):
         sessions.check_csrf(request)

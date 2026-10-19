@@ -37,6 +37,14 @@ def page_router(sessions):
     def login(request: Request):
         return TEMPLATES.TemplateResponse(request, "login.html", {})
 
+    @router.get("/activate")
+    def activation(request: Request):
+        return TEMPLATES.TemplateResponse(request, "activate.html", {})
+
+    @router.get("/account/confirm")
+    def confirm_account(request: Request):
+        return TEMPLATES.TemplateResponse(request, "confirm_account.html", {})
+
     @router.get("/admin/")
     def index(request: Request, user=Depends(sessions.owner)):
         rows = safe_admin_call(lambda db: db.table("account_subscriptions").select("*")

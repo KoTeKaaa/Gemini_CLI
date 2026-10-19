@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
-from gemini_cli.server.admin.accounts import invite_account
+from gemini_cli.server.admin.accounts import invite_account, confirm_account, AccountConfirmation
 
 
 class ClosedRegistrationTest(unittest.TestCase):
@@ -29,3 +29,14 @@ class ClosedRegistrationTest(unittest.TestCase):
             failure = invite_account("a@example.com")
         self.assertEqual(success, failure)
         self.assertNotIn("private", str(failure))
+
+    def test_confirmation_never_returns_credentials(self):
+        db, sessions = Mock(), Mock()
+        db.auth.set_session.return_value.session.access_token = "token"
+        with patch.dict(os.environ, {"SUPABASE_URL": "https://example.com", "SUPABASE_ANON_KEY": "anon"}), \
+                patch("supabase.create_client", return_value=db):
+            result = confirm_account(AccountConfirmation(access_token="a" * 30, refresh_token="b" * 30,
+                                                          password="password"), sessions, Mock())
+        self.assertNotIn("token", str(result))
+        db.auth.update_user.assert_called_once_with({"password": "password"})
+        sessions.create.assert_called_once()
