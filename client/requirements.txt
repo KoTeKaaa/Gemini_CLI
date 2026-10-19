@@ -3,5 +3,3 @@ prompt-toolkit>=3.0.50
 rich>=15.0.0
 
 Pillow==12.3.0
-
-pywinpty==3.0.5; sys_platform == "win32"

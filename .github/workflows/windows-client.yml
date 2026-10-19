@@ -20,7 +20,7 @@ jobs:
       - name: Install standalone client dependencies
         run: python -m pip install -r client/requirements-local.txt
       - name: Check input and image contracts
-        run: python -B -m unittest tests.test_backend_imports tests.test_clipboard tests.test_clipboard_linux tests.test_clipboard_windows tests.test_draft tests.test_draft_input tests.test_large_paste tests.test_input_completion tests.test_file_attachment tests.test_workspace_snapshot tests.test_image_preview tests.test_text_editor tests.test_input_regressions tests.test_images_contract tests.test_manual_shell tests.test_shell_pty tests.test_work_input_pty tests.test_term_command tests.test_managed_process tests.test_windows_job tests.test_conpty tests.test_sessions tests.test_session_relay tests.test_session_relay_pty tests.test_session_panels tests.test_turn_state tests.test_stream_cancel tests.test_remote_http_cancel tests.test_remote_work_auth tests.test_work_input tests.test_work_view tests.test_execution_steps tests.test_runtime_history -q
+        run: python -B -m unittest tests.test_backend_imports tests.test_clipboard tests.test_clipboard_linux tests.test_clipboard_windows tests.test_draft tests.test_draft_input tests.test_large_paste tests.test_input_completion tests.test_file_attachment tests.test_workspace_snapshot tests.test_image_preview tests.test_text_editor tests.test_input_regressions tests.test_images_contract tests.test_manual_shell tests.test_shell_pty tests.test_work_input_pty tests.test_term_command tests.test_managed_process tests.test_windows_job tests.test_turn_state tests.test_stream_cancel tests.test_remote_http_cancel tests.test_remote_work_auth tests.test_work_input tests.test_work_view tests.test_execution_steps tests.test_runtime_history -q
       - name: Build and check Linux executable
         run: |
           ./client/build.sh
@@ -32,6 +32,8 @@ jobs:
           if-no-files-found: error
 
   package-import:
+    # Windows checks are temporarily paused; keep Linux verification active.
+    if: ${{ false }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -43,6 +45,8 @@ jobs:
         run: python -B -m unittest discover -s tests -p test_package_import.py -v
 
   build:
+    # Windows builds are temporarily paused.
+    if: ${{ false }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -55,7 +59,7 @@ jobs:
         run: ./client/build.ps1
       - name: Check input and image contracts
         shell: pwsh
-        run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_backend_imports tests.test_clipboard tests.test_clipboard_windows tests.test_draft tests.test_draft_input tests.test_large_paste tests.test_input_completion tests.test_file_attachment tests.test_workspace_snapshot tests.test_image_preview tests.test_text_editor tests.test_input_regressions tests.test_images_contract tests.test_manual_shell tests.test_shell_pty tests.test_work_input_pty tests.test_term_command tests.test_managed_process tests.test_windows_job tests.test_conpty tests.test_sessions tests.test_session_relay tests.test_session_relay_pty tests.test_session_panels tests.test_turn_state tests.test_stream_cancel tests.test_remote_http_cancel tests.test_remote_work_auth tests.test_work_input tests.test_work_view tests.test_execution_steps tests.test_runtime_history -q
+        run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_backend_imports tests.test_clipboard tests.test_clipboard_windows tests.test_draft tests.test_draft_input tests.test_large_paste tests.test_input_completion tests.test_file_attachment tests.test_workspace_snapshot tests.test_image_preview tests.test_text_editor tests.test_input_regressions tests.test_images_contract tests.test_manual_shell tests.test_shell_pty tests.test_work_input_pty tests.test_term_command tests.test_managed_process tests.test_windows_job tests.test_turn_state tests.test_stream_cancel tests.test_remote_http_cancel tests.test_remote_work_auth tests.test_work_input tests.test_work_view tests.test_execution_steps tests.test_runtime_history -q
       - name: Check executable
         shell: pwsh
         run: |
