@@ -4,6 +4,7 @@ from gemini_cli.client.input import DraftInput, result_panel
 from prompt_toolkit.key_binding import merge_key_bindings
 from gemini_cli.client.draft import Draft
 from gemini_cli.client.shell import launch_shell
+from gemini_cli.client.sessions import SessionManager, session_command
 from gemini_cli.protocol.images import encode_images
 from gemini_cli.runtime.attachments import attachment_text, bound_image_history
 import os
@@ -528,6 +529,7 @@ def main(backend: Backend | None = None):
 
     temporary_history: List[Dict[str, str]] = []
     states = {}
+    sessions = SessionManager()
     console.print(Text(f"Backend: {api_client.mode}"))
 
     while True:
@@ -585,10 +587,18 @@ def main(backend: Backend | None = None):
                 table.add_row("/chat", "Сменить или создать комнату диалога")
                 table.add_row("/delete", "Удалить текущий постоянный чат")
                 table.add_row("/cd {путь}", "Изменить текущую рабочую папку для Gemini")
+                table.add_row("/session", "list/start NAME/attach NAME/stop NAME; Ctrl+] — detach")
                 table.add_row("/term", "Открыть оболочку; exit-to-cli возвращает в этот чат")
                 table.add_row("exit, quit, q", "Выход из приложения")
 
                 console.print(Panel(table, title="[bold green]Справка[/bold green]", expand=False))
+                continue
+
+            if first_line.split()[0] == "/session":
+                try:
+                    session_command(sessions, user_input, current_dir, lambda text: console.print(Text(text)))
+                except (ValueError, OSError) as error:
+                    console.print(Text(str(error)))
                 continue
 
             if first_line.split()[0] == "/term":
@@ -760,6 +770,7 @@ def main(backend: Backend | None = None):
             break
 
 
+    sessions.close()
     preview_warning = draft_input.close()
     if preview_warning:
         console.print(Text(preview_warning))
