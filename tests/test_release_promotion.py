@@ -54,3 +54,31 @@ class ReleasePromotionTest(unittest.TestCase):
                 promote_release(config, Path(root), 'a' * 40, run=Mock(), probe=preview)
             self.assertEqual(Path(config['env']).read_bytes(), b'API_KEY=rotated-by-owner\n')
             self.assertFalse(Path(config['override']).exists())
+
+    def test_staging_under_private_umask_keeps_runtime_readable(self):
+        import io
+        import os
+        import tarfile
+        from unittest.mock import patch
+        from deploy.promote import prepare_release
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root) / 'state'; state.mkdir()
+            config = dict(state=str(state), releases=str(Path(root) / 'releases'),
+                          repository='owner/repo', user='gemini-cli')
+            def command(args, **kwargs):
+                if 'archive' in args:
+                    output = next(value.split('=', 1)[1] for value in args if value.startswith('--output='))
+                    with tarfile.open(output, 'w') as bundle:
+                        for name in ('server.py', 'gemini_cli/__init__.py', 'deploy/requirements-server.txt'):
+                            info = tarfile.TarInfo(name); info.size = 1
+                            bundle.addfile(info, io.BytesIO(b'\n'))
+            previous = os.umask(0o077)
+            try:
+                with patch('deploy.promote.command', side_effect=command), \
+                     patch('deploy.promote.subprocess.check_output', return_value=b'a' * 40):
+                    release = prepare_release(config, 'a' * 40)
+            finally:
+                os.umask(previous)
+            self.assertEqual(Path(config['releases']).stat().st_mode & 0o777, 0o755)
+            self.assertEqual(release.stat().st_mode & 0o777, 0o755)
+            self.assertEqual((release / 'requirements-server.txt').stat().st_mode & 0o777, 0o644)

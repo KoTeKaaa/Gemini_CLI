@@ -60,7 +60,10 @@ def healthy(port: int, revision: str | None, *, timeout=30) -> bool:
 
 def prepare_release(config: dict, sha: str) -> Path:
     root = Path(config['releases'])
+    existed = root.exists()
     root.mkdir(parents=True, exist_ok=True)
+    if not existed:
+        root.chmod(0o755)
     release = root / (sha + '-' + uuid4().hex[:8])
     mirror = Path(config['state']) / 'repository.git'
     if not mirror.exists():
@@ -92,8 +95,10 @@ def prepare_release(config: dict, sha: str) -> Path:
                     with bundle.extractfile(member) as content, target.open('wb') as output:
                         output.write(content.read())
         install_runtime(source, release)
+        release.chmod(0o755)
         requirements = release / 'requirements-server.txt'
         requirements.write_bytes((source / 'deploy/requirements-server.txt').read_bytes())
+        requirements.chmod(0o644)
     command(['python3', '-m', 'venv', str(release / '.venv')])
     command(['chown', '-R', config['user'], str(release / '.venv')])
     python = str(release / '.venv/bin/python')
