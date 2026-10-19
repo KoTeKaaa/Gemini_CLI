@@ -59,3 +59,15 @@ class InputRegressionTest(unittest.TestCase):
             except OSError:
                 self.skipTest('symlinks unavailable')
             self.assertIsNone(allowed_path(root, 'public'))
+
+    def test_slash_commands_never_reach_backend_on_missing_arguments_or_typo(self):
+        backend = Mock(mode='local')
+        commands = ['/paste-show', '/paste-edit', '/paste-remove', '/remove', '/remove-file',
+                    '/paste extra', '/attachments extra', '/paste-shwo 1', 'exit']
+        with patch.object(self.app, 'show_chat_menu', return_value=(None, True)), \
+             patch.object(self.app, 'PromptSession') as session, \
+             patch.object(self.app, 'print_banner'), patch.object(self.app.console, 'print'):
+            session.return_value.prompt.side_effect = commands
+            self.app.main(backend)
+            self.assertEqual(session.return_value.prompt.call_count, len(commands))
+            backend.stream_chat.assert_not_called()

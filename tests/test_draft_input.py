@@ -43,3 +43,16 @@ class DraftInputTest(unittest.TestCase):
         ui.paste_key(SimpleNamespace(current_buffer=buffer, app=Mock()))
         buffer.insert_text.assert_called_once_with('a\nb')
         self.assertEqual(ui.draft.images, [])
+
+    def test_malformed_commands_are_consumed_without_changing_draft(self):
+        draft = Draft('keep')
+        ui = DraftInput(draft, Mock(side_effect=AssertionError('clipboard accessed')))
+        for action in ('/paste-show', '/paste-edit', '/paste-remove', '/remove', '/remove-file'):
+            for suffix in ('', ' ', '\t', ' nope', ' 1 extra', ' 0'):
+                with self.subTest(command=action + suffix):
+                    self.assertTrue(ui.command(action + suffix))
+                    self.assertIn('Использование:', ui.notice)
+                    self.assertEqual(draft.text, 'keep')
+        for action in ('/paste', '/attachments'):
+            self.assertTrue(ui.command(action + ' extra'))
+            self.assertIn('Использование:', ui.notice)

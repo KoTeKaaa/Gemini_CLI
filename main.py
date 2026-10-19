@@ -647,6 +647,10 @@ def main(backend: Backend | None = None):
                 console.print(f"[bold green]Текущая папка сменена на: {current_dir}[/bold green]")
                 continue
 
+            if first_line.startswith("/"):
+                console.print(Text("Неизвестная команда. Используйте /help; сообщение не отправлено."))
+                continue
+
             console.print("\n[bold cyan]Gemini:[/bold cyan]")
 
             draft.text = user_input

@@ -66,9 +66,11 @@ class DraftInput:
         return f'{images} {files} {pastes}  {self.notice}'.strip()
 
     def command(self, text: str) -> bool:
-        if text.startswith(('/paste-show ', '/paste-edit ', '/paste-remove ')):
+        parts = text.split()
+        action = parts[0] if parts else ''
+        if action in {'/paste-show', '/paste-edit', '/paste-remove'}:
             try:
-                action, number = text.split()
+                action, number = parts
                 index = int(number) - 1
                 if index < 0:
                     raise ValueError()
@@ -81,10 +83,13 @@ class DraftInput:
                     self.draft.text = self.draft.text.replace(block.token, '')
                     self.draft.pastes.pop(index)
             except (ValueError, IndexError):
-                self.notice = 'Укажите номер вставки из строки состояния'
+                self.notice = f'Использование: {action} N — номер вставки из строки состояния'
             except (KeyboardInterrupt, EOFError):
                 self.notice = 'Редактирование отменено'
-        elif text == '/paste':
+        elif action == '/paste':
+            if len(parts) != 1:
+                self.notice = 'Использование: /paste без аргументов'
+                return True
             self.paste()
             if self.pasted_text:
                 if is_large(self.pasted_text):
@@ -93,25 +98,30 @@ class DraftInput:
                     self.draft.text += block.token
                 else:
                     self.draft.text += self.pasted_text
-        elif text == '/attachments':
+        elif action == '/attachments':
+            if len(parts) != 1:
+                self.notice = 'Использование: /attachments без аргументов'
+                return True
             self.notice = 'Удалить: /remove НОМЕР'
-        elif text.startswith('/remove-file '):
+        elif action == '/remove-file':
             try:
-                index = int(text.split()[1]) - 1
+                _, number = parts
+                index = int(number) - 1
                 if index < 0:
                     raise ValueError()
                 self.draft.files.pop(index)
             except (ValueError, IndexError):
-                self.notice = 'Укажите номер текстового вложения'
-        elif text.startswith('/remove '):
+                self.notice = 'Использование: /remove-file N — номер текстового вложения'
+        elif action == '/remove':
             try:
-                number = int(text.split()[1])
+                _, value = parts
+                number = int(value)
                 if not 1 <= number <= len(self.draft.images):
                     raise ValueError()
                 self.draft.remove(self.draft.images[number - 1].id)
                 self.notice = 'Вложение удалено'
             except (ValueError, IndexError):
-                self.notice = 'Укажите номер из /attachments'
+                self.notice = 'Использование: /remove N — номер изображения из /attachments'
         else:
             return False
         return True
