@@ -1,6 +1,7 @@
 """Thread-safe identity and cancellation shared by UI, streams and tools."""
 
 from threading import Event, RLock
+from collections import deque
 from uuid import uuid4
 
 
@@ -12,6 +13,21 @@ class TurnState:
         self.cancelled = Event()
         self._lock = RLock()
         self._sequence = -1
+        self.events = deque(maxlen=64)
+
+    def record(self, event):
+        # Only status metadata; no arguments, tool output or provider content.
+        with self._lock:
+            self.events.append({**event, "turn_id": self.turn_id,
+                                "request_id": self.request_id})
+
+    def steps(self):
+        with self._lock:
+            result = {}
+            for event in self.events:
+                if event.get("type") == "step":
+                    result[event["step_id"]] = event.copy()
+            return list(result.values())[-8:]
 
     def request(self, payload):
         with self._lock:

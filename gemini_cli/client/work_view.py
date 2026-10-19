@@ -46,8 +46,14 @@ class WorkView:
                 if self.process is not None:
                     text += self.process.stdout.read() + self.process.stderr.read()
                 text = text or "Вывода инструментов пока нет"
+            steps = self.state.steps()
+            if steps:
+                labels = {"queued": "ожидает", "running": "выполняется", "completed": "готово",
+                          "failed": "ошибка", "cancelled": "отменено", "skipped": "пропущено"}
+                header += "\n" + "\n".join(
+                    f"{step['name']}: {labels.get(step['status'], step['status'])}" for step in steps)
             lines = text.splitlines()
-            height = max(1, self.console.size.height - 3)
+            height = max(1, self.console.size.height - len(header.splitlines()) - 2)
             offset = min(self.offset, max(0, len(lines) - 1))
             end = len(lines) - offset
             return Text(header + "\n" + "\n".join(lines[max(0, end-height):end]))
