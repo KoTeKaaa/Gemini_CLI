@@ -586,12 +586,12 @@ def main(backend: Backend | None = None):
                 except (ValueError, OSError) as error:
                     console.print(result_panel(str(error), title="Файл не добавлен", error=True))
                     continue
-                console.print(result_panel(result, title="Файл добавлен в черновик"))
+                console.print(result_panel(result, title="Вложения"))
                 continue
 
             if draft_input.command(user_input.strip()):
                 console.print(result_panel(draft_input.take_notice(),
-                                           title="Вложения" if first_line == "/attachments" else "Черновик"))
+                                           title="Вложения"))
                 continue
 
             if first_line.startswith("/help"):
@@ -626,9 +626,10 @@ def main(backend: Backend | None = None):
 
             if first_line.split()[0] == "/session":
                 try:
-                    session_command(sessions, user_input, current_dir, lambda text: console.print(Text(text)))
+                    session_command(sessions, user_input, current_dir,
+                                    lambda text: console.print(result_panel(text, title="Сессии")))
                 except (ValueError, OSError) as error:
-                    console.print(Text(str(error)))
+                    console.print(result_panel(str(error), title="Сессии", error=True))
                 continue
 
             if first_line.split()[0] == "/term":

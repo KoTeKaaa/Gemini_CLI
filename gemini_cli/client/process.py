@@ -13,17 +13,29 @@ class ProcessLog:
     def __init__(self, limit=65536):
         self.limit = limit
         self._text = ""
+        self._position = 0
         self.truncated = False
         self.lock = threading.Lock()
 
     def append(self, text):
         with self.lock:
+            self._position += len(text)
             self.truncated |= len(self._text) + len(text) > self.limit
             self._text = (self._text + text)[-self.limit:]
 
     def read(self):
         with self.lock:
             return ("[Начало вывода удалено]\n" if self.truncated else "") + self._text
+
+
+    def read_since(self, position):
+        """A bounded, atomic cursor into the output; never replay on each refresh."""
+        with self.lock:
+            start = self._position - len(self._text)
+            text = self._text[max(0, position - start):]
+            if position < start:
+                text = "[Начало вывода удалено]\r\n" + text
+            return self._position, text
 
 
 class ManagedProcess:

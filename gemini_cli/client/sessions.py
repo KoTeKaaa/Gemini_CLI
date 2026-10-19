@@ -2,6 +2,7 @@
 import atexit
 import os
 import re
+from contextlib import contextmanager
 from .process_windows import start_process
 
 
@@ -44,44 +45,98 @@ class SessionManager:
             atexit.unregister(self.close)
 
 
+@contextmanager
+def terminal_output(stream):
+    if os.name != "posix":
+        yield
+        return
+    import termios
+    descriptor = stream.fileno()
+    original = termios.tcgetattr(descriptor)
+    raw = list(original)
+    raw[1] &= ~termios.OPOST
+    termios.tcsetattr(descriptor, termios.TCSANOW, raw)
+    try:
+        yield
+    finally:
+        termios.tcsetattr(descriptor, termios.TCSANOW, original)
+
+
 def attach(process):
-    from prompt_toolkit.application import Application
-    from prompt_toolkit.formatted_text import ANSI
-    from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.layout import Layout, Window
-    from prompt_toolkit.layout.controls import FormattedTextControl
-    keys = KeyBindings()
-    @keys.add("c-]")
-    def detach(event):
-        event.app.exit()
-    @keys.add("<any>")
-    def forward(event):
-        if process.poll() is None:
-            process.write(event.data)
-    @keys.add("enter")
-    def enter(event):
-        if process.poll() is None:
-            process.write("\r\n" if os.name == "nt" else "\n")
-    def render():
-        size = app.output.get_size()
-        process.resize(size.rows, size.columns)
-        status = "завершена" if process.poll() is not None else "работает"
-        return ANSI(f"Ctrl+] — detach; сессия {status}\n" + process.stdout.read())
-    app = Application(layout=Layout(Window(FormattedTextControl(render), wrap_lines=True)),
-                      key_bindings=keys, full_screen=True, refresh_interval=.1)
-    app.run()
+    # A terminal is not a formatted-text widget: relay VT/OSC output unchanged
+    # so the host terminal handles cursor movement, zsh hooks and line editing.
+    import sys
+    import time
+    from contextlib import closing
+    from prompt_toolkit.input import create_input
+    from prompt_toolkit.output import create_output
+    from prompt_toolkit.keys import Keys
+
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise ValueError("Подключение к сессии требует интерактивного терминала (TTY)")
+    output = create_output(stdout=sys.stdout)
+    position, previous_size = 0, None
+    def write(text):
+        output.write_raw(text)
+        output.flush()
+    with closing(create_input()) as source, source.raw_mode(), terminal_output(sys.stdout):
+        write("\x1b[?1049h\x1b[2J\x1b[HCtrl+] — в чат; процесс продолжит работу\r\n")
+        try:
+            last_flush = time.monotonic()
+            while True:
+                size = output.get_size()
+                if size != previous_size:
+                    process.resize(size.rows, size.columns)
+                    previous_size = size
+                position, text = process.stdout.read_since(position)
+                if text:
+                    write(text)
+                if process.poll() is not None:
+                    # The reader may still be draining the last output chunk.
+                    for reader in process._readers:
+                        reader.join(.2)
+                    _, text = process.stdout.read_since(position)
+                    write(text)
+                    return
+                keys = source.read_keys()
+                if time.monotonic() - last_flush >= .05:
+                    keys += source.flush_keys()
+                    last_flush = time.monotonic()
+                for press in keys:
+                    if press.key == Keys.ControlSquareClose:
+                        return
+                    text = press.data
+                    if press.key == Keys.BracketedPaste:
+                        text = "\x1b[200~" + text + "\x1b[201~"
+                    if text:
+                        process.write(text)
+                if source.closed:
+                    return
+                time.sleep(.01)
+        finally:
+            # Restore host modes before giving input back to the chat.
+            write("\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
+                  "\x1b[?1l\x1b[?25h\x1b[0m\x1b[r\x1b[?1049l")
 
 
 def session_command(manager, text, cwd, notify):
     parts = text.split()
     if len(parts) == 1 or parts[1:] == ["list"]:
-        notify("\n".join(f"{name}: {status}" for name, status in manager.list()) or "Сессий нет")
+        notify("\n".join(f"{name}: {'работает' if status == 'running' else 'завершена'}"
+                         for name, status in manager.list()) or
+               "Сессий нет. Создать: /session start build. Имя build можно заменить своим.")
     elif len(parts) == 3 and parts[1] in {"start", "attach", "stop"}:
         action, name = parts[1:]
         if action == "stop":
             manager.stop(name)
+            notify(f"Сессия {name} остановлена вместе с дочерними процессами.")
         else:
             process = manager.start(name, cwd) if action == "start" else manager.get(name)
             attach(process)
+            notify(f"Сессия {name}: " + ("отсоединена; процесс продолжает работу. Вернуться: /session attach " + name
+                                      if process.poll() is None else "завершена. Удалить из списка: /session stop " + name))
     else:
-        raise ValueError("/session [list | start NAME | attach NAME | stop NAME]; Ctrl+] — detach")
+        notify("Создать оболочку: /session start build (build — любое имя).\n"
+                         "Вернуться в неё: /session attach build. Остановить: /session stop build.\n"
+                         "Список: /session. Ctrl+] — вернуться в чат, сохранив процесс.\n"
+                         "При закрытии CLI все сессии останавливаются.")

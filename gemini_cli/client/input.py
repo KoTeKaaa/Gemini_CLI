@@ -14,7 +14,7 @@ def safe_label(text: str) -> str:
     return ''.join(char if char.isprintable() else '?' for char in text)
 
 
-def result_panel(message: str, *, title='Черновик', error=False) -> Panel:
+def result_panel(message: str, *, title='Вложения', error=False) -> Panel:
     color = 'yellow' if error else '#4285F4'
     return Panel(Text(message), title=Text(title, style=color), border_style=color,
                  padding=(0, 1), expand=False)
