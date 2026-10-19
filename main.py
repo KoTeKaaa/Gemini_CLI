@@ -526,6 +526,7 @@ def main(backend: Backend | None = None):
 
     while True:
         try:
+            draft_input.take_notice()
             dir_name = os.path.basename(current_dir) or current_dir
             prompt_text = f" {dir_name} › "
             user_input = session.prompt(HTML(
@@ -551,7 +552,7 @@ def main(backend: Backend | None = None):
                 continue
 
             if draft_input.command(user_input.strip()):
-                console.print(Text(draft_input.status()))
+                console.print(Text(draft_input.take_notice()))
                 continue
 
             if first_line.startswith("/help"):

@@ -3,6 +3,7 @@
 from prompt_toolkit.key_binding import KeyBindings
 from .paste import PasteBlock, is_large, view_text, edit_text
 from prompt_toolkit.keys import Keys
+from ..protocol.attachments import ImageAttachment
 from .clipboard import get_clipboard, ClipboardError
 
 
@@ -29,8 +30,8 @@ class DraftInput:
                 self.pasted_text = clipboard.read_text()
                 self.notice = 'Текст из буфера добавлен' if self.pasted_text else 'В буфере нет изображения или текста'
                 return False
-            self.draft.add_image(image.name, image.data)
-            self.notice = 'Изображение добавлено; отправка только по Enter'
+            item = self.draft.add_image(image.name, image.data)
+            self.notice = 'Добавлено ' + self.describe(self.draft.number_of(item), item)
             return True
         except (ClipboardError, ValueError, OSError) as error:
             # Ошибка не содержит байтов, stderr дочернего процесса и секретов.
@@ -49,6 +50,7 @@ class DraftInput:
         if is_large(text):
             block = self.draft.add_paste(text)
             buffer.insert_text(block.token)
+            self.notice = 'Добавлена ' + self.describe(self.draft.number_of(block), block)
         else:
             buffer.insert_text(text)
 
@@ -57,33 +59,74 @@ class DraftInput:
         self.draft.text = event.current_buffer.text
         event.app.invalidate()
 
+    def describe(self, number: int, item) -> str:
+        if isinstance(item, ImageAttachment):
+            description = f'изображение {item.name} · {item.width}×{item.height} · {len(item.data)} Б'
+        elif isinstance(item, tuple):
+            description = f'файл {item[0]} · {len(item[1].splitlines())} строк · {len(item[1].encode("utf-8"))} Б'
+        else:
+            description = f'вставка · {len(item.text)} символов'
+        return f'#{number} — {safe_label(description)}'
+
+    def listing(self) -> str:
+        items = self.draft.items()
+        if not items:
+            return 'Вложений нет. Ctrl+V — вставить; @LICENSE:1-20 — добавить строки файла.'
+        return '\n'.join(self.describe(number, item) for number, item in items) + '\n/show N · /edit N · /remove N'
+
+    def take_notice(self) -> str:
+        result, self.notice = self.notice, ''
+        return result
+
     def status(self):
-        images = ' | '.join(f'{index}: {safe_label(image.name)} ({len(image.data)} Б)'
-                            for index, image in enumerate(self.draft.images, 1))
-        files = ' | '.join(f'текст {index}: {safe_label(name)}' for index, (name, _) in enumerate(self.draft.files, 1))
-        pastes = ' | '.join(f'вставка {index}: {len(block.text)} символов' for index, block in enumerate(self.draft.pastes, 1))
-        return f'{images} {files} {pastes}  {self.notice}'.strip()
+        if self.notice:
+            return self.notice
+        count = len(self.draft.items())
+        return f'Вложений: {count} · /attachments — список · /remove N — удалить' if count else ''
 
     def command(self, text: str) -> bool:
+        self.notice = ''
         parts = text.split()
         action = parts[0] if parts else ''
-        if action in {'/paste-show', '/paste-edit', '/paste-remove'}:
+        aliases = {'/paste-show': '/show', '/paste-edit': '/edit',
+                   '/paste-remove': '/remove', '/remove-file': '/remove'}
+        action = aliases.get(action, action)
+        if action in {'/show', '/edit', '/remove'}:
+            if not self.draft.items():
+                self.notice = self.listing()
+                return True
             try:
-                action, number = parts
-                index = int(number) - 1
-                if index < 0:
-                    raise ValueError()
-                block = self.draft.pastes[index]
-                if action == '/paste-show':
-                    view_text(block.text)
-                elif action == '/paste-edit':
-                    block.text = edit_text(block.text)
+                if len(parts) == 1 and len(self.draft.items()) == 1:
+                    number, item = self.draft.items()[0]
+                elif len(parts) == 2:
+                    value = parts[1].removeprefix('#')
+                    if not value.isdecimal():
+                        raise ValueError(f'Нужен номер вложения. Список: /attachments')
+                    number = int(value)
+                    item = self.draft.item(number)
                 else:
-                    self.draft.remove_number(self.draft.number_of(block))
-            except (ValueError, IndexError):
-                self.notice = f'Использование: {action} N — номер вставки из строки состояния'
+                    self.notice = self.listing() + f'\nВыберите номер: {action} {self.draft.items()[0][0]}'
+                    return True
+                label = self.describe(number, item)
+                if action == '/remove':
+                    self.draft.remove_number(number)
+                    self.notice = f'Удалено {label}'
+                elif isinstance(item, ImageAttachment):
+                    self.notice = label + ('\nИзображение нельзя редактировать как текст.' if action == '/edit'
+                                           else '\nПредпросмотр изображения в терминале недоступен.')
+                else:
+                    content = item[1] if isinstance(item, tuple) else item.text
+                    if action == '/show':
+                        view_text(content)
+                        self.notice = f'Просмотр закрыт: {label}'
+                    else:
+                        replacement = edit_text(content)
+                        self.draft.replace_text(number, replacement)
+                        self.notice = f'Изменено {self.describe(number, self.draft.item(number))}. Отправка — Enter.'
+            except ValueError as error:
+                self.notice = str(error)
             except (KeyboardInterrupt, EOFError):
-                self.notice = 'Редактирование отменено'
+                self.notice = 'Редактирование отменено; содержимое сохранено.'
         elif action == '/paste':
             if len(parts) != 1:
                 self.notice = 'Использование: /paste без аргументов'
@@ -93,32 +136,11 @@ class DraftInput:
                 if is_large(self.pasted_text):
                     block = self.draft.add_paste(self.pasted_text)
                     self.draft.text += block.token
+                    self.notice = 'Добавлена ' + self.describe(self.draft.number_of(block), block)
                 else:
                     self.draft.text += self.pasted_text
         elif action == '/attachments':
-            if len(parts) != 1:
-                self.notice = 'Использование: /attachments без аргументов'
-                return True
-            self.notice = 'Удалить: /remove НОМЕР'
-        elif action == '/remove-file':
-            try:
-                _, number = parts
-                index = int(number) - 1
-                if index < 0:
-                    raise ValueError()
-                self.draft.remove_number(self.draft.number_of(self.draft.files[index]))
-            except (ValueError, IndexError):
-                self.notice = 'Использование: /remove-file N — номер текстового вложения'
-        elif action == '/remove':
-            try:
-                _, value = parts
-                number = int(value)
-                if not 1 <= number <= len(self.draft.images):
-                    raise ValueError()
-                self.draft.remove(self.draft.images[number - 1].id)
-                self.notice = 'Вложение удалено'
-            except (ValueError, IndexError):
-                self.notice = 'Использование: /remove N — номер изображения из /attachments'
+            self.notice = self.listing() if len(parts) == 1 else 'Использование: /attachments без аргументов'
         else:
             return False
         return True

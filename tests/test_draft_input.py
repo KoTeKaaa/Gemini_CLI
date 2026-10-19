@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from gemini_cli.client.draft import Draft
 from gemini_cli.client.input import DraftInput
 from gemini_cli.client.clipboard import ClipboardImage, ClipboardError
@@ -51,8 +51,47 @@ class DraftInputTest(unittest.TestCase):
             for suffix in ('', ' ', '\t', ' nope', ' 1 extra', ' 0'):
                 with self.subTest(command=action + suffix):
                     self.assertTrue(ui.command(action + suffix))
-                    self.assertIn('Использование:', ui.notice)
+                    self.assertIn('Вложений нет', ui.notice)
                     self.assertEqual(draft.text, 'keep')
         for action in ('/paste', '/attachments'):
             self.assertTrue(ui.command(action + ' extra'))
             self.assertIn('Использование:', ui.notice)
+
+    def test_shared_remove_and_stable_numbers(self):
+        draft = Draft('keep')
+        draft.add_text_file('LICENSE:1-20', 'lines')
+        draft.add_image('screen.png', png())
+        block = draft.add_paste('long')
+        draft.text += block.token
+        ui = DraftInput(draft)
+        ui.command('/attachments')
+        self.assertIn('#1 — файл LICENSE:1-20', ui.notice)
+        self.assertIn('#2 — изображение', ui.notice)
+        self.assertIn('#3 — вставка', ui.notice)
+        ui.command('/remove 1')
+        self.assertEqual(draft.files, [])
+        self.assertIn('Удалено #1', ui.take_notice())
+        self.assertNotIn('Удалено', ui.status())
+        ui.command('/remove #3')
+        self.assertEqual(draft.text, 'keep')
+        ui.command('/remove')  # Единственное оставшееся вложение выбирается автоматически.
+        self.assertEqual(draft.items(), [])
+        self.assertIn('Удалено #2', ui.notice)
+
+    def test_edit_single_file_and_select_from_multiple(self):
+        draft = Draft()
+        draft.add_text_file('LICENSE', 'original')
+        ui = DraftInput(draft)
+        with patch('gemini_cli.client.input.edit_text', return_value='edited'):
+            ui.command('/edit')
+        self.assertEqual(draft.files, [('LICENSE', 'edited')])
+        self.assertIn('Изменено #1', ui.notice)
+        draft.add_paste('block')
+        ui.command('/remove')
+        self.assertIn('Выберите номер: /remove 1', ui.notice)
+        self.assertEqual(len(draft.items()), 2)
+        ui.command('/remove 9')
+        ui.command('/attachments')
+        self.assertNotIn('Нет вложения #9', ui.notice)
+        self.assertNotIn('Нет вложения #9', ui.take_notice())
+        self.assertNotIn('LICENSE', ui.status())  # Полный список не дублируется в toolbar.

@@ -45,6 +45,20 @@ class Draft:
         self._add(block)
         return block
 
+    def replace_text(self, number: int, text: str) -> None:
+        item = self.item(number)
+        if isinstance(item, ImageAttachment):
+            raise ValueError('Изображение нельзя редактировать как текст')
+        if isinstance(item, tuple):
+            total = sum(len(value.encode('utf-8')) for name, value in self.files)
+            if total - len(item[1].encode('utf-8')) + len(text.encode('utf-8')) > 24000:
+                raise ValueError('Текстовые вложения превышают 24000 байт')
+            self._items[number] = (item[0], text)
+        else:
+            if len(text) > 28000:
+                raise ValueError('Вставка больше 28000 символов; сократите текст')
+            item.text = text
+
     def remove_number(self, number: int) -> None:
         item = self.item(number)
         if isinstance(item, PasteBlock):
