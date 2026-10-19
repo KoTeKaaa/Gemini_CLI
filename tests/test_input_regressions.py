@@ -71,3 +71,23 @@ class InputRegressionTest(unittest.TestCase):
             self.app.main(backend)
             self.assertEqual(session.return_value.prompt.call_count, len(commands))
             backend.stream_chat.assert_not_called()
+
+    def test_file_range_results_do_not_repeat_old_hints_or_call_backend(self):
+        backend = Mock(mode='local')
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / 'LICENSE').write_text('one\ntwo\nthree\n')
+            commands = ['/paste-edit', '@LICENSE:1-2', '/attachments', '/remove 1', '/attachments', 'exit']
+            with patch.object(self.app, 'show_chat_menu', return_value=(None, True)), \
+                 patch.object(self.app, 'PromptSession') as session, \
+                 patch.object(self.app.os, 'getcwd', return_value=root), \
+                 patch.object(self.app, 'confirm_content_scope', return_value=True), \
+                 patch.object(self.app, 'print_banner'), patch.object(self.app.console, 'print') as printed:
+                session.return_value.prompt.side_effect = commands
+                self.app.main(backend)
+                results = [str(call.args[0]) for call in printed.call_args_list]
+                self.assertEqual(sum('Добавлено #1' in result for result in results), 1)
+                self.assertEqual(sum('Удалено #1' in result for result in results), 1)
+                self.assertTrue(any('#1 — файл LICENSE:1-2' in result for result in results))
+                self.assertFalse(any('Использование: /paste-edit' in result for result in results))
+                self.assertFalse(any('Gemini:' in result for result in results))
+                backend.stream_chat.assert_not_called()

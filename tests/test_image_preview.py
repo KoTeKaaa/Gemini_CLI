@@ -47,3 +47,15 @@ class ImagePreviewTest(unittest.TestCase):
         directory = Path(preview.directory.name)
         preview.close()
         self.assertFalse(directory.exists())
+
+    def test_locked_viewer_file_reports_cleanup_directory(self):
+        preview = ImagePreview()
+        draft = Draft()
+        image = draft.add_image('screen.png', png())
+        with patch('gemini_cli.client.preview.open_external'):
+            preview.show(image)
+        temporary = preview.directory
+        with patch.object(temporary, 'cleanup'), patch.object(Path, 'unlink', side_effect=PermissionError('locked')):
+            warning = preview.close()
+        self.assertIn(temporary.name, warning)
+        temporary.cleanup()
