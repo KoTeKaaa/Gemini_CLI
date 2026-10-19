@@ -12,6 +12,7 @@ from ..runtime.history import bounded_tool_result
 def execute_tool_calls(
     tool_calls: list[dict], history: list[dict], current_dir: str, *,
     handlers: Mapping[str, Callable[[dict, str], str]], logger: logging.Logger,
+    state=None,
 ) -> None:
     for call in tool_calls:
         tool_name = call.get("name")
@@ -24,7 +25,9 @@ def execute_tool_calls(
     for call in tool_calls:
         tool_name = call.get("name")
         tool_args = call.get("args", {})
-        if tool_name in TOOLS and tool_name in handlers:
+        if state is not None and state.cancelled.is_set():
+            tool_result = json.dumps(failure("cancelled", "Ход отменён; инструмент не запущен"), ensure_ascii=False)
+        elif tool_name in TOOLS and tool_name in handlers:
             try:
                 tool_result = handlers[tool_name](tool_args, current_dir)
             except Exception:

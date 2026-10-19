@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 import requests
 from gemini_cli.backends.base import Backend, StreamResult
 from gemini_cli.runtime.history import trim_history
+from gemini_cli.runtime.turn import TurnState
 from gemini_cli.client.settings import Settings, backend_identity
 from gemini_cli.protocol.limits import TOOLS_HISTORY_THRESHOLD, TOOLS_WIRE_THRESHOLD
 from gemini_cli.backends.remote import RemoteBackend, events_from_response as iter_stream_events
@@ -394,7 +395,7 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
 
 
 def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
-                       current_dir: str, *, turn: ToolTurn | None = None, api_client: Backend | None = None) -> None:
+                       current_dir: str, *, turn: ToolTurn | None = None, api_client: Backend | None = None, state=None) -> None:
     handlers = {
         "read_local_files": handle_read_files,
         "write_local_files": handle_write_files,
@@ -415,11 +416,11 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
             return result
         handlers["web_search"] = lambda args, _cwd: web_handler("search", args)
         handlers["read_url"] = lambda args, _cwd: web_handler("read", args)
-    run_tool_calls(tool_calls, history, current_dir, handlers=handlers, logger=logger)
+    run_tool_calls(tool_calls, history, current_dir, handlers=handlers, logger=logger, state=state)
 
 
 
-def display_stream_response(response, has_pending_tool: bool):
+def display_stream_response(response, has_pending_tool: bool, state=None):
     full_response = ""
     tool_calls_received = []
     error_content = None
@@ -434,6 +435,8 @@ def display_stream_response(response, has_pending_tool: bool):
         status.start()
         try:
             for event in iter_stream_events(response):
+                if state is not None and not state.accepts(event):
+                    continue
                 event_type = event.get("type")
                 if event_type == "text":
                     fragment = event.get("content", "")
@@ -692,6 +695,7 @@ def main(backend: Backend | None = None):
             temporary_history.append(row)
             bound_image_history(temporary_history)
 
+            state = TurnState()
             turn = ToolTurn()
             tool_rounds = 0
             while True:
@@ -700,6 +704,7 @@ def main(backend: Backend | None = None):
                 temporary_history = trim_history(temporary_history, 20)
                 payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary, turn,
                                                end_tool_turn=ending)
+                payload = state.request(payload)
                 has_pending_tool = payload["continue_after_tool"]
 
                 try:
@@ -710,7 +715,7 @@ def main(backend: Backend | None = None):
 
                 if response.status_code == 200:
                     full_response, tool_calls_received = display_stream_response(
-                        response, has_pending_tool)
+                        response, has_pending_tool, state)
 
                     if tool_calls_received:
                         if ending:
@@ -719,7 +724,9 @@ def main(backend: Backend | None = None):
                         if full_response:
                             temporary_history.append({"role": "model", "content": full_response})
                         execute_tool_calls(tool_calls_received, temporary_history, current_dir,
-                                           turn=turn, api_client=api_client)
+                                           turn=turn, api_client=api_client, state=state)
+                        if state.cancelled.is_set():
+                            break
                         console.print("[dim]Передаю результаты выполнения обратно на сервер...[/dim]")
                         continue
 
@@ -727,6 +734,7 @@ def main(backend: Backend | None = None):
                         console.rule(style="dim #4285F4")
                         temporary_history.append({"role": "model", "content": full_response})
                         draft.clear()
+                        state.finish()
                         break
 
                     break
