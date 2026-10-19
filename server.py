@@ -314,6 +314,14 @@ def build_history_from_client(history: Optional[List[MessageItem]]) -> List[Any]
 
 
 
+DEPLOYMENT_REVISION = os.getenv("GEMINI_RELEASE_SHA", "development")
+
+
+@app.get("/healthz")
+def deployment_health():
+    return {"status": "ok", "revision": DEPLOYMENT_REVISION}
+
+
 @app.get("/capabilities")
 def capabilities(user: UserContext = Depends(get_working_user)):
     return {"images": IMAGE_PROTOCOL}
