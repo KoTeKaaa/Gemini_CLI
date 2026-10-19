@@ -5,6 +5,8 @@ from typing import List, Optional, Literal, Dict, Any
 import json
 from dataclasses import dataclass
 from uuid import UUID
+import secrets
+from starlette.middleware.sessions import SessionMiddleware
 from fastapi import FastAPI, HTTPException, Header, Depends
 from pydantic import BaseModel, Field, field_validator
 from google import genai
@@ -17,6 +19,7 @@ from gemini_cli.tools.definitions import TOOLS, available_tools
 from gemini_cli.server.tool_history import REDACTED_READ_RESULT, persistent_tool_message
 from gemini_cli.server.subscriptions import require_subscription, working_user_dependency
 from gemini_cli.server.budgets import reserve_request
+from gemini_cli.server.admin.sessions import WebSessions, session_router, owner_dependency
 from gemini_cli.server.limits import BodyLimit, StreamJob, BoundedStreamingResponse as StreamingResponse
 
 load_dotenv()
@@ -35,6 +38,8 @@ if not supabase_url or not supabase_key:
 
 app = FastAPI()
 app.add_middleware(BodyLimit)
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("ADMIN_SESSION_SECRET") or secrets.token_hex(32),
+                   session_cookie="gemini_admin", https_only=True, same_site="strict", max_age=1800)
 client = genai.Client(api_key=api, http_options=types.HttpOptions(
     timeout=45000, retry_options=types.HttpRetryOptions(attempts=1)))
 
@@ -182,6 +187,11 @@ def refresh_user_session(payload: RefreshPayload):
         status_code = (401 if isinstance(e, HTTPException) or
                        getattr(e, "status", None) in (400, 401, 403) else 503)
         raise HTTPException(status_code=status_code, detail="Не удалось обновить сессию")
+
+
+web_sessions = WebSessions(get_current_user)
+get_admin = owner_dependency(get_current_user)
+app.include_router(session_router(web_sessions, login_user))
 
 
 @app.get("/chats", response_model=List[ChatResponse])
