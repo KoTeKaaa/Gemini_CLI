@@ -7,7 +7,7 @@ from ..protocol.attachments import MAX_IMAGE_BYTES, MAX_PIXELS, image_details
 MAX_DIB_BYTES = MAX_PIXELS * 4 + 65536
 
 
-def _read_windows():
+def _read_windows(*, text=False):
     import ctypes
     from ctypes import wintypes
     user = ctypes.WinDLL('user32', use_last_error=True)
@@ -31,13 +31,13 @@ def _read_windows():
         if user.IsClipboardFormatAvailable(15):  # CF_HDROP
             raise ClipboardError('В буфере список файлов; выберите изображение через @')
         png = user.RegisterClipboardFormatW('PNG')
-        formats = [(png, 'PNG'), (17, 'DIB'), (8, 'DIB')]
+        formats = [(13, 'TEXT')] if text else [(png, 'PNG'), (17, 'DIB'), (8, 'DIB')]
         for code, kind in formats:
             if not code or not user.IsClipboardFormatAvailable(code):
                 continue
             handle = user.GetClipboardData(code)
             size = kernel.GlobalSize(handle)
-            limit = MAX_IMAGE_BYTES if kind == 'PNG' else MAX_DIB_BYTES
+            limit = 65536 if kind == 'TEXT' else MAX_IMAGE_BYTES if kind == 'PNG' else MAX_DIB_BYTES
             if not handle or not size or size > limit:
                 raise ClipboardError('Изображение в буфере слишком велико или повреждено')
             pointer = kernel.GlobalLock(handle)
@@ -78,3 +78,12 @@ class WindowsClipboard:
             if isinstance(exc, ClipboardError):
                 raise
             raise ClipboardError('Не удалось прочитать изображение Windows; прикрепите файл через @') from None
+
+    def read_text(self) -> str | None:
+        result = _read_windows(text=True)
+        if result is None:
+            return None
+        try:
+            return result[1].decode('utf-16-le').split('\0', 1)[0]
+        except UnicodeError:
+            raise ClipboardError('Некорректный текст в буфере') from None

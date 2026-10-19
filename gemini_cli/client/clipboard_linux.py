@@ -65,3 +65,17 @@ class LinuxClipboard:
         except ValueError:
             raise ClipboardError('Буфер содержит повреждённое или слишком большое изображение') from None
         return ClipboardImage(data, 'Скриншот.' + {'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp'}[mime])
+
+    def read_text(self) -> str | None:
+        listing = (['wl-paste', '--list-types'] if self.backend == 'wayland'
+                   else ['xclip', '-selection', 'clipboard', '-out', '-target', 'TARGETS'])
+        types = self.run(listing, limit=8192).decode('utf-8', errors='replace').split()
+        mime = next((kind for kind in ('text/plain;charset=utf-8', 'text/plain', 'UTF8_STRING') if kind in types), None)
+        if mime is None:
+            return None
+        argv = (['wl-paste', '--no-newline', '--type', mime] if self.backend == 'wayland'
+                else ['xclip', '-selection', 'clipboard', '-out', '-target', mime])
+        try:
+            return self.run(argv, limit=32768).decode('utf-8')
+        except UnicodeError:
+            raise ClipboardError('Текст буфера не является UTF-8') from None

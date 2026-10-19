@@ -1,3 +1,5 @@
+from gemini_cli.client.input import DraftInput
+from prompt_toolkit.key_binding import merge_key_bindings
 from gemini_cli.client.draft import Draft
 from gemini_cli.protocol.images import encode_images
 from gemini_cli.runtime.attachments import attachment_text, bound_image_history
@@ -505,11 +507,13 @@ def main(backend: Backend | None = None):
     chat_mode = "ВРЕМЕННЫЙ" if is_temporary else "ПОСТОЯННЫЙ"
     print_banner(current_model, chat_mode, current_dir)
 
-    session = PromptSession(key_bindings=bindings, style=my_style)
+    draft = Draft()
+    draft_input = DraftInput(draft)
+    session = PromptSession(key_bindings=merge_key_bindings([bindings, draft_input.bindings]),
+                            style=my_style, bottom_toolbar=draft_input.status)
 
     temporary_history: List[Dict[str, str]] = []
     states = {}
-    draft = Draft()
     console.print(Text(f"Backend: {api_client.mode}"))
 
     while True:
@@ -529,11 +533,17 @@ def main(backend: Backend | None = None):
                 console.print("[bold red]Рад был помочь![/bold red]")
                 break
 
+            if draft_input.command(user_input.strip()):
+                console.print(Text(draft_input.status()))
+                continue
+
             if first_line.startswith("/help"):
                 table = Table(title="Доступные команды Gemini-CLI", show_header=True, header_style="bold magenta")
                 table.add_column("Команда", style="cyan")
                 table.add_column("Описание", style="white")
 
+                table.add_row("Ctrl+V, /paste", "Прикрепить скриншот из буфера")
+                table.add_row("/attachments, /remove N", "Список вложений и удаление")
                 table.add_row("/help", "Показать эту справку")
                 table.add_row("/model", "Сменить ИИ модель")
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")
