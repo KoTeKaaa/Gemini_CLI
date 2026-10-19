@@ -2,6 +2,7 @@
 
 import logging
 import json
+from uuid import uuid4
 from typing import Callable, Mapping
 
 from ..tools.definitions import TOOLS
@@ -19,7 +20,8 @@ def execute_tool_calls(
         history.append({
             "role": "model", "content": f"[Вызов локального инструмента: {tool_name}]",
             "name": tool_name, "args": call.get("args", {}), "call_id": call.get("call_id"),
-            "thought_signature": call.get("thought_signature")
+            "thought_signature": call.get("thought_signature"), "id": str(uuid4()),
+            "turn_id": getattr(state, "turn_id", None), "status": "running"
         })
 
     for index, call in enumerate(tool_calls):
@@ -61,7 +63,8 @@ def execute_tool_calls(
         record({"ok": "completed", "error": "failed", "timeout": "failed"}.get(status, status))
         history.append({
             "role": "tool", "name": tool_name, "content": bounded_tool_result(tool_result),
-            "call_id": call.get("call_id")
+            "call_id": call.get("call_id"), "id": str(uuid4()),
+            "turn_id": getattr(state, "turn_id", None), "status": "running"
         })
         logged_name = tool_name if tool_name in TOOLS else "unknown"
         logger.info("Tool вызов: %s", logged_name)

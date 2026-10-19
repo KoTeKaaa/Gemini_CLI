@@ -57,3 +57,58 @@ class UIContextTests(unittest.TestCase):
         self.assertEqual(completed_boundaries(rows), [])
         rows[1]["status"] = "legacy"
         self.assertEqual(completed_boundaries(rows), [])
+
+    def test_main_clear_only_temporary_preserves_model_and_cwd(self):
+        from gemini_cli.client.draft import Draft
+        for selected, expected in [((None, True), ""), (("saved", False), "draft")]:
+            draft = Draft("draft")
+            draft.add_text_file("file", "contents")
+            backend = Mock(mode="local")
+            backend.get_history.return_value = []
+            with patch.object(self.app, "show_chat_menu", return_value=selected), \
+                 patch.object(self.app, "Draft", side_effect=[draft, Draft()]), \
+                 patch.object(self.app, "PromptSession") as session, \
+                 patch.object(self.app, "print_banner"), patch.object(self.app.console, "print"):
+                session.return_value.prompt.side_effect = ["/clear", "exit"]
+                self.app.main(backend)
+                second = session.return_value.prompt.call_args_list[1]
+                self.assertEqual(second.kwargs["default"], expected)
+                self.assertIn("gemini-3.5-flash-lite", str(second.args[0]))
+                backend.stream_chat.assert_not_called()
+                backend.delete_chat.assert_not_called()
+
+    def test_chat_switch_restores_unsent_draft(self):
+        from gemini_cli.client.draft import Draft
+        draft = Draft("unfinished")
+        draft.add_text_file("file", "contents")
+        backend = Mock(mode="local")
+        backend.get_history.return_value = []
+        with patch.object(self.app, "show_chat_menu", side_effect=[(None, True), ("saved", False), (None, True)]), \
+             patch.object(self.app, "Draft", side_effect=[draft, Draft()]), \
+             patch.object(self.app, "PromptSession") as session, \
+             patch.object(self.app, "print_banner"), patch.object(self.app.console, "print"):
+            session.return_value.prompt.side_effect = ["/chat", "/chat", "exit"]
+            self.app.main(backend)
+            self.assertEqual([call.kwargs["default"] for call in session.return_value.prompt.call_args_list],
+                             ["unfinished", "", "unfinished"])
+            backend.stream_chat.assert_not_called()
+
+    def test_temporary_turn_has_stable_completed_ids(self):
+        from uuid import UUID
+        backend = Mock(mode="local")
+        with patch.object(self.app, "show_chat_menu", return_value=(None, True)), \
+             patch.object(self.app, "PromptSession") as session, \
+             patch.object(self.app, "print_banner"), patch.object(self.app.console, "print"), \
+             patch.object(self.app.console, "rule"), patch.object(self.app, "open_stream") as stream, \
+             patch.object(self.app, "WorkView"), \
+             patch.object(self.app, "display_stream_response", return_value=("answer", [])):
+            stream.return_value.status_code = 200
+            session.return_value.prompt.side_effect = ["first", "second", "exit"]
+            self.app.main(backend)
+            rows = stream.call_args.args[1]["history"]
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["turn_id"], rows[1]["turn_id"])
+            self.assertEqual([row["status"] for row in rows], ["completed", "completed"])
+            self.assertNotEqual(rows[0]["id"], rows[1]["id"])
+            for row in rows:
+                UUID(row["id"])
