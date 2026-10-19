@@ -6,6 +6,7 @@ from gemini_cli.client.draft import Draft
 from gemini_cli.client.shell import launch_shell
 from gemini_cli.client.sessions import SessionManager, session_command
 from gemini_cli.client.work_input import WorkInput
+from gemini_cli.client.work_view import WorkView
 from gemini_cli.protocol.images import encode_images
 from gemini_cli.runtime.attachments import attachment_text, bound_image_history
 import os
@@ -405,7 +406,9 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
         "execute_command": lambda args, cwd: execute_command(
             args, cwd, approve=confirm_command, notify=console.print, logger=logger,
             cancelled=state.cancelled.is_set if state else lambda: False,
-            monitor=lambda: WorkInput(state)),
+            on_process=getattr(getattr(state, "view", None), "set_process", None),
+            monitor=(state.view.monitor if state is not None and hasattr(state, "view")
+                     else lambda: WorkInput(state))),
         "find_files": lambda args, cwd: json.dumps(find_files(args, cwd), ensure_ascii=False),
         "replace_in_file": lambda args, cwd: json.dumps(replace_in_file(
             args, cwd, approve=confirm_content_scope, confirm_diff=confirm_replacement), ensure_ascii=False),
@@ -434,11 +437,14 @@ def display_stream_response(response, has_pending_tool: bool, state=None):
                    if has_pending_tool else "[bold green]✨ Gemini думает...[/bold green]")
     use_screen = (console.is_terminal and not console.is_dumb_terminal
                   and not console.legacy_windows)
-    with WorkInput(state), console.screen() if use_screen else nullcontext():
+    view = getattr(state, "view", None) if use_screen else None
+    with WorkInput(state, view.handle if view else None), (view.screen() if view else
+            console.screen() if use_screen else nullcontext()):
         status = console.status(status_text, spinner="dots")
         started_text = False
         line_ended = False
-        status.start()
+        if view is None:
+            status.start()
         try:
             for event in iter_stream_events(response):
                 if state is not None and not state.accepts(event):
@@ -451,8 +457,11 @@ def display_stream_response(response, has_pending_tool: bool, state=None):
                         if not started_text:
                             status.stop()
                             started_text = True
-                        sys.stdout.write(fragment)
-                        sys.stdout.flush()
+                        if view is not None:
+                            view.update_text(full_response)
+                        else:
+                            sys.stdout.write(fragment)
+                            sys.stdout.flush()
                         line_ended = fragment.endswith("\n")
                 elif event_type == "tool_call":
                     tool_calls_received.append(event)
@@ -464,7 +473,7 @@ def display_stream_response(response, has_pending_tool: bool, state=None):
             close = getattr(response, "close", None)
             if close:
                 close()
-            if started_text and not line_ended:
+            if view is None and started_text and not line_ended:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
     if state is not None and state.cancelled.is_set():
@@ -713,6 +722,7 @@ def main(backend: Backend | None = None):
             bound_image_history(temporary_history)
 
             state = TurnState()
+            state.view = WorkView(console, state)
             turn = ToolTurn()
             tool_rounds = 0
             while True:
@@ -725,7 +735,7 @@ def main(backend: Backend | None = None):
                 has_pending_tool = payload["continue_after_tool"]
 
                 try:
-                    with WorkInput(state):
+                    with state.view.monitor():
                         response = open_stream(api_client, payload, state)
                 except Exception:
                     console.print(Text("Соединение прервано. Черновик сохранён; повторите отправку."))

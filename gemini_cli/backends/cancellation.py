@@ -4,7 +4,7 @@ An in-flight provider call may finish later and may still consume quota. The
 worker retains its slot until it closes the source; it never writes UI/history.
 """
 from queue import Queue, Empty, Full
-from threading import Thread, Lock
+from threading import Thread, Lock, Event
 from .base import StreamResult
 
 
@@ -15,7 +15,14 @@ def open_stream(backend, payload, state):
     if not lock.acquire(blocking=False):
         return StreamResult(409, detail="Предыдущий поток ещё закрывается; повторите позже")
     ready, events = Queue(1), Queue(1)
-    stopped = state.cancelled
+    class StopToken:
+        def __init__(self):
+            self.local = Event()
+        def is_set(self):
+            return self.local.is_set() or state.cancelled.is_set()
+        def set(self):
+            self.local.set()
+    stopped = StopToken()
     def put(queue, value):
         while not stopped.is_set():
             try:
@@ -66,4 +73,4 @@ def open_stream(backend, payload, state):
         except InterruptedError:
             return
     return StreamResult(response.status_code, generate(), response.detail,
-                        on_close=lambda: None)
+                        on_close=stopped.set)
