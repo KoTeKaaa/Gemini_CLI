@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from uuid import UUID
 import secrets
 from starlette.middleware.sessions import SessionMiddleware
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from pydantic import BaseModel, Field, field_validator
 from google import genai
 from google.genai import types
@@ -24,6 +24,7 @@ from gemini_cli.server.admin.subscriptions import subscription_router
 from gemini_cli.server.admin.invitations import invitation_router
 from gemini_cli.server.admin.accounts import account_router
 from gemini_cli.server.admin.pages import page_router, PanelHeaders
+from gemini_cli.server.auth_limits import AUTH_LIMITS
 from gemini_cli.server.limits import BodyLimit, StreamJob, BoundedStreamingResponse as StreamingResponse
 
 load_dotenv()
@@ -55,7 +56,7 @@ class UserContext:
     db: Client
 
 
-def get_current_user(authorization: Optional[str] = Header(None)):
+def get_current_user(authorization: Optional[str] = Header(None), request: Request = None):
     if not authorization:
         raise HTTPException(status_code=401, detail="Отсутствует заголовок Authorization")
 
@@ -65,6 +66,9 @@ def get_current_user(authorization: Optional[str] = Header(None)):
             raise HTTPException(status_code=401, detail="Неверный тип токена. Ожидается Bearer")
     except ValueError:
         raise HTTPException(status_code=401, detail="Неверный формат заголовка Authorization")
+
+    if request is not None:
+        AUTH_LIMITS.check(request, "bearer", token, 90)
 
     try:
         db = create_client(
@@ -77,7 +81,7 @@ def get_current_user(authorization: Optional[str] = Header(None)):
             raise HTTPException(status_code=401, detail="Неверный токен сессии")
         return UserContext(user_id=user_response.user.id, db=db)
     except Exception as e:
-        print(f"[AUTH ERROR] Ошибка валидации токена: {e}")
+        print("[AUTH ERROR] Ошибка валидации токена")
         raise HTTPException(status_code=401, detail="Ошибка авторизации")
 
 
@@ -126,12 +130,12 @@ class StreamChatPayload(BaseModel):
 
 
 class LoginPayload(BaseModel):
-    email: str
-    password: str
+    email: str = Field(max_length=320)
+    password: str = Field(max_length=1024, repr=False)
 
 
 class RefreshPayload(BaseModel):
-    refresh_token: str
+    refresh_token: str = Field(max_length=8192, repr=False)
 
 
 from fastapi import status
@@ -141,7 +145,9 @@ def signup_user(payload: LoginPayload):
     raise HTTPException(status_code=403, detail="Регистрация доступна только по приглашению владельца")
 
 @app.post("/auth/login")
-def login_user(payload: LoginPayload):
+def login_user(payload: LoginPayload, request: Request = None):
+    if request is not None:
+        AUTH_LIMITS.check(request, "login", payload.email.strip().casefold())
     if not payload.email or not payload.password:
         raise HTTPException(status_code=400, detail="Email и пароль обязательны")
 
@@ -157,12 +163,14 @@ def login_user(payload: LoginPayload):
         return auth_response.session.model_dump()
 
     except Exception as e:
-        print(f"[AUTH ERROR] Login failed for {payload.email!r}: {e}")
+        print("[AUTH ERROR] Не удалось выполнить вход")
         raise HTTPException(status_code=401, detail="Не удалось выполнить вход")
 
 
 @app.post("/auth/refresh")
-def refresh_user_session(payload: RefreshPayload):
+def refresh_user_session(payload: RefreshPayload, request: Request = None):
+    if request is not None:
+        AUTH_LIMITS.check(request, "refresh", payload.refresh_token, 30)
     if not payload.refresh_token:
         raise HTTPException(status_code=401, detail="Не удалось обновить сессию")
     try:
@@ -172,7 +180,7 @@ def refresh_user_session(payload: RefreshPayload):
             raise HTTPException(status_code=401, detail="Не удалось обновить сессию")
         return response.session.model_dump()
     except Exception as e:
-        print(f"[AUTH ERROR] Session refresh failed: {e}")
+        print("[AUTH ERROR] Не удалось обновить сессию")
         status_code = (401 if isinstance(e, HTTPException) or
                        getattr(e, "status", None) in (400, 401, 403) else 503)
         raise HTTPException(status_code=status_code, detail="Не удалось обновить сессию")
@@ -206,7 +214,7 @@ def get_chats(user: UserContext = Depends(get_working_user)):
         return chats
 
     except Exception as e:
-        print(f"[SERVER ERROR] Ошибка получения чатов: {e}")
+        print("[SERVER ERROR] Ошибка получения чатов")
         raise HTTPException(status_code=500, detail="Не удалось получить список чатов")
 
 
@@ -231,7 +239,7 @@ def create_chat(payload: ChatCreate, user: UserContext = Depends(get_working_use
         )
 
     except Exception as e:
-        print(f"[SERVER ERROR] Ошибка при создании чата: {e}")
+        print("[SERVER ERROR] Ошибка создания чата")
         raise HTTPException(status_code=500, detail="Не удалось создать чат")
 
 
@@ -252,8 +260,12 @@ def delete_chat(chat_id: str, user: UserContext = Depends(get_working_user)):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[SERVER ERROR] Ошибка удаления чата: {e}")
+        print("[SERVER ERROR] Ошибка удаления чата")
         raise HTTPException(status_code=500, detail="Не удалось удалить чат")
+
+
+class MessageStorageError(RuntimeError):
+    pass
 
 
 def save_message_to_db(
@@ -275,8 +287,8 @@ def save_message_to_db(
     try:
         db.table("messages").insert(data).execute()
     except Exception as e:
-        print(f"[DB ERROR] Не удалось сохранить сообщение: {e}")
-        raise RuntimeError("Не удалось сохранить сообщение в БД") from e
+        print("[DB ERROR] Не удалось сохранить сообщение")
+        raise MessageStorageError("Не удалось сохранить сообщение в БД") from None
 
 
 def build_history_from_db(db: Client, chat_id: str,
@@ -299,7 +311,7 @@ def build_history_from_db(db: Client, chat_id: str,
                                         name=msg.get("name"), call_id=msg.get("call_id")))
         return build_history_from_client(restored)
     except Exception as e:
-        print(f"[DB ERROR] Ошибка загрузки истории: {e}")
+        print("[DB ERROR] Ошибка загрузки истории")
         raise HTTPException(status_code=503, detail="Не удалось загрузить историю чата") from e
 
 
@@ -534,10 +546,14 @@ def stream_chat(
 
         except Exception as e:
             error_msg = str(e)
-            if "429" in error_msg or "ResourceExhausted" in error_msg:
+            if isinstance(e, MessageStorageError):
+                content = "[Ошибка сервера: Не удалось сохранить сообщение в БД]"
+            elif isinstance(e, HTTPException):
+                content = e.detail
+            elif "429" in error_msg or "ResourceExhausted" in error_msg:
                 content = "Бесплатные токены или запросы для модели закончились. Пожалуйста, смените модель с помощью /model"
             else:
-                content = f"[Ошибка сервера: {error_msg}]"
+                content = "Сервер временно не смог обработать запрос"
 
             error_event = {
                 "type": "error",

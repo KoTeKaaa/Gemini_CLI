@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from ..auth_limits import AUTH_LIMITS
 
 
 def require_owner(user):
@@ -52,6 +53,7 @@ class WebSessions:
         expected = request.session.get("csrf", "")
         if not expected or not secrets.compare_digest(token, expected):
             raise HTTPException(403, "Недействительная CSRF-защита")
+        AUTH_LIMITS.check(request, "web_write", request.session.get("sid", expected), 40)
 
     def create(self, request, token, user):
         now = time.monotonic()
@@ -66,6 +68,7 @@ class WebSessions:
         request.session.update(sid=sid, csrf=secrets.token_urlsafe(32))
 
     def current_user(self, request: Request):
+        AUTH_LIMITS.check(request, "web_session", request.session.get("sid", "anonymous"), 90)
         with self.lock:
             entry = self.entries.get(request.session.get("sid"))
         if not entry or entry[2] <= time.monotonic():
@@ -100,6 +103,7 @@ def session_router(sessions, login):
     @router.post("/login")
     def sign_in(payload: WebLogin, request: Request):
         sessions.check_csrf(request, payload.csrf)
+        AUTH_LIMITS.check(request, "web_login", payload.email.strip().casefold())
         result = login(payload)
         token = result.get("access_token")
         if not token:
