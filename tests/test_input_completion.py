@@ -1,4 +1,5 @@
 import tempfile
+import os
 import unittest
 from pathlib import Path
 from prompt_toolkit.document import Document
@@ -16,10 +17,13 @@ class CompletionTest(unittest.TestCase):
             for name in ['привет мир.py', '.env', 'id_rsa', 'secret.key']:
                 (base / name).write_text('unused')
             (base / 'папка').mkdir()
-            (base / 'outside').symlink_to(outside, target_is_directory=True)
+            try:
+                (base / 'outside').symlink_to(outside, target_is_directory=True)
+            except OSError:
+                pass  # Windows без права создания symlink
             completer = InputCompleter(lambda: root)
             results = [item.text for item in completer.get_completions(Document('@'), None)]
-            self.assertEqual(set(results), {'@привет мир.py', '@папка/'})
+            self.assertEqual(set(results), {'@привет мир.py', '@папка' + os.sep})
             self.assertIn((root, 'привет мир.py'), completer.snapshots)
             self.assertEqual(list(completer.get_completions(Document('@../'), None)), [])
             self.assertEqual(list(completer.get_completions(Document('@outside/'), None)), [])
