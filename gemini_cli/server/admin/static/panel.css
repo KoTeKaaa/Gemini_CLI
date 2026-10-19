@@ -10,3 +10,5 @@ button:disabled{opacity:.5}button:focus-visible,input:focus-visible{outline:2px 
 .table{overflow-x:auto;border:1px solid #344547;border-radius:6px}table{border-collapse:collapse;width:100%;font-size:14px}
 th,td{text-align:left;padding:16px;border-bottom:1px solid #344547;vertical-align:top}th{color:#90b7ad}
 code{font-size:12px;word-break:break-all}#notice{white-space:pre-wrap;color:#e6c289}
+section{border-top:1px solid #344547;margin-top:40px;padding-top:20px}td button{font-size:12px;padding:8px;margin-top:10px}
+select[multiple]{min-height:130px}h2{font-size:24px}input[readonly]{color:#e6c289}

@@ -7,6 +7,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 from .adapter import safe_admin_call
+from .subscriptions import MODELS, TOOLS
 
 ROOT = Path(__file__).parent
 TEMPLATES = Jinja2Templates(directory=ROOT / "templates")
@@ -40,7 +41,8 @@ def page_router(sessions):
     def index(request: Request, user=Depends(sessions.owner)):
         rows = safe_admin_call(lambda db: db.table("account_subscriptions").select("*")
                                .order("created_at", desc=True).limit(1000).execute().data)
-        return TEMPLATES.TemplateResponse(request, "subscriptions.html", {"subscriptions": rows})
+        return TEMPLATES.TemplateResponse(request, "subscriptions.html", {
+            "subscriptions": rows, "models": sorted(MODELS), "features": sorted(TOOLS)})
 
     router.mount("/panel-static", StaticFiles(directory=ROOT / "static"), name="panel-static")
     return router
