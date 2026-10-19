@@ -555,6 +555,7 @@ def main(backend: Backend | None = None):
                 table.add_column("Команда", style="cyan")
                 table.add_column("Описание", style="white")
 
+                table.add_row("/paste-show N, /paste-edit N, /paste-remove N", "Раскрыть, изменить или удалить большую вставку")
                 table.add_row("Ctrl+V, /paste", "Прикрепить скриншот из буфера")
                 table.add_row("@путь[:N-M], /remove-file N", "Прикрепить файл или удалить текстовое вложение")
                 table.add_row("/attachments, /remove N", "Список вложений и удаление")

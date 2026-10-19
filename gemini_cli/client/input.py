@@ -1,6 +1,8 @@
 """Действия черновика: клавиши не отправляют запрос и не запускают backend."""
 
 from prompt_toolkit.key_binding import KeyBindings
+from .paste import PasteBlock, is_large, view_text, edit_text
+from prompt_toolkit.keys import Keys
 from .clipboard import get_clipboard, ClipboardError
 
 
@@ -16,6 +18,7 @@ class DraftInput:
         self.pasted_text = None
         self.bindings = KeyBindings()
         self.bindings.add('c-v')(self.paste_key)
+        self.bindings.add(Keys.BracketedPaste)(self.bracketed_paste)
 
     def paste(self) -> bool:
         self.pasted_text = None
@@ -38,21 +41,58 @@ class DraftInput:
         self.draft.text = event.current_buffer.text
         self.paste()
         if self.pasted_text:
-            event.current_buffer.insert_text(self.pasted_text)
+            self.insert(event.current_buffer, self.pasted_text)
             self.draft.text = event.current_buffer.text
+        event.app.invalidate()
+
+    def insert(self, buffer, text: str):
+        if is_large(text):
+            block = PasteBlock.create(text)
+            self.draft.pastes.append(block)
+            buffer.insert_text(block.token)
+        else:
+            buffer.insert_text(text)
+
+    def bracketed_paste(self, event):
+        self.insert(event.current_buffer, event.data)
+        self.draft.text = event.current_buffer.text
         event.app.invalidate()
 
     def status(self):
         images = ' | '.join(f'{index}: {safe_label(image.name)} ({len(image.data)} Б)'
                             for index, image in enumerate(self.draft.images, 1))
         files = ' | '.join(f'текст {index}: {safe_label(name)}' for index, (name, _) in enumerate(self.draft.files, 1))
-        return f'{images} {files}  {self.notice}'.strip()
+        pastes = ' | '.join(f'вставка {index}: {len(block.text)} символов' for index, block in enumerate(self.draft.pastes, 1))
+        return f'{images} {files} {pastes}  {self.notice}'.strip()
 
     def command(self, text: str) -> bool:
-        if text == '/paste':
+        if text.startswith(('/paste-show ', '/paste-edit ', '/paste-remove ')):
+            try:
+                action, number = text.split()
+                index = int(number) - 1
+                if index < 0:
+                    raise ValueError()
+                block = self.draft.pastes[index]
+                if action == '/paste-show':
+                    view_text(block.text)
+                elif action == '/paste-edit':
+                    block.text = edit_text(block.text)
+                else:
+                    self.draft.text = self.draft.text.replace(block.token, '')
+                    self.draft.pastes.pop(index)
+            except (ValueError, IndexError):
+                self.notice = 'Укажите номер вставки из строки состояния'
+            except (KeyboardInterrupt, EOFError):
+                self.notice = 'Редактирование отменено'
+        elif text == '/paste':
             self.paste()
             if self.pasted_text:
-                self.draft.text += self.pasted_text
+                if is_large(self.pasted_text):
+                    block = PasteBlock.create(self.pasted_text)
+                    self.draft.pastes.append(block)
+                    self.draft.text += block.token
+                else:
+                    self.draft.text += self.pasted_text
         elif text == '/attachments':
             self.notice = 'Удалить: /remove НОМЕР'
         elif text.startswith('/remove-file '):
