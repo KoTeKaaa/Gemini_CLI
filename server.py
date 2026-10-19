@@ -18,6 +18,7 @@ from supabase.lib.client_options import SyncClientOptions
 from gemini_cli.tools.definitions import TOOLS, available_tools
 from gemini_cli.server.tool_history import REDACTED_READ_RESULT, persistent_tool_message
 from gemini_cli.runtime.history import persistent_history_rows
+from gemini_cli.backends.genai import to_gemini
 from gemini_cli.server.subscriptions import require_subscription, working_user_dependency
 from gemini_cli.server.budgets import reserve_request
 from gemini_cli.server.admin.sessions import WebSessions, session_router, owner_dependency
@@ -306,86 +307,11 @@ def build_history_from_db(db: Client, chat_id: str,
 
 
 def build_history_from_client(history: Optional[List[MessageItem]]) -> List[types.Content]:
-    history_content: List[types.Content] = []
-    if not history:
-        return history_content
+    try:
+        return to_gemini([item.model_dump() for item in history or []])
+    except ValueError:
+        raise HTTPException(400, "Некорректная подпись вызова инструмента") from None
 
-    last_user = next((index for index in range(len(history) - 1, -1, -1)
-                      if history[index].role == "user"), len(history))
-    start = min(max(0, len(history) - 20), last_user)
-    for item in history[start:]:
-        msg = item.model_dump() if hasattr(item, "model_dump") else item.dict()
-
-        role = msg.get("role")
-        content = msg.get("content", "")
-        name = msg.get("name")
-        args = msg.get("args")
-        call_id = msg.get("call_id")
-
-        if role == "user":
-            history_content.append(
-                types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=content)],
-                )
-            )
-
-        elif role == "model":
-            if name:
-                signature = msg.get("thought_signature")
-                if signature:
-                    try:
-                        signature = base64.b64decode(signature, validate=True)
-                    except (ValueError, binascii.Error) as exc:
-                        raise HTTPException(status_code=400, detail="Некорректная подпись вызова инструмента") from exc
-                part = types.Part(function_call=types.FunctionCall(
-                    name=name, args=args or {}, id=call_id
-                ), thought_signature=signature)
-                if history_content and history_content[-1].role == "model" and all(
-                    previous.function_call is not None for previous in history_content[-1].parts
-                ):
-                    history_content[-1].parts.append(part)
-                else:
-                    history_content.append(types.Content(role="model", parts=[part]))
-            else:
-                history_content.append(
-                    types.Content(
-                        role="model",
-                        parts=[types.Part.from_text(text=content)],
-                    )
-                )
-
-        elif role == "tool":
-            try:
-                parsed_result = json.loads(content)
-                if not isinstance(parsed_result, dict):
-                    parsed_result = {"output": parsed_result}
-            except Exception:
-                parsed_result = {"output": content}
-
-            part = types.Part(function_response=types.FunctionResponse(
-                name=name or "unknown_tool", response=parsed_result, id=call_id
-            ))
-            if history_content and history_content[-1].role == "user" and all(
-                previous.function_response is not None for previous in history_content[-1].parts
-            ):
-                history_content[-1].parts.append(part)
-            else:
-                history_content.append(types.Content(role="user", parts=[part]))
-
-    while history_content and history_content[0].role != "user":
-        history_content.pop(0)
-
-    while (
-            history_content
-            and history_content[0].role == "user"
-            and history_content[0].parts
-            and hasattr(history_content[0].parts[0], "function_response")
-            and history_content[0].parts[0].function_response is not None
-    ):
-        history_content.pop(0)
-
-    return history_content
 
 
 
