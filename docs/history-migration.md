@@ -1,7 +1,7 @@
 # История S4: совместимая схема
 
 S4.1 подготавливает схему; S4.2 добавляет атомарную запись событий и финализацию запроса.
-RPC fork и compact пока не реализованы.
+RPC summary и fork добавляются отдельным `deploy/history_boundaries.sql` после append.
 SQL подготовлен в `deploy/history_events.sql`. Это проект миграции, а не
 автоматически применяемый deploy-скрипт. Supabase CLI в текущем окружении отсутствует.
 При доступном CLI создать канонический файл через `supabase migration new history_events`
@@ -86,3 +86,27 @@ running-события этого запроса на completed/cancelled/failed
 
 Изолированный runner применяет сначала history_events.sql, затем остальные
 deploy/history_*.sql по имени и выполняет все history_*.sql fixtures кроме baseline.
+
+## Границы summary и fork
+
+`set_history_summary(target_chat,summary_text,boundary_id)` возвращает true. Требует
+сводку до 8192 символов, целый completed-ход с начальным user и конечным непустым
+model, согласованные пары name/call_id, отсутствие поздних событий этого хода.
+Граница находится до последнего user и не двигается назад. Сводка заменяется атомарно,
+сообщения сохраняются. Python runtime создаёт сводку только из отфильтрованного контекста.
+
+`fork_history_chat(target_chat,new_title,boundary_id)` возвращает JSON объекта chats.
+NULL boundary выбирает последнюю безопасную границу. Копируется полный префикс
+до неё с новыми UUID событий, исходными turn/request/tool IDs, signatures и порядком.
+Сводка копируется лишь при включении её границы в префикс, с новым boundary UUID.
+Копия повторно очищается консервативно: все tool outputs и содержимое именованных
+model calls заменяются redacted, arguments содержат только допустимые path/line поля.
+Обычные user/model сообщения сохраняются. Исходный чат остаётся неизменным.
+Ранние прерванные ходы префикса сохраняются; runtime восстанавливает недостающие
+результаты только как interrupted, без автоматического повторения действий.
+Создание чата, копирование и summary выполняются одной транзакцией; ошибки не
+оставляют видимый частичный fork. Все функции invoker-scoped и закрыты для anon.
+
+Fixture history_boundaries.sql проверен тем же изолированным runner: PASS для
+пустой/заполненной БД, summary limit/границ, orphan tools, redaction, новых ID,
+порядка и переноса summary, foreign/anon доступа и сохранности источника.
