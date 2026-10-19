@@ -94,7 +94,7 @@ def to_gemini(history: list[dict]):
     if not history:
         return history_content
 
-    for msg in trim_history(history):
+    for msg in history:
         role = msg.get("role")
         content = msg.get("content", "")
         name = msg.get("name")

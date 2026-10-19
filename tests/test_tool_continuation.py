@@ -73,13 +73,13 @@ class ToolContinuationTest(unittest.TestCase):
         budget.start()
         self.addCleanup(budget.stop)
 
-    def test_legacy_large_row_outside_context_does_not_block_resume(self):
+    def test_legacy_history_is_not_silently_truncated_on_resume(self):
         db = FakeDb()
         db.messages = [{"chat_id": "chat-1", "role": "user", "content": "x" * 40000}]
         db.messages += [{"chat_id": "chat-1", "role": "user", "content": str(index)} for index in range(24)]
         result = self.server.build_history_from_db(db, "chat-1")
-        self.assertEqual(len(result), 20)
-        self.assertNotIn("x" * 40000, str(result))
+        self.assertEqual(len(result), 25)
+        self.assertIn("x" * 40000, str(result))
 
     def test_request_tool_result_answer_has_one_original_request(self):
         for temporary in (False, True):
