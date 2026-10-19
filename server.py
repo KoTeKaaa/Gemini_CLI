@@ -23,6 +23,7 @@ from gemini_cli.server.admin.invitations import invitation_router
 from gemini_cli.server.admin.accounts import account_router
 from gemini_cli.server.admin.pages import page_router, PanelHeaders
 from gemini_cli.server.auth_limits import AUTH_LIMITS
+from gemini_cli.protocol.models import ModelName
 from gemini_cli.server.limits import BodyLimit, StreamJob, BoundedStreamingResponse as StreamingResponse
 
 load_dotenv()
@@ -110,8 +111,7 @@ class StreamChatPayload(BaseModel):
     request_id: Optional[UUID] = None
     message: str = Field(default="", max_length=32768)
     chat_id: Optional[str] = None
-    model_name: Literal["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.7-flash",
-                        "gemini-3.6-flash", "gemini-3.5-flash"] = "gemini-3.5-flash-lite"
+    model_name: ModelName = "gemini-3.5-flash-lite"
     history: Optional[List[MessageItem]] = Field(default=None, max_length=100)
     current_dir: Optional[str] = None
     continue_after_tool: bool = False

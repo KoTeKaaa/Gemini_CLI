@@ -10,9 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ...tools.definitions import TOOLS
 from ..subscriptions import require_subscription
 from .adapter import safe_admin_call
+from ...protocol.models import MODEL_IDS
 
 
-MODELS = {"gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"}
+MODELS = set(MODEL_IDS)
 
 
 class SubscriptionInput(BaseModel):
