@@ -1,3 +1,4 @@
+from gemini_cli.client.file_attachment import attach_file
 from gemini_cli.client.completion import InputCompleter
 from gemini_cli.client.input import DraftInput
 from prompt_toolkit.key_binding import merge_key_bindings
@@ -536,6 +537,15 @@ def main(backend: Backend | None = None):
                 console.print("[bold red]Рад был помочь![/bold red]")
                 break
 
+            if user_input.startswith('@'):
+                try:
+                    attach_file(draft, user_input.strip(), current_dir,
+                                snapshots=completer.snapshots, approve=confirm_content_scope)
+                except (ValueError, OSError) as error:
+                    console.print(Text(str(error)))
+                console.print(Text(draft_input.status()))
+                continue
+
             if draft_input.command(user_input.strip()):
                 console.print(Text(draft_input.status()))
                 continue
@@ -546,6 +556,7 @@ def main(backend: Backend | None = None):
                 table.add_column("Описание", style="white")
 
                 table.add_row("Ctrl+V, /paste", "Прикрепить скриншот из буфера")
+                table.add_row("@путь[:N-M], /remove-file N", "Прикрепить файл или удалить текстовое вложение")
                 table.add_row("/attachments, /remove N", "Список вложений и удаление")
                 table.add_row("/help", "Показать эту справку")
                 table.add_row("/model", "Сменить ИИ модель")
@@ -633,7 +644,7 @@ def main(backend: Backend | None = None):
             console.print("\n[bold cyan]Gemini:[/bold cyan]")
 
             draft.text = user_input
-            row = {"role": "user", "content": attachment_text(user_input, draft.images)}
+            row = {"role": "user", "content": attachment_text(draft.message(user_input), draft.images)}
             if draft.images:
                 row["images"] = encode_images(draft.images)
             temporary_history.append(row)

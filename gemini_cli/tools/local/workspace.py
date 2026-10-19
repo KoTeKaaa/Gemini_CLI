@@ -41,7 +41,7 @@ def plan_text_file(root: str, path: str, *, max_bytes=2 * 1024 * 1024) -> tuple:
     return full_path, file_identity(info)
 
 
-def read_text_snapshot(root: str, path: str, expected: tuple, *, max_bytes=2 * 1024 * 1024) -> str:
+def read_binary_snapshot(root: str, path: str, expected: tuple, *, max_bytes=2 * 1024 * 1024) -> bytes:
     if plan_text_file(root, path, max_bytes=max_bytes) != expected:
         raise ValueError("Файл изменился после подтверждения")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -52,6 +52,11 @@ def read_text_snapshot(root: str, path: str, expected: tuple, *, max_bytes=2 * 1
         data = stream.read(max_bytes + 1)
         if len(data) > max_bytes or file_identity(os.fstat(stream.fileno())) != expected[1]:
             raise ValueError("Файл изменился во время чтения")
+    return data
+
+
+def read_text_snapshot(root: str, path: str, expected: tuple, *, max_bytes=2 * 1024 * 1024) -> str:
+    data = read_binary_snapshot(root, path, expected, max_bytes=max_bytes)
     if b"\x00" in data:
         raise ValueError("Бинарный файл пропущен")
     return data.decode("utf-8")

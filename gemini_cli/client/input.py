@@ -45,7 +45,8 @@ class DraftInput:
     def status(self):
         images = ' | '.join(f'{index}: {safe_label(image.name)} ({len(image.data)} Б)'
                             for index, image in enumerate(self.draft.images, 1))
-        return f'{images}  {self.notice}'.strip()
+        files = ' | '.join(f'текст {index}: {safe_label(name)}' for index, (name, _) in enumerate(self.draft.files, 1))
+        return f'{images} {files}  {self.notice}'.strip()
 
     def command(self, text: str) -> bool:
         if text == '/paste':
@@ -54,6 +55,14 @@ class DraftInput:
                 self.draft.text += self.pasted_text
         elif text == '/attachments':
             self.notice = 'Удалить: /remove НОМЕР'
+        elif text.startswith('/remove-file '):
+            try:
+                index = int(text.split()[1]) - 1
+                if index < 0:
+                    raise ValueError()
+                self.draft.files.pop(index)
+            except (ValueError, IndexError):
+                self.notice = 'Укажите номер текстового вложения'
         elif text.startswith('/remove '):
             try:
                 number = int(text.split()[1])
