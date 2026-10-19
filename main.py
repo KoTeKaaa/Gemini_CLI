@@ -3,6 +3,7 @@ from gemini_cli.client.completion import InputCompleter
 from gemini_cli.client.input import DraftInput, result_panel
 from prompt_toolkit.key_binding import merge_key_bindings
 from gemini_cli.client.draft import Draft
+from gemini_cli.client.shell import launch_shell
 from gemini_cli.protocol.images import encode_images
 from gemini_cli.runtime.attachments import attachment_text, bound_image_history
 import os
@@ -580,9 +581,23 @@ def main(backend: Backend | None = None):
                 table.add_row("/chat", "Сменить или создать комнату диалога")
                 table.add_row("/delete", "Удалить текущий постоянный чат")
                 table.add_row("/cd {путь}", "Изменить текущую рабочую папку для Gemini")
+                table.add_row("/term", "Открыть оболочку; exit-to-cli возвращает в этот чат")
                 table.add_row("exit, quit, q", "Выход из приложения")
 
                 console.print(Panel(table, title="[bold green]Справка[/bold green]", expand=False))
+                continue
+
+            if first_line.split()[0] == "/term":
+                if user_input.strip() != "/term":
+                    console.print(Text("Использование: /term (без аргументов)."))
+                    continue
+                try:
+                    directory = launch_shell(current_dir, announce=lambda message: console.print(Text(message)))
+                    if directory is not None:
+                        current_dir = directory
+                        console.print(Text(f"Текущая папка сменена на: {current_dir}"))
+                except ValueError as exc:
+                    console.print(Text(str(exc)))
                 continue
 
             if first_line.strip() == "/settings":
