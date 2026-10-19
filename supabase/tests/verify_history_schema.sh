@@ -27,6 +27,9 @@ insert into public.messages(id,chat_id,role,content,created_at) values
     ('00000000-0000-0000-0000-000000000091','00000000-0000-0000-0000-000000000091','user','same','2000-01-01T00:00:00Z');
 SQL
 sql < deploy/history_events.sql >/dev/null
+for migration in deploy/history_*.sql; do
+    [[ "$migration" == deploy/history_events.sql ]] || sql < "$migration" >/dev/null
+done
 sql >/dev/null <<'SQL'
 do $$ begin
     if (select array_agg(id order by sequence) from public.messages) <>
@@ -36,10 +39,17 @@ do $$ begin
     end if;
 end $$;
 SQL
-sql < supabase/tests/history_events.sql >/dev/null
+for fixture in supabase/tests/history_*.sql; do
+    [[ "$fixture" == supabase/tests/history_baseline.sql ]] || sql < "$fixture" >/dev/null
+done
 # Also exercise empty-table migration and identity initialization independently.
 sql -c 'create database empty_history' >/dev/null
 sql -d empty_history < supabase/tests/history_baseline.sql >/dev/null
 sql -d empty_history < deploy/history_events.sql >/dev/null
-sql -d empty_history < supabase/tests/history_events.sql >/dev/null
-echo 'PASS: PostgreSQL 17 populated/empty migration, legacy ordering, identity, RLS and provenance'
+for migration in deploy/history_*.sql; do
+    [[ "$migration" == deploy/history_events.sql ]] || sql -d empty_history < "$migration" >/dev/null
+done
+for fixture in supabase/tests/history_*.sql; do
+    [[ "$fixture" == supabase/tests/history_baseline.sql ]] || sql -d empty_history < "$fixture" >/dev/null
+done
+echo 'PASS: PostgreSQL 17 populated/empty migrations and history SQL fixtures'
