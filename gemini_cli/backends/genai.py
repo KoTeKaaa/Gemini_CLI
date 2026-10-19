@@ -6,6 +6,7 @@ import json
 
 from ..runtime.history import trim_history
 from ..tools.definitions import TOOLS, LEGACY_NAMES, available_tools
+from ..protocol.limits import MAX_TOOL_CALLS, MAX_PROVIDER_WIRE_BYTES
 
 AGENT_INSTRUCTION = (
     "Ты — AI-ассистент разработчика с доступом к файловым инструментам и терминалу. "
@@ -46,16 +47,20 @@ def stream_events(client, *, model: str, contents, supported_tools=None,
             parts = getattr(content, "parts", None) or []
             part_calls = [(part.function_call, getattr(part, "thought_signature", None))
                           for part in parts if getattr(part, "function_call", None)]
-            calls.extend(part_calls or [(call, None) for call in getattr(chunk, "function_calls", None) or []])
-            if len(calls) > 32:
+            new_calls = part_calls or [(call, None) for call in getattr(chunk, "function_calls", None) or []]
+            calls.extend(new_calls)
+            text_size += sum(len(json.dumps({"name": call.name, "args": call.args,
+                                "signature": base64.b64encode(signature).decode() if signature else None}).encode())
+                             for call, signature in new_calls)
+            if len(calls) > MAX_TOOL_CALLS or text_size > MAX_PROVIDER_WIRE_BYTES:
                 raise ValueError("Too many calls")
             texts = [part.text for part in parts if getattr(part, "text", None)
                      and not getattr(part, "thought", False)]
             if not parts and getattr(chunk, "text", None):
                 texts = [chunk.text]
             for text in texts:
-                text_size += len(text)
-                if text_size > 65536:
+                text_size += len(json.dumps({"type": "text", "content": text}).encode())
+                if text_size > MAX_PROVIDER_WIRE_BYTES:
                     raise ValueError("Response too large")
                 yield {"type": "text", "content": text}
             usage = getattr(chunk, "usage_metadata", None)

@@ -12,6 +12,7 @@ import requests
 from gemini_cli.backends.base import Backend, StreamResult
 from gemini_cli.runtime.history import trim_history
 from gemini_cli.client.settings import Settings, backend_identity
+from gemini_cli.protocol.limits import TOOLS_HISTORY_THRESHOLD, TOOLS_WIRE_THRESHOLD
 from gemini_cli.backends.remote import RemoteBackend, events_from_response as iter_stream_events
 from prompt_toolkit import PromptSession
 from prompt_toolkit.shortcuts import radiolist_dialog
@@ -373,6 +374,8 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
             payload["supported_tools"] = []
     elif is_temporary:
         payload["history"] = history[:-1]
+    if len(history) > TOOLS_HISTORY_THRESHOLD or len(json.dumps(payload).encode()) > TOOLS_WIRE_THRESHOLD:
+        payload["supported_tools"] = []
     return payload
 
 

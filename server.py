@@ -24,6 +24,7 @@ from gemini_cli.server.admin.accounts import account_router
 from gemini_cli.server.admin.pages import page_router, PanelHeaders
 from gemini_cli.server.auth_limits import AUTH_LIMITS
 from gemini_cli.protocol.models import ModelName
+from gemini_cli.protocol.limits import MAX_HISTORY_CONTENT_CHARS
 from gemini_cli.server.limits import BodyLimit, StreamJob, BoundedStreamingResponse as StreamingResponse
 
 load_dotenv()
@@ -100,7 +101,7 @@ class ChatResponse(BaseModel):
 
 class MessageItem(BaseModel):
     role: Literal["user", "model", "tool"]
-    content: str = Field(max_length=32768)
+    content: str = Field(max_length=MAX_HISTORY_CONTENT_CHARS)
     name: Optional[str] = None
     args: Optional[Dict[str, Any]] = None
     call_id: Optional[str] = None

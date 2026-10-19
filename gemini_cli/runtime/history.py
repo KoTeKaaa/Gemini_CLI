@@ -1,20 +1,27 @@
 """Фильтрация только постоянной истории, без изменения текущего хода."""
 
 import json
+from ..protocol.limits import MAX_TOOL_RESULT_WIRE_BYTES
 
 REDACTED_READ_RESULT = '{"status":"redacted","message":"Результат чтения файлов не сохраняется"}'
 PRIVATE_TOOLS = {"search_text", "read_file_lines", "replace_in_file"}
 SAFE_ARGUMENTS = {"filepath", "start_line", "end_line", "path"}
 
 
-def bounded_tool_result(content: str, max_bytes=8192) -> str:
+def bounded_tool_result(content: str, max_bytes=MAX_TOOL_RESULT_WIRE_BYTES) -> str:
+    if max_bytes < 1024:
+        raise ValueError("Слишком малый предел результата инструмента")
     encoded = content.encode("utf-8", errors="replace")
-    if len(json.dumps(content, ensure_ascii=False).encode("utf-8")) <= max_bytes:
+    if len(json.dumps(content).encode("utf-8")) <= max_bytes:
         return content
     prefix = encoded[:max_bytes // 4].decode("utf-8", errors="ignore")
-    return json.dumps({"status": "truncated", "truncated": True,
-                       "message": "Результат усечён. Читайте нужный диапазон через read_file_lines/search_text.",
-                       "output": prefix}, ensure_ascii=False)
+    while True:
+        result = json.dumps({"status": "truncated", "truncated": True,
+                             "message": "Результат усечён. Читайте диапазон через read_file_lines/search_text.",
+                             "output": prefix}, ensure_ascii=False)
+        if len(json.dumps(result).encode()) <= max_bytes:
+            return result
+        prefix = prefix[:len(prefix) // 2]
 
 
 def persistent_tool_message(role: str, name: str | None, content: str,

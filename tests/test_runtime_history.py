@@ -10,6 +10,7 @@ class RuntimeHistoryTest(unittest.TestCase):
             self.assertTrue(json.loads(bounded)["truncated"])
             self.assertLess(len(json.dumps(bounded, ensure_ascii=False).encode()), 16000)
             self.assertLess(len(bounded), 32768)
+            self.assertLessEqual(len(json.dumps(bounded).encode()), 8192)
         self.assertEqual(bounded_tool_result('{"status":"ok"}'), '{"status":"ok"}')
     def test_trimming_preserves_current_batch_and_source(self):
         history = [{"role": "user", "content": "old"}] + [

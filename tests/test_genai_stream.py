@@ -1,11 +1,26 @@
 import unittest
 from types import SimpleNamespace as Item
 from unittest.mock import Mock
+from unittest.mock import patch
+import importlib
+import os
 
 from gemini_cli.backends.genai import stream_events
 
 
 class GenaiStreamTest(unittest.TestCase):
+    def test_long_provider_text_is_valid_history_for_the_next_remote_request(self):
+        client = Mock()
+        client.models.generate_content_stream.return_value = iter([Item(function_calls=None, text="a" * 40000)])
+        result = list(stream_events(client, model="fixture", contents=[]))
+        self.assertEqual(len(result[0]["content"]), 40000)
+        with patch.dict(os.environ, {"API_KEY": "fixture", "SUPABASE_URL": "https://example.com",
+                                     "SUPABASE_ANON_KEY": "fixture"}):
+            server = importlib.import_module("server")
+        payload = server.StreamChatPayload(message="next", history=[{"role": "user", "content": "task"},
+                                        {"role": "model", "content": result[0]["content"]}])
+        self.assertEqual(len(payload.history[1].content), 40000)
+
     def test_mixed_text_and_multiple_calls_preserve_ids_and_signatures(self):
         parts = [Item(text="text", function_call=None), Item(text=None, function_call=Item(
             name="find_files", args={}, id="one"), thought_signature=b"s"),
