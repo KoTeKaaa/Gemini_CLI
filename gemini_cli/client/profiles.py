@@ -106,3 +106,4 @@ class RemoteSessions:
         account = data["user"].get("id") if isinstance(data.get("user"), dict) else None
         if account and data.get("_binding") == {"origin": self.origin, "account_id": account}:
             self.save(data)
+            legacy.unlink(missing_ok=True)

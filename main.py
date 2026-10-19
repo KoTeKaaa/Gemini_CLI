@@ -243,145 +243,25 @@ def handle_execute_command(args: dict, current_dir: str) -> str:
 
 
 class GeminiAPIClient(RemoteBackend):
-    mode = "remote"
     def __init__(self, base_url: str):
-        from gemini_cli.client.profiles import RemoteSessions, canonical_origin
-        super().__init__(canonical_origin(normalize_server_url(base_url)),
+        super().__init__(normalize_server_url(base_url),
+                         profile_root=Path(SESSION_FILE).parent / "profiles",
+                         legacy_session=Path(SESSION_FILE), credentials=prompt_credentials,
                          notify=lambda message: console.print(Text(message)))
-        self.sessions = RemoteSessions(Path(SESSION_FILE).parent / "profiles", self.base_url)
-        self.token: Optional[str] = None
-
-    def set_token(self, token: str):
-        self.token = token
-
-    @property
-    def headers(self) -> Dict[str, str]:
-        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
-
-    def _load_session_token(self) -> Optional[str]:
-        if not self.sessions.load():
-            self.sessions.migrate(Path(SESSION_FILE))
-        return self.sessions.load().get("access_token")
-
-    def _renew_session(self) -> bool:
-        previous = self.sessions.load()
-        refresh_token = previous.get("refresh_token")
-
-        if refresh_token:
-            try:
-                response = requests.post(
-                    f"{self.base_url}/auth/refresh",
-                    json={"refresh_token": refresh_token}, timeout=30,
-                    allow_redirects=False,
-                )
-            except requests.RequestException as e:
-                console.print(f"[red]Не удалось обновить сессию: {e}[/red]")
-                return False
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("access_token") and data.get("refresh_token"):
-                    try:
-                        self.sessions.save(data, expected_account=previous["user"]["id"])
-                    except ValueError:
-                        console.print("[red]Сервер не подтвердил прежний аккаунт.[/red]")
-                        return False
-                    self.set_token(data["access_token"])
-                    return True
-            elif response.status_code not in (400, 401, 403):
-                console.print("[red]Сервер временно не может обновить сессию.[/red]")
-                return False
-
-        self.token = None
-        self.sessions.clear()
-        console.print("[yellow]Сессия истекла. Войдите снова.[/yellow]")
-        self.login()
-        return bool(self.token)
-
-    def _authorized_request(self, request):
-        response = request()
-        if response.status_code != 401:
-            return response
-        response.close()
-        if not self._renew_session():
-            return response
-        return request()
-
-    def login(self):
-        token = self._load_session_token()
-        if token:
-            self.set_token(token)
-            return
-
-        console.print("[bold cyan]Авторизируйтесь через email:[/bold cyan]")
-        while True:
-            email = input("Email: ").strip()
-            password = PromptSession().prompt("Пароль: ", is_password=True).strip()
-
-            if not email or not password:
-                console.print("[yellow]Email и пароль не должны быть пустыми.[/yellow]")
-                continue
-
-            try:
-                url = f"{self.base_url}/auth/login"
-                payload = {"email": email, "password": password}
-                r = requests.post(url, json=payload, timeout=30, allow_redirects=False)
-
-                if r.status_code == 200:
-                    res_data = r.json()
-                    token = res_data.get("access_token")
-                    if not token:
-                        console.print("[red]Сервер не вернул access_token[/red]")
-                        continue
-
-                    self.sessions.save(res_data)
-
-                    self.set_token(token)
-                    console.print("[green]Вход выполнен успешно.[/green]")
-                    logger.info(f"Пользователь авторизован")
-                    break
-                else:
-                    if r.status_code == 401:
-                        console.print(
-                            "[yellow]Не удалось войти: проверьте email, пароль или подтверждение на почте.[/yellow]")
-                        ans = input("Создать новый аккаунт? (y/n): ").strip().lower()
-                        if ans == "y":
-                            s = requests.post(f"{self.base_url}/auth/signup", json=payload, timeout=30,
-                                              allow_redirects=False)
-                            if s.status_code in (200, 201):
-                                try:
-                                    data = s.json()
-                                except Exception as e:
-                                    logger.exception(f"Необработанное исключение: {e}")
-                                    data = {}
-
-                                token = data.get("access_token") or (data.get("session") or {}).get("access_token")
-                                if token:
-                                    self.sessions.save(data.get("session") or data)
-                                    self.set_token(token)
-                                    console.print("[green]Аккаунт создан и вход выполнен.[/green]")
-                                    logger.info("Новый аккаунт создан и авторизован")
-                                    break
-                                else:
-                                    console.print(
-                                        "[yellow]Аккаунт создан. Проверьте почту и подтвердите email.[/yellow]")
-                            else:
-                                console.print("[red]Не удалось создать аккаунт. Попробуйте позже.[/red]")
-                        continue
-
-                    console.print("[red]Не удалось выполнить вход. Попробуйте ещё раз.[/red]")
-
-            except requests.RequestException:
-                console.print("[red]Не удалось связаться с сервером. Проверьте, что сервер запущен.[/red]")
-            except Exception as e:
-                console.print("[red]Произошла непредвиденная ошибка входа.[/red]")
-                logger.exception(f"Необработанное исключение: {e}")
 
     def stream_chat(self, payload: Dict[str, Any]):
         return self._authorized_request(lambda: requests.post(
             f"{self.base_url}/chat/stream", json=payload,
-            headers=self.headers, stream=True, timeout=300,
-            allow_redirects=False,
-        ))
+            headers=self.headers, stream=True, timeout=300, allow_redirects=False))
+
+
+def prompt_credentials():
+    console.print("[bold cyan]Авторизируйтесь через email. Регистрация — по приглашению владельца.[/bold cyan]")
+    try:
+        return input("Email: ").strip(), PromptSession().prompt("Пароль: ", is_password=True)
+    except (KeyboardInterrupt, EOFError):
+        return None
+
 
 def show_chat_menu(client: Backend) -> Optional[tuple[Optional[str], bool]]:
     db_chats = client.get_chats()
@@ -612,7 +492,8 @@ def main(backend: Backend | None = None):
     if api_client is None:
         server_url = get_server_url()
         api_client = GeminiAPIClient(server_url)
-        api_client.login()
+        if not api_client.login():
+            return
 
     current_model = "gemini-3.5-flash-lite"
     selected_chat = show_chat_menu(api_client)

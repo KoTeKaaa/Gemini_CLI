@@ -2,6 +2,7 @@ import importlib
 import io
 import os
 import tempfile
+from pathlib import Path
 import unittest
 from unittest.mock import patch, Mock
 from rich.console import Console
@@ -45,3 +46,12 @@ class BackendContractTest(unittest.TestCase):
         self.assertEqual(backend.get_chats(), [{"id": "own"}])
         self.assertFalse(transport.get.call_args.kwargs["allow_redirects"])
         self.assertEqual(transport.get.call_args.kwargs["headers"], {"Authorization": "Bearer fixture"})
+
+    def test_remote_login_can_be_cancelled_without_request(self):
+        from gemini_cli.backends.remote import RemoteBackend
+        with tempfile.TemporaryDirectory() as root:
+            transport = Mock()
+            backend = RemoteBackend("https://example.com", transport=transport,
+                                    profile_root=Path(root), credentials=lambda: None)
+            self.assertFalse(backend.login())
+            transport.post.assert_not_called()

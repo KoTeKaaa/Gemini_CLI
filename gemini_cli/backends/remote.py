@@ -2,25 +2,105 @@
 
 from typing import Optional, List, Dict, Any
 import requests
+from pathlib import Path
 
-from ..client.profiles import canonical_origin
+from ..client.profiles import canonical_origin, RemoteSessions
 from ..tools.results import failure
 
 
 class RemoteBackend:
     mode = "remote"
 
-    def __init__(self, base_url: str, *, notify=lambda message: None, transport=None):
+    def __init__(self, base_url: str, *, notify=lambda message: None, transport=None,
+                 profile_root=None, legacy_session=None, credentials=None):
         self.base_url = canonical_origin(base_url)
         self.notify, self.transport = notify, transport or requests
         self.token = None
+        root = profile_root or Path.home() / ".gemini_cli" / "profiles"
+        self.sessions = RemoteSessions(root, self.base_url)
+        self.legacy_session = legacy_session or root.parent / "session.json"
+        self.credentials = credentials
+
+    def set_token(self, token: str):
+        self.token = token
+
+    def _load_session_token(self):
+        if not self.sessions.load():
+            self.sessions.migrate(self.legacy_session)
+        return self.sessions.load().get("access_token")
+
+    def login(self) -> bool:
+        token = self._load_session_token()
+        if token:
+            self.token = token
+            return True
+        while self.credentials:
+            values = self.credentials()
+            if values is None:
+                return False
+            email, password = values
+            if not email or not password:
+                self.notify("Email и пароль обязательны")
+                continue
+            try:
+                response = self.transport.post(f"{self.base_url}/auth/login",
+                    json={"email": email, "password": password}, timeout=30,
+                    allow_redirects=False)
+                try:
+                    if response.status_code == 401:
+                        self.notify("Не удалось войти. Проверьте данные аккаунта.")
+                        continue
+                    if response.status_code != 200:
+                        self.notify("Вход временно недоступен")
+                        return False
+                    data = response.json()
+                    self.sessions.save(data)
+                    self.token = data["access_token"]
+                    return True
+                finally:
+                    response.close()
+            except (requests.RequestException, ValueError, OSError):
+                self.notify("Не удалось войти или сохранить привязанную сессию")
+                return False
+        return False
+
+    def _renew_session(self) -> bool:
+        previous = self.sessions.load()
+        refresh = previous.get("refresh_token")
+        if refresh:
+            try:
+                response = self.transport.post(f"{self.base_url}/auth/refresh",
+                    json={"refresh_token": refresh}, timeout=30, allow_redirects=False)
+                try:
+                    if response.status_code == 200:
+                        data = response.json()
+                        self.sessions.save(data, expected_account=previous["user"]["id"])
+                        self.token = data["access_token"]
+                        return True
+                    if response.status_code not in (400, 401, 403):
+                        self.notify("Сервер временно не может обновить сессию")
+                        return False
+                finally:
+                    response.close()
+            except (requests.RequestException, ValueError, OSError):
+                self.notify("Не удалось обновить привязанную сессию")
+                return False
+        self.token = None
+        self.sessions.clear()
+        self.notify("Сессия истекла. Войдите снова.")
+        self.login()
+        return bool(self.token)
 
     @property
     def headers(self):
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
     def _authorized_request(self, request):
-        return request()
+        response = request()
+        if response.status_code != 401:
+            return response
+        response.close()
+        return request() if self._renew_session() else response
 
     def web_tool(self, kind: str, payload: dict) -> dict:
         try:
