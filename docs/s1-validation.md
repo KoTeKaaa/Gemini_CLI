@@ -12,7 +12,21 @@ Linux output/time limits, draft operations, shared image validation, rejection o
 old servers, SQLite metadata, subsequent turns, completion filters, file changes,
 exact pasted line endings and paste editing/removal. CI builds Linux Python 3.10
 and Windows Python 3.12 executables and checks startup separately from unit tests.
-Final run results are recorded below after integration.
+Final integration on 19 October 2026:
+
+- Full regression: 210 tests, OK, one real-Supabase integration skipped.
+- `bash tests/test_deploy_install.sh`: deployment preflight PASS.
+- `git diff --check`: PASS (whitespace only).
+- Local Linux executable: build and offline standalone startup PASS.
+- Pillow 12.3.0 binary wheels downloaded for Linux CPython 3.10 and Windows CPython 3.12.
+- Independent subagent review completed before the PR. Two reproduced P2 issues
+  (image bytes disabling tools, oversized drafts exiting the CLI) were fixed and
+  rechecked. Final image-context and persistence checks had no new findings.
+- CI run results and executable artifacts are linked from the draft PR. Build and
+  startup checks are distinct from real terminal/clipboard/provider acceptance.
+
+The sandbox stalled the existing TestClient/anyio portal before endpoint execution;
+that test and the full regression passed when run outside the sandbox.
 
 ## Required interactive acceptance — pending
 
