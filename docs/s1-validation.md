@@ -22,6 +22,10 @@ Final integration on 19 October 2026:
 - Independent subagent review completed before the PR. Two reproduced P2 issues
   (image bytes disabling tools, oversized drafts exiting the CLI) were fixed and
   rechecked. Final image-context and persistence checks had no new findings.
+- Windows CI exposed a path/descriptor ctime mismatch in the shared snapshot reader.
+  Windows snapshots now consistently use descriptor metadata without reading file
+  contents at selection; binary reads preserve Ctrl+Z and line endings. Background:
+  [CPython issue 157671](https://github.com/python/cpython/issues/157671).
 - CI run results and executable artifacts are linked from the draft PR. Build and
   startup checks are distinct from real terminal/clipboard/provider acceptance.
 
