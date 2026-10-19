@@ -1,63 +1,55 @@
-# Verified dev → main deployment
+# Автодеплой после слияния dev → main
 
-After a PR from this repository's `dev` is merged into `main`, `production.yml`
-runs the full unit regression, dependency check, deployment preflight, Linux and
-Windows executable builds/startup and the `production-ready` gate. A direct push,
-a different source branch, a fork PR, skipped/failed gate or a different revision
-cannot authorize deployment. Existing real Supabase tests remain opt-in; real
-clipboard/GUI/provider acceptance is separate from these automated checks.
+После слияния PR из `dev` в `main` этого же репозитория запускается
+`production.yml`: тесты, проверка зависимостей и установщика, сборки и автономный
+запуск клиента на Linux и Windows. Итоговое задание `production-ready` должно
+завершиться успешно. Прямая отправка в `main`, другая исходная ветка, PR из форка
+или неуспешная проверка не разрешают выкладку.
 
-The VPS checks public GitHub metadata every five minutes. No VPS SSH key, model
-key or Supabase key is stored in GitHub Actions. No repository token is needed for
-this public repository. Polling is bounded; unchanged releases use one request per
-poll, pending releases normally use two. API failures/rate limiting retain the
-installed service and are retried by the next timer tick, not a tight retry loop.
-The latest run for the exact main SHA must pass, including `production-ready`, and
-the associated merged PR must be from `dev` in the same repository. Main/CI are
-checked again after staging.
+Сервер проверяет публичные данные GitHub каждые пять минут. Для публичного
+репозитория токен не нужен; SSH-ключ сервера и ключи провайдеров в GitHub Actions
+не передаются. Требуется успешный последний запуск проверок для точного SHA
+коммита `main`. После подготовки версии сервер повторно проверяет `main` и CI.
+При недоступности API или ограничении запросов текущий сервис сохраняется;
+следующая попытка происходит по таймеру.
 
-## Server setup
+## Настройка сервера
 
-Requires the existing `gemini-cli.service`, unprivileged `gemini-cli` account,
-private `/etc/gemini-cli/server.env`, Python with venv, Git, systemd and network
-access to public GitHub/PyPI. From a reviewed checkout on the VPS:
+Нужны установленный `gemini-cli.service`, непривилегированный пользователь
+`gemini-cli`, приватный `/etc/gemini-cli/server.env`, Python с venv, Git, systemd
+и доступ к GitHub/PyPI. Из проверенной копии репозитория на сервере выполните,
+заменив `OWNER/REPOSITORY` на имя своего репозитория:
 
 ```bash
 sudo python3 deploy/enable_autodeploy.py --repository OWNER/REPOSITORY
 ```
 
-The installer only installs the root-owned watcher, its configuration and timer.
-It does not restart the API, replace its existing release override, copy/rewrite
-the env, change Nginx/TLS or migrate the database. Existing custom env entries and
-permissions remain. `/etc/gemini-cli/deploy.json` holds repository and runtime
-paths, with no credential values. Existing deployments are locked against setup.
-Before the workflow exists on main, the watcher waits without touching production.
+Установщик добавляет принадлежащие root программу проверки, конфигурацию и таймер.
+Текущий API не перезапускается. Настройки его релиза, Nginx/TLS, база данных,
+содержимое и права env сохраняются. `/etc/gemini-cli/deploy.json` содержит имя
+репозитория и пути без значений ключей. Установка блокируется во время выкладки.
+Пока в `main` нет подходящего запуска проверок, рабочая версия не меняется.
 
-## Release transaction
+## Выкладка и откат
 
-1. Fetch exact verified main into a root-owned mirror, reject a changed main.
-2. Export only runtime source and server requirements, reject links/traversal and
-   excessive source size; use the existing runtime payload filter.
-3. Create a separate release under `/opt/gemini-cli-releases`. Run dependency
-   installation/check as the service user, without production environment values.
-4. Start a transient candidate on loopback port 18000 with the existing
-   `EnvironmentFile`. `/healthz` must report the exact expected SHA. It does not
-   invoke Gemini, Tavily or test-account operations.
-5. If the env changed during preview, refuse promotion and retain the owner's
-   new env. Otherwise atomically write only `zz-autodeploy.conf`, reload/restart
-   the API and verify its health/revision on port 8000.
-6. If promotion fails, restore the previous override (or remove only the new one
-   if there was no previous managed override), restart and verify the old service.
-   The env is never restored from a backup or overwritten.
+1. Сервер получает проверенный коммит `main` и отказывается от выкладки, если SHA изменился.
+2. В отдельный каталог `/opt/gemini-cli-releases` копируются только серверные
+   модули и зависимости. Ссылки, выход за каталог и слишком большой архив отклоняются.
+3. Зависимости устанавливаются и проверяются от пользователя сервиса без рабочего env.
+4. Кандидат запускается на `127.0.0.1:18000` с существующим `EnvironmentFile`.
+   `/healthz` должен вернуть ожидаемый SHA; обращения к Gemini и Tavily не выполняются.
+5. Если env изменился во время проверки, выкладка отменяется с сохранением новых
+   значений. Иначе атомарно записывается `zz-autodeploy.conf`, API перезапускается,
+   затем проверяются доступность и SHA на порту 8000.
+6. При неудаче восстанавливается предыдущая конфигурация релиза и проверяется
+   старый сервис. Env не перезаписывается и не восстанавливается из резервной копии.
 
-Failed or abandoned candidates are removed before/after deployment. Cleanup keeps
-the active release and the recorded rollback; unrelated older release directories
-are preserved. If the active path cannot be identified, deployment stops before
-building. Database migrations require separate preparation/verification before merging a release;
-autodeploy never applies SQL. Do not merge incompatible schema changes before
-those migrations are complete.
+Неиспользованные кандидаты удаляются. Сохраняются активный релиз, записанная версия
+для отката и каталоги сторонних установок. Если активный путь определить нельзя,
+выкладка останавливается до сборки. Миграции БД выполняются отдельно: автодеплой
+не применяет SQL. Несовместимые изменения схемы подготовьте до слияния релиза.
 
-## Operations
+## Проверка состояния
 
 ```bash
 sudo systemctl status gemini-cli-autodeploy.timer
@@ -66,8 +58,9 @@ sudo python3 /usr/local/libexec/gemini-cli-deploy/poller.py --config /etc/gemini
 curl --fail http://127.0.0.1:8000/healthz
 ```
 
-`--check` reads metadata but never builds or switches production. To stop future
-checks, disable the timer with `sudo systemctl disable --now gemini-cli-autodeploy.timer`.
-For recovery, the previous managed override is retained in the private watcher
-state directory when one existed; previous releases and unrelated overrides are
-preserved. A rollback-health failure is reported as requiring operator action.
+`--check` только проверяет сведения GitHub, без сборки и переключения сервиса.
+`/healthz` доступен после выкладки версии с этим маршрутом.
+Отключить будущие проверки: `sudo systemctl disable --now gemini-cli-autodeploy.timer`.
+Предыдущий управляемый конфигурационный файл, если он существовал, сохраняется
+в приватном каталоге состояния программы проверки. При неудаче отката журнал
+сообщает о необходимости вмешательства администратора.
