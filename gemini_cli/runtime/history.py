@@ -7,6 +7,16 @@ PRIVATE_TOOLS = {"search_text", "read_file_lines", "replace_in_file"}
 SAFE_ARGUMENTS = {"filepath", "start_line", "end_line", "path"}
 
 
+def bounded_tool_result(content: str, max_bytes=8192) -> str:
+    encoded = content.encode("utf-8", errors="replace")
+    if len(json.dumps(content, ensure_ascii=False).encode("utf-8")) <= max_bytes:
+        return content
+    prefix = encoded[:max_bytes // 4].decode("utf-8", errors="ignore")
+    return json.dumps({"status": "truncated", "truncated": True,
+                       "message": "Результат усечён. Читайте нужный диапазон через read_file_lines/search_text.",
+                       "output": prefix}, ensure_ascii=False)
+
+
 def persistent_tool_message(role: str, name: str | None, content: str,
                             args: dict | None) -> tuple[str, dict | None]:
     if name in PRIVATE_TOOLS and role in {"model", "tool"}:

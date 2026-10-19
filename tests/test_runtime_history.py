@@ -1,8 +1,16 @@
 import unittest
-from gemini_cli.runtime.history import persistent_history_rows, trim_history
+from gemini_cli.runtime.history import persistent_history_rows, trim_history, bounded_tool_result
 
 
 class RuntimeHistoryTest(unittest.TestCase):
+    def test_large_and_escaped_results_are_bounded_with_explicit_status(self):
+        import json
+        for content in ('a' * 40000, '\\"\n' * 15000, 'я😀' * 10000):
+            bounded = bounded_tool_result(content)
+            self.assertTrue(json.loads(bounded)["truncated"])
+            self.assertLess(len(json.dumps(bounded, ensure_ascii=False).encode()), 16000)
+            self.assertLess(len(bounded), 32768)
+        self.assertEqual(bounded_tool_result('{"status":"ok"}'), '{"status":"ok"}')
     def test_trimming_preserves_current_batch_and_source(self):
         history = [{"role": "user", "content": "old"}] + [
             {"role": "tool", "content": str(index)} for index in range(8)
