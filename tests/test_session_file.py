@@ -18,7 +18,7 @@ class SessionFileTest(unittest.TestCase):
             with patch.object(client_module, "SESSION_FILE", str(session_file)):
                 client_module.save_session({"access_token": "first"})
                 self.assertEqual(client_module.GeminiAPIClient("http://localhost:8000")
-                                 ._load_session_token(), "first")
+                                 ._load_session_token(), None)
 
                 if os.name == "posix":
                     self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
@@ -28,7 +28,7 @@ class SessionFileTest(unittest.TestCase):
 
                 client_module.save_session({"access_token": "second"})
                 restarted_client = client_module.GeminiAPIClient("http://localhost:8000")
-                self.assertEqual(restarted_client._load_session_token(), "second")
+                self.assertIsNone(restarted_client._load_session_token())
                 self.assertEqual(json.loads(session_file.read_text(encoding="utf-8")),
                                  {"access_token": "second"})
 

@@ -3,6 +3,7 @@ import sys
 import json
 import ipaddress
 import tempfile
+from pathlib import Path
 from contextlib import nullcontext
 from typing import Optional, Dict, List, Any
 from urllib.parse import urlsplit
@@ -241,7 +242,9 @@ def handle_execute_command(args: dict, current_dir: str) -> str:
 
 class GeminiAPIClient:
     def __init__(self, base_url: str):
-        self.base_url = normalize_server_url(base_url)
+        from gemini_cli.client.profiles import RemoteSessions, canonical_origin
+        self.base_url = canonical_origin(normalize_server_url(base_url))
+        self.sessions = RemoteSessions(Path(SESSION_FILE).parent / "profiles", self.base_url)
         self.token: Optional[str] = None
 
     def set_token(self, token: str):
@@ -252,23 +255,13 @@ class GeminiAPIClient:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
     def _load_session_token(self) -> Optional[str]:
-        if not os.path.exists(SESSION_FILE):
-            return None
-
-        try:
-            with open(SESSION_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("access_token")
-        except Exception as e:
-            logger.exception(f"Необработанное исключение: {e}")
-            return None
+        if not self.sessions.load():
+            self.sessions.migrate(Path(SESSION_FILE))
+        return self.sessions.load().get("access_token")
 
     def _renew_session(self) -> bool:
-        try:
-            with open(SESSION_FILE, "r", encoding="utf-8") as file:
-                refresh_token = json.load(file).get("refresh_token")
-        except (OSError, ValueError, AttributeError):
-            refresh_token = None
+        previous = self.sessions.load()
+        refresh_token = previous.get("refresh_token")
 
         if refresh_token:
             try:
@@ -283,7 +276,11 @@ class GeminiAPIClient:
             if response.status_code == 200:
                 data = response.json()
                 if data.get("access_token") and data.get("refresh_token"):
-                    save_session(data)
+                    try:
+                        self.sessions.save(data, expected_account=previous["user"]["id"])
+                    except ValueError:
+                        console.print("[red]Сервер не подтвердил прежний аккаунт.[/red]")
+                        return False
                     self.set_token(data["access_token"])
                     return True
             elif response.status_code not in (400, 401, 403):
@@ -291,10 +288,7 @@ class GeminiAPIClient:
                 return False
 
         self.token = None
-        try:
-            os.unlink(SESSION_FILE)
-        except FileNotFoundError:
-            pass
+        self.sessions.clear()
         console.print("[yellow]Сессия истекла. Войдите снова.[/yellow]")
         self.login()
         return bool(self.token)
@@ -350,7 +344,7 @@ class GeminiAPIClient:
                         console.print("[red]Сервер не вернул access_token[/red]")
                         continue
 
-                    save_session(res_data)
+                    self.sessions.save(res_data)
 
                     self.set_token(token)
                     console.print("[green]Вход выполнен успешно.[/green]")
@@ -373,7 +367,7 @@ class GeminiAPIClient:
 
                                 token = data.get("access_token") or (data.get("session") or {}).get("access_token")
                                 if token:
-                                    save_session(data.get("session") or data)
+                                    self.sessions.save(data.get("session") or data)
                                     self.set_token(token)
                                     console.print("[green]Аккаунт создан и вход выполнен.[/green]")
                                     logger.info("Новый аккаунт создан и авторизован")
