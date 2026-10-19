@@ -20,6 +20,7 @@ import requests
 from gemini_cli.backends.base import Backend, StreamResult
 from gemini_cli.runtime.history import trim_history
 from gemini_cli.runtime.turn import TurnState
+from gemini_cli.backends.cancellation import open_stream
 from gemini_cli.client.settings import Settings, backend_identity
 from gemini_cli.protocol.limits import TOOLS_HISTORY_THRESHOLD, TOOLS_WIRE_THRESHOLD
 from gemini_cli.backends.remote import RemoteBackend, events_from_response as iter_stream_events
@@ -708,7 +709,7 @@ def main(backend: Backend | None = None):
                 has_pending_tool = payload["continue_after_tool"]
 
                 try:
-                    response = api_client.stream_chat(payload)
+                    response = open_stream(api_client, payload, state)
                 except Exception:
                     console.print(Text("Соединение прервано. Черновик сохранён; повторите отправку."))
                     break

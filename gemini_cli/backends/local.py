@@ -1,6 +1,7 @@
 """Local вызывает общий provider в процессе CLI; HTTP-сервер не поднимается."""
 
 from pathlib import Path
+from threading import Event
 
 from .base import StreamResult
 from .genai import create_provider, stream_events, to_gemini
@@ -80,9 +81,13 @@ class LocalBackend:
         except (ValueError, TypeError, KeyError, AttributeError):
             return StreamResult(400, detail="Некорректный локальный запрос")
 
+        cancelled = Event()
+
         def generate():
             full_text, has_calls, failed = "", False, False
             try:
+                if cancelled.is_set():
+                    return
                 if chat_id:
                     if continuing:
                         batch = payload["history"]
@@ -102,6 +107,7 @@ class LocalBackend:
                     self.provider = create_provider(self.api_key)
                 for event in stream_events(self.provider, model=payload.get("model_name", MODEL_IDS[0]),
                                            contents=contents, supported_tools=payload.get("supported_tools"),
+                                           cancelled=cancelled.is_set,
                                            permitted_tools=set(TOOLS) - ({"web_search"} if not self.tavily_key else set())):
                     if event["type"] == "text":
                         full_text += event["content"]
@@ -114,11 +120,11 @@ class LocalBackend:
                     elif event["type"] == "error":
                         failed = True
                     yield event
-                if chat_id and full_text and not has_calls and not failed:
+                if chat_id and full_text and not has_calls and not failed and not cancelled.is_set():
                     self.chats.append(chat_id, [{"role": "model", "content": full_text}])
             except Exception:
                 yield {"type": "error", "content": "Не удалось выполнить локальный запрос или сохранить историю"}
-        return StreamResult(events=generate())
+        return StreamResult(events=generate(), on_close=cancelled.set)
 
     def close(self):
         self.chats.close()
