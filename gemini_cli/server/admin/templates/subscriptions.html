@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading"><h1>Подписки</h1><button id="logout" type="button">Выйти</button></div>
+<p>Доступ связан с аккаунтом. Бюджет подписки ограничивает запросы к серверу.</p>
+<div class="table"><table>
+  <thead><tr><th>Подписка / аккаунт</th><th>Состояние</th><th>До</th><th>Бюджет</th><th>Версия</th></tr></thead>
+  <tbody>{% for row in subscriptions %}<tr>
+    <td><code>{{ row.id }}</code><br>{{ row.user_id or 'Ожидает активации' }}</td>
+    <td>{{ row.status }}</td><td>{{ row.expires_at }}</td>
+    <td>{{ row.request_limit }} / {{ row.window_seconds }} сек.</td><td>{{ row.rights_version }}</td>
+  </tr>{% else %}<tr><td colspan="5">Подписок пока нет</td></tr>{% endfor %}</tbody>
+</table></div>
+{% endblock %}

@@ -23,6 +23,7 @@ from gemini_cli.server.admin.sessions import WebSessions, session_router, owner_
 from gemini_cli.server.admin.subscriptions import subscription_router
 from gemini_cli.server.admin.invitations import invitation_router
 from gemini_cli.server.admin.accounts import account_router
+from gemini_cli.server.admin.pages import page_router, PanelHeaders
 from gemini_cli.server.limits import BodyLimit, StreamJob, BoundedStreamingResponse as StreamingResponse
 
 load_dotenv()
@@ -43,6 +44,7 @@ app = FastAPI()
 app.add_middleware(BodyLimit)
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("ADMIN_SESSION_SECRET") or secrets.token_hex(32),
                    session_cookie="gemini_admin", https_only=True, same_site="strict", max_age=1800)
+app.add_middleware(PanelHeaders)
 client = genai.Client(api_key=api, http_options=types.HttpOptions(
     timeout=45000, retry_options=types.HttpRetryOptions(attempts=1)))
 
@@ -182,6 +184,7 @@ app.include_router(session_router(web_sessions, login_user))
 app.include_router(subscription_router(get_current_user, get_admin, web_sessions))
 app.include_router(invitation_router(web_sessions))
 app.include_router(account_router(web_sessions))
+app.include_router(page_router(web_sessions))
 
 
 @app.get("/chats", response_model=List[ChatResponse])
