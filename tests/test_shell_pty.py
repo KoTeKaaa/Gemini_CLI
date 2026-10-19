@@ -134,6 +134,27 @@ class ShellPtyTest(unittest.TestCase):
                 (b'exit-to-cli\r', b'RESULT=')], str(root), str(root))
             self.assertEqual(result, [None, True])
 
+    def test_refused_exit_cancels_directory_sync(self):
+        for name in ['bash', 'zsh']:
+            executable = shutil.which(name)
+            if not executable:
+                continue
+            with self.subTest(shell=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / 'first').mkdir()
+                (root / 'second').mkdir()
+                commands = [
+                    (b'sleep 60 & job=$!; kill -STOP "$job"; '
+                     b'until [ -n "$(jobs -s)" ]; do sleep 0.01; done; echo STOP_\'READY\'\r',
+                     b'STOP_READY\r\n'),
+                    (b'cd first; exit-to-cli --sync-dir; echo EXIT_\'REFUSED\'\r', b'EXIT_REFUSED\r\n'),
+                    (b'cd ../second; kill -KILL "$job"; '
+                     + (b'wait -f "$job"' if name == 'bash' else b'wait "$job"')
+                     + b'; exit\r', b'RESULT='),
+                ]
+                result, _ = self.session(executable, commands, str(root), str(root))
+                self.assertEqual(result, [None, True])
+
 
 if __name__ == '__main__':
     unittest.main()

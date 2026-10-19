@@ -36,13 +36,23 @@ def shell_command(executable: str, root: Path, returned: Path) -> tuple[list[str
     function = """
 function exit-to-cli() {
     if [ "$#" -eq 1 ] && [ "$1" = '--sync-dir' ]; then
+JOB_GUARD
         builtin printf '%s' "$PWD" > RETURN_PATH || { builtin printf '%s\n' 'Не удалось передать каталог'; return 1; }
     elif [ "$#" -ne 0 ]; then
         builtin printf '%s\n' 'exit-to-cli [--sync-dir]'; return 2
     fi
-    exit
+    builtin exit
+    # Bash может отказать в выходе при остановленных задачах.
+    # Пустая запись отменяет запрос синхронизации до следующего выхода.
+    builtin printf '%s' '' > RETURN_PATH
 }
 """.replace('RETURN_PATH', shlex.quote(str(returned)))
+    # zsh прерывает функцию при отказе exit; cleanup после exit тогда не выполняется.
+    guard = """        if [ -n "$(jobs -p)" ]; then
+            builtin printf '%s\\n' 'Сначала завершите задачи или отсоедините их через disown; workspace не передан.'
+            return 1
+        fi""" if name == 'zsh' else ''
+    function = function.replace('JOB_GUARD', guard)
     if name == 'bash':
         startup = root / 'bashrc'
         startup.write_text('[ ! -f ~/.bashrc ] || . ~/.bashrc\n' + function, encoding='utf-8')

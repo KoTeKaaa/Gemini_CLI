@@ -48,6 +48,8 @@ def read_return_directory(path: Path) -> str | None:
     try:
         with path.open('rb') as stream:
             raw = stream.read(16385)
+        if not raw:
+            return None
         if len(raw) > 16384:
             raise ValueError
         directory = raw.decode('utf-8')
