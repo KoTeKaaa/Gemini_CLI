@@ -316,7 +316,8 @@ def stream_chat(
         user: UserContext = Depends(get_working_user),
 ):
     requested_tools = set(payload.supported_tools if payload.supported_tools is not None else LEGACY_NAMES)
-    rights = require_subscription(user, model=payload.model_name, features=requested_tools)
+    rights = require_subscription(user, model=payload.model_name)
+    requested_tools &= set(rights["features"])
     if payload.end_tool_turn and not payload.continue_after_tool:
         raise HTTPException(status_code=400, detail="Завершение допустимо только после результата инструмента")
     if payload.continue_after_tool:
@@ -386,7 +387,7 @@ def stream_chat(
             has_calls, failed = False, False
             permitted = set(TOOLS) - ({"web_search"} if not os.getenv("TAVILY_API_KEY") else set())
             for event in stream_events(client, model=payload.model_name, contents=full_contents,
-                                       supported_tools=payload.supported_tools, permitted_tools=permitted):
+                                       supported_tools=sorted(requested_tools), permitted_tools=permitted):
                 if event["type"] == "text":
                     full_response += event["content"]
                 elif event["type"] == "error":

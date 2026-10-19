@@ -74,3 +74,21 @@ class SubscriptionTest(unittest.TestCase):
             self.query.execute.return_value.data[0]["status"] = "revoked"
             self.assertIn(b'error', b''.join(body))
         model.models.generate_content_stream.assert_not_called()
+
+    def test_tools_disabled_subscription_can_chat_but_not_use_web(self):
+        with patch.dict(os.environ, {"API_KEY": "fixture", "SUPABASE_URL": "https://example.com",
+                                     "SUPABASE_ANON_KEY": "fixture"}):
+            server = importlib.import_module("server")
+        model = Mock()
+        model.models.generate_content_stream.return_value = iter([
+            SimpleNamespace(function_calls=None, text="ready")])
+        server.app.dependency_overrides[server.get_current_user] = lambda: self.user
+        try:
+            with patch.object(server, "client", model), patch.object(server, "reserve_request"), TestClient(server.app) as http:
+                response = http.post("/chat/stream", json={"message": "hello", "supported_tools": list(server.TOOLS)})
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("ready", response.text)
+                self.assertEqual(model.models.generate_content_stream.call_args.kwargs["config"].tools, [])
+                self.assertEqual(http.post("/tools/web/read", json={"url": "https://example.com"}).status_code, 403)
+        finally:
+            server.app.dependency_overrides.clear()
