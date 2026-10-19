@@ -30,5 +30,13 @@ preview-сервис, затем выполнить `deploy/rollback_account_sub
 Повтор того же ID отклоняется, расход не возвращается после таймаута/рестарта.
 Окна фиксируются по UTC epoch; записи старых окон остаются для дедупликации.
 Это бюджет подписки, а не сведения о квоте провайдера.
+
+В preview Supabase Auth отключите **Allow new users to sign up** и **Allow anonymous
+sign-ins**. Серверный `/auth/signup` всегда отвечает 403. Владелец приглашает
+аккаунт через `/admin/api/accounts/invite`; это письмо регистрации, а не подписка.
+Разрешите redirect URL `https://<panel-origin>/account/confirm` в Auth URL Configuration.
+Обычный пользователь, даже имея валидный Supabase-токен, без подписки не получает API.
+Проверка этих настроек preview обязательна; настройки рабочего проекта не менять
+как побочный эффект локальной разработки.
 Откат этой миграции перед S0.1: удалить RPC `reserve_subscription_request(uuid,
 uuid, text, text, text[])`, затем таблицу `subscription_requests` после экспорта.

@@ -22,6 +22,7 @@ from gemini_cli.server.budgets import reserve_request
 from gemini_cli.server.admin.sessions import WebSessions, session_router, owner_dependency
 from gemini_cli.server.admin.subscriptions import subscription_router
 from gemini_cli.server.admin.invitations import invitation_router
+from gemini_cli.server.admin.accounts import account_router
 from gemini_cli.server.limits import BodyLimit, StreamJob, BoundedStreamingResponse as StreamingResponse
 
 load_dotenv()
@@ -135,23 +136,7 @@ from fastapi import status
 
 @app.post("/auth/signup", status_code=status.HTTP_201_CREATED)
 def signup_user(payload: LoginPayload):
-    if not payload.email or not payload.password:
-        raise HTTPException(status_code=400, detail="Email и пароль обязательны")
-
-    try:
-        resp = create_client(supabase_url, supabase_key).auth.sign_up({
-            "email": payload.email.strip(),
-            "password": payload.password.strip(),
-        })
-
-        if hasattr(resp, "session") and resp.session:
-            return resp.session.model_dump()
-
-        return {"detail": "Пользователь создан. Проверьте почту для подтверждения."}
-
-    except Exception as e:
-        print(f"[AUTH ERROR] Signup failed for {payload.email!r}: {e}")
-        raise HTTPException(status_code=400, detail="Не удалось создать пользователя")
+    raise HTTPException(status_code=403, detail="Регистрация доступна только по приглашению владельца")
 
 @app.post("/auth/login")
 def login_user(payload: LoginPayload):
@@ -196,6 +181,7 @@ get_admin = owner_dependency(get_current_user)
 app.include_router(session_router(web_sessions, login_user))
 app.include_router(subscription_router(get_current_user, get_admin, web_sessions))
 app.include_router(invitation_router(web_sessions))
+app.include_router(account_router(web_sessions))
 
 
 @app.get("/chats", response_model=List[ChatResponse])
