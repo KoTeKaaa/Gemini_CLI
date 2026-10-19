@@ -39,7 +39,9 @@ def install(source: Path, root: Path, repository: str, *, execute=run):
             library.mkdir(parents=True, exist_ok=True)
             for name in ('poller.py', 'promote.py', 'runtime_payload.py', 'verified_main.py'):
                 atomic_write(library / name, (source / name).read_bytes(), 0o644)
-            (root / 'opt/gemini-cli-releases').mkdir(parents=True, exist_ok=True)
+            releases = root / 'opt/gemini-cli-releases'
+            releases.mkdir(parents=True, exist_ok=True)
+            releases.chmod(0o755)
             override = root / 'etc/systemd/system/gemini-cli.service.d'
             override.mkdir(parents=True, exist_ok=True)
             config = dict(repository=repository, service='gemini-cli.service', user='gemini-cli',

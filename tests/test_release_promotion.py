@@ -82,3 +82,25 @@ class ReleasePromotionTest(unittest.TestCase):
             self.assertEqual(Path(config['releases']).stat().st_mode & 0o777, 0o755)
             self.assertEqual(release.stat().st_mode & 0o777, 0o755)
             self.assertEqual((release / 'requirements-server.txt').stat().st_mode & 0o777, 0o644)
+
+    def test_cleanup_keeps_active_rollback_and_unmanaged_releases(self):
+        from unittest.mock import patch
+        from deploy.promote import clean_releases
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            releases = root / 'releases'; releases.mkdir()
+            active = releases / ('a' * 40 + '-12345678'); active.mkdir()
+            rollback = releases / ('b' * 40 + '-12345678'); rollback.mkdir()
+            abandoned = releases / ('c' * 40 + '-12345678'); abandoned.mkdir()
+            old = releases / 's0-existing'; old.mkdir()
+            link = releases / ('d' * 40 + '-12345678'); link.symlink_to(old)
+            (root / 'previous-override.conf').write_text(f'[Service]\nWorkingDirectory={rollback}\n')
+            config = dict(service='example.service', state=str(root), releases=str(releases))
+            with patch('deploy.promote.subprocess.check_output', return_value=str(active).encode()):
+                clean_releases(config)
+            self.assertFalse(abandoned.exists())
+            self.assertTrue(all(path.exists() for path in (active, rollback, old, link)))
+            with patch('deploy.promote.subprocess.check_output', return_value=b''):
+                with self.assertRaisesRegex(RuntimeError, 'identify active'):
+                    clean_releases(config)
+            self.assertTrue(active.exists())

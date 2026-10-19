@@ -10,10 +10,10 @@ import signal
 import sys
 
 if __package__:
-    from .promote import prepare_release, promote_release, healthy
+    from .promote import prepare_release, promote_release, healthy, clean_releases
     from .verified_main import GitHub, verified_main
 else:
-    from promote import prepare_release, promote_release, healthy
+    from promote import prepare_release, promote_release, healthy, clean_releases
     from verified_main import GitHub, verified_main
 
 
@@ -37,7 +37,7 @@ def load_config(path: Path) -> dict:
     return config
 
 
-def run_once(config, *, check=False, api=None, build=prepare_release, promote=promote_release, probe=healthy):
+def run_once(config, *, check=False, api=None, build=prepare_release, promote=promote_release, probe=healthy, cleanup=clean_releases):
     api = api or GitHub(config['repository'])
     state = Path(config['state']) / 'state.json'
     installed = json.loads(state.read_text()).get('sha') if state.exists() else None
@@ -50,11 +50,15 @@ def run_once(config, *, check=False, api=None, build=prepare_release, promote=pr
     if check:
         print('Verified candidate ' + sha + '; check-only, production unchanged')
         return sha
-    release = build(config, sha)
-    if verified_main(api, config['repository']) != sha:
-        print('Main or CI changed while staging; installed service retained')
-        return None
-    promote(config, release, sha)
+    cleanup(config)
+    try:
+        release = build(config, sha)
+        if verified_main(api, config['repository']) != sha:
+            print('Main or CI changed while staging; installed service retained')
+            return None
+        promote(config, release, sha)
+    finally:
+        cleanup(config)
     print('Deployed verified revision ' + sha)
     return sha
 

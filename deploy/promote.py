@@ -3,6 +3,8 @@
 import hashlib
 import json
 import os
+import re
+import shutil
 from pathlib import Path, PurePosixPath
 import subprocess
 import tarfile
@@ -56,6 +58,27 @@ def healthy(port: int, revision: str | None, *, timeout=30) -> bool:
             pass
         time.sleep(.25)
     return False
+
+
+def clean_releases(config: dict):
+    """Keep the running release and the recorded rollback, only prune our names."""
+    active = subprocess.check_output(
+        ['systemctl', 'show', config['service'], '--property=WorkingDirectory', '--value'],
+        timeout=10).decode().strip()
+    if not active.startswith('/'):
+        raise RuntimeError('Cannot identify active release; cleanup and deployment refused')
+    keep = {Path(active)}
+    previous = Path(config['state']) / 'previous-override.conf'
+    if previous.exists():
+        for line in previous.read_text().splitlines():
+            if line.startswith('WorkingDirectory='):
+                keep.add(Path(line.split('=', 1)[1]))
+    root = Path(config['releases'])
+    if root.exists():
+        for release in root.iterdir():
+            if (re.fullmatch(r'[0-9a-f]{40}-[0-9a-f]{8}', release.name)
+                    and not release.is_symlink() and release not in keep):
+                shutil.rmtree(release)
 
 
 def prepare_release(config: dict, sha: str) -> Path:

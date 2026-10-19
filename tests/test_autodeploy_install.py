@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -19,7 +20,12 @@ class AutodeployInstallTest(unittest.TestCase):
             previous.parent.mkdir(parents=True)
             previous.write_bytes(b'existing release')
             execute = Mock(return_value=SimpleNamespace(returncode=3))
-            install(source, root, 'owner/repo', execute=execute)
+            mask = os.umask(0o077)
+            try:
+                install(source, root, 'owner/repo', execute=execute)
+            finally:
+                os.umask(mask)
+            self.assertEqual((root / 'opt/gemini-cli-releases').stat().st_mode & 0o777, 0o755)
             self.assertEqual(env.read_bytes(), original)
             self.assertEqual(previous.read_bytes(), b'existing release')
             config = root / 'etc/gemini-cli/deploy.json'
