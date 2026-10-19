@@ -68,6 +68,9 @@ class ToolContinuationTest(unittest.TestCase):
         guard = patch.object(self.server, "require_subscription", return_value={})
         guard.start()
         self.addCleanup(guard.stop)
+        budget = patch.object(self.server, "reserve_request")
+        budget.start()
+        self.addCleanup(budget.stop)
 
     def test_request_tool_result_answer_has_one_original_request(self):
         for temporary in (False, True):

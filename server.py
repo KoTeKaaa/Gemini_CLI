@@ -4,6 +4,7 @@ import binascii
 from typing import List, Optional, Literal, Dict, Any
 import json
 from dataclasses import dataclass
+from uuid import UUID
 from fastapi import FastAPI, HTTPException, Header, Depends
 from pydantic import BaseModel, Field, field_validator
 from google import genai
@@ -15,6 +16,7 @@ from supabase.lib.client_options import SyncClientOptions
 from gemini_cli.tools.definitions import TOOLS, available_tools
 from gemini_cli.server.tool_history import REDACTED_READ_RESULT, persistent_tool_message
 from gemini_cli.server.subscriptions import require_subscription, working_user_dependency
+from gemini_cli.server.budgets import reserve_request
 from gemini_cli.server.limits import BodyLimit, StreamJob, BoundedStreamingResponse as StreamingResponse
 
 load_dotenv()
@@ -71,7 +73,7 @@ def get_current_user(authorization: Optional[str] = Header(None)):
 
 get_working_user = working_user_dependency(get_current_user)
 app.include_router(create_web_router(get_working_user, api_key=os.getenv("TAVILY_API_KEY"),
-                                    authorize=require_subscription))
+                                    authorize=require_subscription, reserve=reserve_request))
 
 
 class ChatCreate(BaseModel):
@@ -94,6 +96,7 @@ class MessageItem(BaseModel):
 
 
 class StreamChatPayload(BaseModel):
+    request_id: Optional[UUID] = None
     message: str = Field(default="", max_length=32768)
     chat_id: Optional[str] = None
     model_name: Literal["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.7-flash",
@@ -476,6 +479,8 @@ def stream_chat(
                 return
 
             require_subscription(user, model=payload.model_name, features=requested_tools)
+            reserve_request(user, operation="gemini", request_id=payload.request_id,
+                            model=payload.model_name, features=requested_tools)
             response_stream = client.models.generate_content_stream(
                 model=payload.model_name,
                 contents=full_contents,

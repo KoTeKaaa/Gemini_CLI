@@ -44,6 +44,9 @@ class EventLoopTest(unittest.TestCase):
         guard = patch.object(self.server, "require_subscription", return_value={})
         guard.start()
         self.addCleanup(guard.stop)
+        budget = patch.object(self.server, "reserve_request")
+        budget.start()
+        self.addCleanup(budget.stop)
 
     def test_stream_completes_while_chat_query_is_slow(self):
         server = self.server

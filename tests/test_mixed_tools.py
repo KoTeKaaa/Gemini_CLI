@@ -21,6 +21,9 @@ class MixedToolsTest(unittest.TestCase):
             guard = patch.object(server, "require_subscription", return_value={})
             guard.start()
             self.addCleanup(guard.stop)
+            budget = patch.object(server, "reserve_request")
+            budget.start()
+            self.addCleanup(budget.stop)
             path = Path(root) / "file.txt"
             path.write_text("PRIVATE-OLD\n")
             db = fixtures.FakeDb()

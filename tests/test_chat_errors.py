@@ -27,6 +27,9 @@ class ChatErrorsTest(unittest.TestCase):
         guard = patch.object(self.server, "require_subscription", return_value={})
         guard.start()
         self.addCleanup(guard.stop)
+        budget = patch.object(self.server, "reserve_request")
+        budget.start()
+        self.addCleanup(budget.stop)
 
     def test_failed_message_insert_reaches_stream_client(self):
         db = Mock()

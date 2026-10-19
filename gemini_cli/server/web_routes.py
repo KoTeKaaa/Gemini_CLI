@@ -3,6 +3,7 @@
 import time
 from collections import deque
 from threading import Lock
+from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,6 +18,7 @@ class SearchPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: str = Field(min_length=1, max_length=2000)
     max_results: int = Field(default=5, ge=1, le=5, strict=True)
+    request_id: UUID | None = None
 
 
 class UserRateLimit:
@@ -47,7 +49,7 @@ class ReadPayload(BaseModel):
 
 
 def create_web_router(get_user, *, api_key=None, search_adapter=search, search_limit=SEARCH_PER_MINUTE,
-                      read_adapter=read_url, read_limit=READ_PER_MINUTE, authorize=None):
+                      read_adapter=read_url, read_limit=READ_PER_MINUTE, authorize=None, reserve=None):
     router = APIRouter(prefix="/tools/web")
     limiter = UserRateLimit(search_limit)
     read_limiter = UserRateLimit(read_limit)
@@ -73,6 +75,8 @@ def create_web_router(get_user, *, api_key=None, search_adapter=search, search_l
             return failure("unavailable", "Веб-поиск не настроен на сервере")
         if not limiter.allow(user.user_id):
             return failure("rate_limit", "Достигнут минутный лимит поиска")
+        if reserve:
+            reserve(user, operation="web_search", request_id=payload.request_id, features=("web_search",))
         try:
             return search_adapter(payload.query, payload.max_results, api_key=api_key)
         except Exception:
