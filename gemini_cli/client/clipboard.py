@@ -36,3 +36,12 @@ def detect_backend(*, platform=None, environ=None, which=None) -> str:
             return "x11"
         raise ClipboardError("Нужен графический сеанс и xclip для X11")
     raise ClipboardError("Буфер поддерживается на Windows и Linux; прикрепите файл через @")
+
+
+def get_clipboard() -> Clipboard:
+    backend = detect_backend()
+    if backend == 'windows':
+        from .clipboard_windows import WindowsClipboard
+        return WindowsClipboard()
+    from .clipboard_linux import LinuxClipboard
+    return LinuxClipboard(backend)
