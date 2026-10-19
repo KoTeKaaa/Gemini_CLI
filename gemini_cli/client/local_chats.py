@@ -140,6 +140,74 @@ class LocalChats:
                               (:chat_id,:role,:content,:name,:args,:call_id,:thought_signature,
                                :id,:turn_id,:request_id,:event_index,:status)""", row)
 
+    def metadata(self, chat_id: str) -> dict:
+        with self.connection() as db:
+            row = db.execute("select * from chats where id=?", (chat_id,)).fetchone()
+            if row is None:
+                raise LookupError("Чат не найден в локальном профиле")
+            return dict(row)
+
+    def claim_request(self, chat_id: str, request_id: str, turn_id: str) -> bool:
+        if not all(isinstance(value, str) and value for value in (request_id, turn_id)):
+            raise ValueError("Некорректный идентификатор запроса или хода")
+        with self.connection() as db:
+            db.execute("begin immediate")
+            if not db.execute("select 1 from chats where id=?", (chat_id,)).fetchone():
+                raise LookupError("Чат не найден в локальном профиле")
+            existing = db.execute("select * from generation_requests where request_id=?", (request_id,)).fetchone()
+            if existing:
+                if existing["chat_id"] != chat_id or existing["turn_id"] != turn_id:
+                    raise ValueError("Запрос уже принадлежит другому чату или ходу")
+                return False
+            return db.execute("""insert or ignore into generation_requests(request_id,chat_id,turn_id)
+                              values (?,?,?)""", (request_id, chat_id, turn_id)).rowcount == 1
+
+    def update_request_status(self, chat_id: str, request_id: str, status: str):
+        if status not in {"running", "completed", "cancelled", "failed"}:
+            raise ValueError("Некорректный статус запроса")
+        with self.connection() as db:
+            db.execute("begin immediate")
+            row = db.execute("select status from generation_requests where chat_id=? and request_id=?",
+                             (chat_id, request_id)).fetchone()
+            if row is None:
+                raise LookupError("Запрос не найден в локальном чате")
+            if row["status"] == status:
+                return
+            if row["status"] != "running":
+                raise ValueError("Завершённый запрос не может сменить статус")
+            db.execute("update generation_requests set status=? where chat_id=? and request_id=?",
+                       (status, chat_id, request_id))
+            db.execute("update messages set status=? where chat_id=? and request_id=? and status='running'",
+                       (status, chat_id, request_id))
+
+    def set_summary(self, chat_id: str, summary: str, boundary_id: str):
+        if not isinstance(summary, str) or not summary.strip():
+            raise ValueError("Сводка должна содержать текст")
+        with self.connection() as db:
+            db.execute("begin immediate")
+            if not db.execute("select 1 from chats where id=?", (chat_id,)).fetchone():
+                raise LookupError("Чат не найден в локальном профиле")
+            boundary = db.execute("select * from messages where chat_id=? and id=?",
+                                  (chat_id, boundary_id)).fetchone()
+            if boundary is None:
+                raise LookupError("Граница сводки не найдена в локальном чате")
+            last_user = db.execute("select max(sequence) from messages where chat_id=? and role='user'",
+                                   (chat_id,)).fetchone()[0]
+            if (not boundary["turn_id"] or boundary["role"] != "model" or boundary["name"]
+                    or boundary["status"] != "completed" or last_user is None
+                    or boundary["sequence"] >= last_user):
+                raise ValueError("Сводка допустима только до завершённого хода перед последним сообщением")
+            unsafe = db.execute("""select 1 from messages where chat_id=? and turn_id=?
+                and (status!='completed' or sequence>?) limit 1""",
+                (chat_id, boundary["turn_id"], boundary["sequence"])).fetchone()
+            if unsafe:
+                raise ValueError("Граница сводки разрывает незавершённый ход")
+            previous = db.execute("""select sequence from messages where chat_id=? and id=(
+                select summary_boundary from chats where id=?)""", (chat_id, chat_id)).fetchone()
+            if previous and boundary["sequence"] < previous["sequence"]:
+                raise ValueError("Граница сводки не может перемещаться назад")
+            db.execute("update chats set summary=?,summary_boundary=? where id=?", (summary, boundary_id, chat_id))
+
     def delete(self, chat_id: str) -> bool:
         with self.connection() as db:
             return db.execute("delete from chats where id=?", (chat_id,)).rowcount == 1
