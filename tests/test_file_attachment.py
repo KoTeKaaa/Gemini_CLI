@@ -42,7 +42,7 @@ class FileAttachmentTest(unittest.TestCase):
 
     def test_range_is_named_and_bad_syntax_explains_correct_input(self):
         with tempfile.TemporaryDirectory() as root:
-            (Path(root) / 'LICENSE').write_text('one\ntwo\nthree\n')
+            (Path(root) / 'LICENSE').write_bytes(b'one\ntwo\nthree\n')
             draft = Draft()
             number = attach_file(draft, '@LICENSE:2-3', root, snapshots={}, approve=lambda _: True)
             self.assertEqual(number, 1)
