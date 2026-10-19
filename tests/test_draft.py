@@ -40,3 +40,22 @@ class DraftTest(unittest.TestCase):
             draft.add_image('extra.png', png())
         self.assertEqual(len(draft.images), 4)
         self.assertEqual(draft.text, 'keep')
+
+    def test_one_number_sequence_preserves_identity_after_removal(self):
+        draft = Draft('keep')
+        draft.add_text_file('LICENSE:1-20', 'selected lines')
+        image = draft.add_image('screen.png', png())
+        block = draft.add_paste('long text')
+        self.assertEqual([number for number, _ in draft.items()], [1, 2, 3])
+        draft.text += block.token
+        draft.remove_number(1)
+        self.assertEqual(draft.images, [image])
+        self.assertEqual([number for number, _ in draft.items()], [2, 3])
+        draft.remove_number(3)
+        self.assertEqual(draft.text, 'keep')
+        self.assertEqual(draft.pastes, [])
+        with self.assertRaisesRegex(ValueError, 'Нет вложения #1'):
+            draft.remove_number(1)
+        draft.clear()
+        draft.add_text_file('next', 'text')
+        self.assertEqual([number for number, _ in draft.items()], [1])

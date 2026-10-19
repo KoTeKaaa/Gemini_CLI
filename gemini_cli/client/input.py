@@ -47,8 +47,7 @@ class DraftInput:
 
     def insert(self, buffer, text: str):
         if is_large(text):
-            block = PasteBlock.create(text)
-            self.draft.pastes.append(block)
+            block = self.draft.add_paste(text)
             buffer.insert_text(block.token)
         else:
             buffer.insert_text(text)
@@ -80,8 +79,7 @@ class DraftInput:
                 elif action == '/paste-edit':
                     block.text = edit_text(block.text)
                 else:
-                    self.draft.text = self.draft.text.replace(block.token, '')
-                    self.draft.pastes.pop(index)
+                    self.draft.remove_number(self.draft.number_of(block))
             except (ValueError, IndexError):
                 self.notice = f'Использование: {action} N — номер вставки из строки состояния'
             except (KeyboardInterrupt, EOFError):
@@ -93,8 +91,7 @@ class DraftInput:
             self.paste()
             if self.pasted_text:
                 if is_large(self.pasted_text):
-                    block = PasteBlock.create(self.pasted_text)
-                    self.draft.pastes.append(block)
+                    block = self.draft.add_paste(self.pasted_text)
                     self.draft.text += block.token
                 else:
                     self.draft.text += self.pasted_text
@@ -109,7 +106,7 @@ class DraftInput:
                 index = int(number) - 1
                 if index < 0:
                     raise ValueError()
-                self.draft.files.pop(index)
+                self.draft.remove_number(self.draft.number_of(self.draft.files[index]))
             except (ValueError, IndexError):
                 self.notice = 'Использование: /remove-file N — номер текстового вложения'
         elif action == '/remove':
