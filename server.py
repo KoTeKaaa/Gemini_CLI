@@ -5,8 +5,7 @@ from typing import List, Optional, Literal, Dict, Any
 import json
 from dataclasses import dataclass
 from fastapi import FastAPI, HTTPException, Header, Depends
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -16,6 +15,7 @@ from supabase.lib.client_options import SyncClientOptions
 from gemini_cli.tools.definitions import TOOLS, available_tools
 from gemini_cli.server.tool_history import REDACTED_READ_RESULT, persistent_tool_message
 from gemini_cli.server.subscriptions import require_subscription, working_user_dependency
+from gemini_cli.server.limits import BodyLimit, StreamJob, BoundedStreamingResponse as StreamingResponse
 
 load_dotenv()
 
@@ -32,7 +32,9 @@ if not supabase_url or not supabase_key:
     raise RuntimeError("Данные Supabase (URL/KEY) не найдены в переменных окружения")
 
 app = FastAPI()
-client = genai.Client(api_key=api)
+app.add_middleware(BodyLimit)
+client = genai.Client(api_key=api, http_options=types.HttpOptions(
+    timeout=45000, retry_options=types.HttpRetryOptions(attempts=1)))
 
 
 @dataclass(frozen=True)
@@ -73,7 +75,7 @@ app.include_router(create_web_router(get_working_user, api_key=os.getenv("TAVILY
 
 
 class ChatCreate(BaseModel):
-    title: str
+    title: str = Field(max_length=200)
 
 
 class ChatResponse(BaseModel):
@@ -84,7 +86,7 @@ class ChatResponse(BaseModel):
 
 class MessageItem(BaseModel):
     role: Literal["user", "model", "tool"]
-    content: str
+    content: str = Field(max_length=32768)
     name: Optional[str] = None
     args: Optional[Dict[str, Any]] = None
     call_id: Optional[str] = None
@@ -92,14 +94,22 @@ class MessageItem(BaseModel):
 
 
 class StreamChatPayload(BaseModel):
-    message: str = ""
+    message: str = Field(default="", max_length=32768)
     chat_id: Optional[str] = None
-    model_name: Optional[str] = "gemini-3.5-flash-lite"
-    history: Optional[List[MessageItem]] = None
+    model_name: Literal["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.7-flash",
+                        "gemini-3.6-flash", "gemini-3.5-flash"] = "gemini-3.5-flash-lite"
+    history: Optional[List[MessageItem]] = Field(default=None, max_length=100)
     current_dir: Optional[str] = None
     continue_after_tool: bool = False
-    supported_tools: Optional[List[str]] = None
+    supported_tools: Optional[List[str]] = Field(default=None, max_length=32)
     end_tool_turn: bool = False
+
+    @field_validator("supported_tools")
+    @classmethod
+    def known_tools(cls, value):
+        if value is not None and (len(set(value)) != len(value) or not set(value) <= set(TOOLS)):
+            raise ValueError("Неизвестные или повторяющиеся инструменты")
+        return value
 
 
 class LoginPayload(BaseModel):
@@ -377,7 +387,7 @@ def stream_chat(
         user: UserContext = Depends(get_working_user),
 ):
     requested_tools = set(payload.supported_tools if payload.supported_tools is not None else TOOLS)
-    require_subscription(user, model=payload.model_name, features=requested_tools)
+    rights = require_subscription(user, model=payload.model_name, features=requested_tools)
     if payload.end_tool_turn and not payload.continue_after_tool:
         raise HTTPException(status_code=400, detail="Завершение допустимо только после результата инструмента")
     if payload.continue_after_tool:
@@ -430,6 +440,7 @@ def stream_chat(
             )
 
             config = types.GenerateContentConfig(
+                max_output_tokens=8192,
                 tools=available_tools(payload.supported_tools,
                                       set(TOOLS) - ({"web_search"} if not os.getenv("TAVILY_API_KEY") else set())),
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
@@ -526,7 +537,8 @@ def stream_chat(
             }
             yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n".encode("utf-8")
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    job = StreamJob(event_generator(), user.user_id, rights.get("parallel_limit", 1))
+    return StreamingResponse(job, media_type="text/event-stream")
 
 if __name__ == "__main__":
     import uvicorn
