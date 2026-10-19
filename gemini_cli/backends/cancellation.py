@@ -28,7 +28,9 @@ def open_stream(backend, payload, state):
         try:
             if stopped.is_set():
                 return
-            response = backend.stream_chat(payload)
+            cancellable = getattr(type(backend), "stream_chat_cancellable", None)
+            response = (cancellable(backend, payload, stopped) if callable(cancellable)
+                        else backend.stream_chat(payload))
             put(ready, response)
             if response.status_code == 200:
                 for event in response.events:

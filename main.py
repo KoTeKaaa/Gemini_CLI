@@ -5,6 +5,7 @@ from prompt_toolkit.key_binding import merge_key_bindings
 from gemini_cli.client.draft import Draft
 from gemini_cli.client.shell import launch_shell
 from gemini_cli.client.sessions import SessionManager, session_command
+from gemini_cli.client.work_input import WorkInput
 from gemini_cli.protocol.images import encode_images
 from gemini_cli.runtime.attachments import attachment_text, bound_image_history
 import os
@@ -401,7 +402,10 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
     handlers = {
         "read_local_files": handle_read_files,
         "write_local_files": handle_write_files,
-        "execute_command": handle_execute_command,
+        "execute_command": lambda args, cwd: execute_command(
+            args, cwd, approve=confirm_command, notify=console.print, logger=logger,
+            cancelled=state.cancelled.is_set if state else lambda: False,
+            monitor=lambda: WorkInput(state)),
         "find_files": lambda args, cwd: json.dumps(find_files(args, cwd), ensure_ascii=False),
         "replace_in_file": lambda args, cwd: json.dumps(replace_in_file(
             args, cwd, approve=confirm_content_scope, confirm_diff=confirm_replacement), ensure_ascii=False),
@@ -430,7 +434,7 @@ def display_stream_response(response, has_pending_tool: bool, state=None):
                    if has_pending_tool else "[bold green]✨ Gemini думает...[/bold green]")
     use_screen = (console.is_terminal and not console.is_dumb_terminal
                   and not console.legacy_windows)
-    with console.screen() if use_screen else nullcontext():
+    with WorkInput(state), console.screen() if use_screen else nullcontext():
         status = console.status(status_text, spinner="dots")
         started_text = False
         line_ended = False
@@ -463,6 +467,8 @@ def display_stream_response(response, has_pending_tool: bool, state=None):
             if started_text and not line_ended:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
+    if state is not None and state.cancelled.is_set():
+        return "", []
     if error_content is not None:
         console.print(f"[bold red]Ошибка:[/] {error_content}")
         return "", []
@@ -719,7 +725,8 @@ def main(backend: Backend | None = None):
                 has_pending_tool = payload["continue_after_tool"]
 
                 try:
-                    response = open_stream(api_client, payload, state)
+                    with WorkInput(state):
+                        response = open_stream(api_client, payload, state)
                 except Exception:
                     console.print(Text("Соединение прервано. Черновик сохранён; повторите отправку."))
                     break
@@ -760,6 +767,12 @@ def main(backend: Backend | None = None):
                     console.print(f"\n[red]Ошибка сервера ({response.status_code}): {err_detail}[/red]\n")
                     logger.error(f"Ошибка сервера ({response.status_code}): {err_detail}")
                     break
+
+            if state.cancelled.is_set():
+                row["status"] = "cancelled"
+                console.print(Text("Ход отменён. Выполненные действия и расход квоты не откатываются. Черновик сохранён."))
+            else:
+                state.finish("failed")
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Выход...[/yellow]")

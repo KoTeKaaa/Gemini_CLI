@@ -45,7 +45,10 @@ class LocalBackend:
             return result
         return failure("invalid_arguments", "Неизвестный веб-инструмент")
 
-    def stream_chat(self, payload: dict) -> StreamResult:
+    def stream_chat_cancellable(self, payload, cancelled):
+        return self.stream_chat(payload, cancelled=cancelled)
+
+    def stream_chat(self, payload: dict, *, cancelled=None) -> StreamResult:
         try:
             validate_payload_images(payload)
             message = payload.get("message", "")
@@ -81,7 +84,7 @@ class LocalBackend:
         except (ValueError, TypeError, KeyError, AttributeError):
             return StreamResult(400, detail="Некорректный локальный запрос")
 
-        cancelled = Event()
+        cancelled = cancelled if cancelled is not None else Event()
 
         def generate():
             full_text, has_calls, failed = "", False, False
