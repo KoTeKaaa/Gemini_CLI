@@ -614,7 +614,10 @@ def main(backend: Backend | None = None):
                 table.add_row("/chat", "Сменить или создать комнату диалога")
                 table.add_row("/delete", "Удалить текущий постоянный чат")
                 table.add_row("/cd {путь}", "Изменить текущую рабочую папку для Gemini")
-                table.add_row("/session", "list/start NAME/attach NAME/stop NAME; Ctrl+] — detach")
+                table.add_row("/session", "Список именованных оболочек; работают до закрытия CLI")
+                table.add_row("/session start build", "Создать оболочку build (имя любое). Ctrl+] — в чат, процесс продолжит работу")
+                table.add_row("/session attach build", "Вернуться в оболочку build: её каталог, окружение и процесс сохранены")
+                table.add_row("/session stop build", "Остановить оболочку build и её дочерние процессы")
                 table.add_row("/term", "Открыть оболочку; exit-to-cli возвращает в этот чат")
                 table.add_row("exit, quit, q", "Выход из приложения")
 
