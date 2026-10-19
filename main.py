@@ -383,7 +383,11 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
         payload["history"] = history[:-1]
     if not continuing and history[-1].get("images"):
         payload["images"] = history[-1]["images"]
-    if len(history) > TOOLS_HISTORY_THRESHOLD or len(json.dumps(payload).encode()) > TOOLS_WIRE_THRESHOLD:
+    text_payload = {key: value for key, value in payload.items() if key != "images"}
+    if "history" in text_payload:
+        text_payload["history"] = [{key: value for key, value in row.items() if key != "images"}
+                                   for row in text_payload["history"]]
+    if len(history) > TOOLS_HISTORY_THRESHOLD or len(json.dumps(text_payload).encode()) > TOOLS_WIRE_THRESHOLD:
         payload["supported_tools"] = []
     return payload
 
@@ -596,6 +600,7 @@ def main(backend: Backend | None = None):
                         chat_id = None
                         is_temporary = True
                         temporary_history = []
+                        draft.clear()
                     else:
                         console.print("[red]Не удалось удалить чат.[/red]")
                 continue
@@ -645,9 +650,16 @@ def main(backend: Backend | None = None):
             console.print("\n[bold cyan]Gemini:[/bold cyan]")
 
             draft.text = user_input
-            row = {"role": "user", "content": attachment_text(draft.message(user_input), draft.images)}
-            if draft.images:
-                row["images"] = encode_images(draft.images)
+            try:
+                content = attachment_text(draft.message(user_input), draft.images)
+                if len(content) > 32768:
+                    raise ValueError("Сообщение с метаданными слишком большое")
+                row = {"role": "user", "content": content}
+                if draft.images:
+                    row["images"] = encode_images(draft.images)
+            except ValueError as error:
+                console.print(Text(str(error)))
+                continue
             temporary_history.append(row)
             bound_image_history(temporary_history)
 
@@ -661,7 +673,11 @@ def main(backend: Backend | None = None):
                                                end_tool_turn=ending)
                 has_pending_tool = payload["continue_after_tool"]
 
-                response = api_client.stream_chat(payload)
+                try:
+                    response = api_client.stream_chat(payload)
+                except Exception:
+                    console.print(Text("Соединение прервано. Черновик сохранён; повторите отправку."))
+                    break
 
                 if response.status_code == 200:
                     full_response, tool_calls_received = display_stream_response(

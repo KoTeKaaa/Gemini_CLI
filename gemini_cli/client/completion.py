@@ -13,7 +13,12 @@ def allowed_path(root: str, relative: str) -> str | None:
     if any(part.startswith('.') or part in SKIP for part in relative.replace('\\', '/').split('/')):
         return None
     full = resolve_safe_path(root, relative)
-    return full if full and not is_sensitive_read_path(full) else None
+    if not full or is_sensitive_read_path(full):
+        return None
+    canonical = os.path.relpath(full, os.path.realpath(root))
+    if canonical != '.' and any(part.startswith('.') or part in SKIP for part in canonical.split(os.sep)):
+        return None
+    return full
 
 
 class InputCompleter(Completer):
