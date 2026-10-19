@@ -1,3 +1,6 @@
+from gemini_cli.client.draft import Draft
+from gemini_cli.protocol.images import encode_images
+from gemini_cli.runtime.attachments import attachment_text, bound_image_history
 import os
 import sys
 import json
@@ -372,8 +375,10 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
         if end_tool_turn:
             payload["end_tool_turn"] = True
             payload["supported_tools"] = []
-    elif is_temporary:
+    elif is_temporary or any(row.get("images") for row in history):
         payload["history"] = history[:-1]
+    if not continuing and history[-1].get("images"):
+        payload["images"] = history[-1]["images"]
     if len(history) > TOOLS_HISTORY_THRESHOLD or len(json.dumps(payload).encode()) > TOOLS_WIRE_THRESHOLD:
         payload["supported_tools"] = []
     return payload
@@ -504,6 +509,7 @@ def main(backend: Backend | None = None):
 
     temporary_history: List[Dict[str, str]] = []
     states = {}
+    draft = Draft()
     console.print(Text(f"Backend: {api_client.mode}"))
 
     while True:
@@ -513,7 +519,7 @@ def main(backend: Backend | None = None):
             user_input = session.prompt(HTML(
                 f"<ansiblue>[{api_client.mode} · {current_model}]</ansiblue>"
                 f"<ansigray>{prompt_text}</ansigray>"
-            ))
+            ), default=draft.text)
 
             if not user_input.strip():
                 continue
@@ -546,6 +552,7 @@ def main(backend: Backend | None = None):
                 replacement = settings.configure(force=True)
                 if replacement is not None:
                     states[backend_identity(api_client)] = (chat_id, is_temporary, temporary_history, current_model)
+                    draft.clear()
                     api_client = replacement
                     chat_id, is_temporary, temporary_history, current_model = states.get(
                         backend_identity(api_client), (None, True, [], current_model))
@@ -582,6 +589,7 @@ def main(backend: Backend | None = None):
                     chat_id = new_chat_id
                     is_temporary = new_is_temporary
                     temporary_history = []
+                    draft.clear()
                     chat_mode = "ВРЕМЕННЫЙ" if is_temporary else "ПОСТОЯННЫЙ"
                     console.print(f"[yellow]Переключились на чат. Режим: {chat_mode}[/yellow]\n")
                 continue
@@ -611,7 +619,12 @@ def main(backend: Backend | None = None):
 
             console.print("\n[bold cyan]Gemini:[/bold cyan]")
 
-            temporary_history.append({"role": "user", "content": user_input})
+            draft.text = user_input
+            row = {"role": "user", "content": attachment_text(user_input, draft.images)}
+            if draft.images:
+                row["images"] = encode_images(draft.images)
+            temporary_history.append(row)
+            bound_image_history(temporary_history)
 
             turn = ToolTurn()
             tool_rounds = 0
@@ -643,6 +656,7 @@ def main(backend: Backend | None = None):
                     if full_response:
                         console.rule(style="dim #4285F4")
                         temporary_history.append({"role": "model", "content": full_response})
+                        draft.clear()
                         break
 
                     break

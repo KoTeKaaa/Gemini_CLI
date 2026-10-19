@@ -8,6 +8,7 @@ from ..client.local_chats import LocalChats
 from ..protocol.models import MODEL_IDS
 from ..protocol.images import validate_payload_images
 from ..runtime.history import persistent_history_rows
+from ..runtime.attachments import restore_images
 from ..tools.definitions import TOOLS
 from ..tools.results import failure
 
@@ -70,9 +71,9 @@ class LocalBackend:
                     start = next((i for i in range(len(history)-1, -1, -1) if history[i]["role"] == "user"), None)
                     if start is None:
                         raise ValueError("Нет исходного сообщения")
-                    history = persistent_history_rows(stored, history[start]["content"]) + history[start:]
+                    history = restore_images(persistent_history_rows(stored, history[start]["content"]), history) + history[start:]
                 else:
-                    history = persistent_history_rows(stored)
+                    history = restore_images(persistent_history_rows(stored), history)
             contents = to_gemini(history + ([] if continuing else [{"role": "user", "content": message, "images": payload.get("images", [])}]))
         except LookupError:
             return StreamResult(404, detail="Чат не найден в локальном профиле")

@@ -1,3 +1,4 @@
+from gemini_cli.runtime.attachments import restore_images
 from gemini_cli.protocol.images import IMAGE_PROTOCOL, MAX_WIRE_BYTES, validate_payload_images
 import os
 from typing import List, Optional, Literal, Dict, Any
@@ -293,12 +294,12 @@ def save_message_to_db(
 
 
 def build_history_from_db(db: Client, chat_id: str,
-                          before_user_content: Optional[str] = None) -> List[Any]:
+                          before_user_content: Optional[str] = None, image_history=None) -> List[Any]:
     try:
         response = db.table("messages").select("*").eq("chat_id", chat_id).order("created_at").execute()
         messages = response.data
 
-        return to_gemini(persistent_history_rows(messages, before_user_content))
+        return to_gemini(restore_images(persistent_history_rows(messages, before_user_content), image_history or []))
     except Exception as e:
         print("[DB ERROR] Ошибка загрузки истории")
         raise HTTPException(status_code=503, detail="Не удалось загрузить историю чата") from e
@@ -353,10 +354,12 @@ def stream_chat(
             raise HTTPException(status_code=400, detail="Ожидается исходный запрос перед результатом инструмента")
         current_turn = payload.history[current_turn_start:]
         history_content = build_history_from_db(
-            user.db, payload.chat_id, before_user_content=current_turn[0].content
+            user.db, payload.chat_id, before_user_content=current_turn[0].content,
+            image_history=[item.model_dump() for item in payload.history]
         ) + build_history_from_client(current_turn)
     elif payload.chat_id:
-        history_content = build_history_from_db(user.db, payload.chat_id)
+        history_content = build_history_from_db(user.db, payload.chat_id,
+                                                image_history=[item.model_dump() for item in payload.history or []])
     elif payload.history:
         history_content = build_history_from_client(payload.history)
     else:
