@@ -1,3 +1,4 @@
+from gemini_cli.protocol.images import IMAGE_PROTOCOL, MAX_WIRE_BYTES, validate_payload_images
 import os
 from typing import List, Optional, Literal, Dict, Any
 import json
@@ -42,7 +43,7 @@ if not supabase_url or not supabase_key:
     raise RuntimeError("Данные Supabase (URL/KEY) не найдены в переменных окружения")
 
 app = FastAPI()
-app.add_middleware(BodyLimit)
+app.add_middleware(BodyLimit, max_bytes=MAX_WIRE_BYTES)
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("ADMIN_SESSION_SECRET") or secrets.token_hex(32),
                    session_cookie="gemini_admin", https_only=True, same_site="strict", max_age=1800)
 app.add_middleware(PanelHeaders)
@@ -100,6 +101,7 @@ class ChatResponse(BaseModel):
 
 
 class MessageItem(BaseModel):
+    images: List[Dict[str, Any]] = Field(default_factory=list, max_length=4, repr=False)
     role: Literal["user", "model", "tool"]
     content: str = Field(max_length=MAX_HISTORY_CONTENT_CHARS)
     name: Optional[str] = None
@@ -109,6 +111,7 @@ class MessageItem(BaseModel):
 
 
 class StreamChatPayload(BaseModel):
+    images: List[Dict[str, Any]] = Field(default_factory=list, max_length=4, repr=False)
     request_id: Optional[UUID] = None
     message: str = Field(default="", max_length=32768)
     chat_id: Optional[str] = None
@@ -310,11 +313,20 @@ def build_history_from_client(history: Optional[List[MessageItem]]) -> List[Any]
 
 
 
+@app.get("/capabilities")
+def capabilities(user: UserContext = Depends(get_working_user)):
+    return {"images": IMAGE_PROTOCOL}
+
+
 @app.post("/chat/stream")
 def stream_chat(
         payload: StreamChatPayload,
         user: UserContext = Depends(get_working_user),
 ):
+    try:
+        validate_payload_images(payload.model_dump())
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(400, "Некорректные изображения") from None
     requested_tools = set(payload.supported_tools if payload.supported_tools is not None else LEGACY_NAMES)
     rights = require_subscription(user, model=payload.model_name)
     requested_tools &= set(rights["features"])
@@ -370,7 +382,7 @@ def stream_chat(
                         )
                 full_contents = current_contents
             else:
-                active_message = to_gemini([{"role": "user", "content": payload.message}])[0]
+                active_message = to_gemini([{"role": "user", "content": payload.message, "images": payload.images}])[0]
 
                 full_contents = current_contents + [active_message]
 

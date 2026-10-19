@@ -9,6 +9,7 @@ from uuid import uuid4
 from ..client.profiles import canonical_origin, RemoteSessions
 from ..tools.results import failure
 from .base import StreamResult
+from ..protocol.images import IMAGE_PROTOCOL, validate_payload_images
 
 
 def decode_sse(response):
@@ -157,6 +158,18 @@ class RemoteBackend:
         return request() if self._renew_session() else response
 
     def stream_chat(self, payload: dict) -> StreamResult:
+        try:
+            if validate_payload_images(payload):
+                capability = self._authorized_request(lambda: self.transport.get(
+                    f"{self.base_url}/capabilities", headers=self.headers,
+                    timeout=10, allow_redirects=False))
+                try:
+                    if capability.status_code != 200 or capability.json().get("images") != IMAGE_PROTOCOL:
+                        return StreamResult(400, detail="Сервер не поддерживает изображения; обновите сервер")
+                finally:
+                    capability.close()
+        except (ValueError, TypeError, AttributeError):
+            return StreamResult(400, detail="Некорректные изображения или возможности сервера")
         request = {**payload, "request_id": payload.get("request_id") or str(uuid4())}
         response = self._authorized_request(lambda: self.transport.post(
             f"{self.base_url}/chat/stream", json=request, headers=self.headers,

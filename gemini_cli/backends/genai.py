@@ -5,6 +5,7 @@ import binascii
 import json
 
 from ..runtime.history import trim_history
+from ..protocol.images import decode_images
 from ..tools.definitions import TOOLS, LEGACY_NAMES, available_tools
 from ..protocol.limits import MAX_TOOL_CALLS, MAX_PROVIDER_WIRE_BYTES
 
@@ -103,7 +104,9 @@ def to_gemini(history: list[dict]):
             history_content.append(
                 types.Content(
                     role="user",
-                    parts=[types.Part.from_text(text=content)],
+                    parts=[types.Part.from_text(text=content)] + [
+                        types.Part.from_bytes(data=image.data, mime_type=image.mime_type)
+                        for image in decode_images(msg.get("images", []), "gemini-3.5-flash-lite")],
                 )
             )
 

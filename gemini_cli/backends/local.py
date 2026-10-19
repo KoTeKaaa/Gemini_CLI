@@ -6,6 +6,7 @@ from .base import StreamResult
 from .genai import create_provider, stream_events, to_gemini
 from ..client.local_chats import LocalChats
 from ..protocol.models import MODEL_IDS
+from ..protocol.images import validate_payload_images
 from ..runtime.history import persistent_history_rows
 from ..tools.definitions import TOOLS
 from ..tools.results import failure
@@ -44,6 +45,7 @@ class LocalBackend:
 
     def stream_chat(self, payload: dict) -> StreamResult:
         try:
+            validate_payload_images(payload)
             message = payload.get("message", "")
             history = payload.get("history") or []
             continuing = payload.get("continue_after_tool", False)
@@ -71,7 +73,7 @@ class LocalBackend:
                     history = persistent_history_rows(stored, history[start]["content"]) + history[start:]
                 else:
                     history = persistent_history_rows(stored)
-            contents = to_gemini(history + ([] if continuing else [{"role": "user", "content": message}]))
+            contents = to_gemini(history + ([] if continuing else [{"role": "user", "content": message, "images": payload.get("images", [])}]))
         except LookupError:
             return StreamResult(404, detail="Чат не найден в локальном профиле")
         except (ValueError, TypeError, KeyError, AttributeError):
