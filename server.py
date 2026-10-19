@@ -294,8 +294,7 @@ def build_history_from_db(db: Client, chat_id: str,
         response = db.table("messages").select("*").eq("chat_id", chat_id).order("created_at").execute()
         messages = response.data
 
-        restored = [MessageItem(**row) for row in persistent_history_rows(messages, before_user_content)]
-        return build_history_from_client(restored)
+        return to_gemini(persistent_history_rows(messages, before_user_content))
     except Exception as e:
         print("[DB ERROR] Ошибка загрузки истории")
         raise HTTPException(status_code=503, detail="Не удалось загрузить историю чата") from e
