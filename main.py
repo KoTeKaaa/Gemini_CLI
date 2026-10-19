@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 import requests
 from gemini_cli.backends.base import Backend, StreamResult
-from gemini_cli.backends.remote import RemoteBackend
+from gemini_cli.backends.remote import RemoteBackend, events_from_response as iter_stream_events
 from prompt_toolkit import PromptSession
 from prompt_toolkit.shortcuts import radiolist_dialog
 from prompt_toolkit.key_binding import KeyBindings
@@ -249,11 +249,6 @@ class GeminiAPIClient(RemoteBackend):
                          legacy_session=Path(SESSION_FILE), credentials=prompt_credentials,
                          notify=lambda message: console.print(Text(message)))
 
-    def stream_chat(self, payload: Dict[str, Any]):
-        return self._authorized_request(lambda: requests.post(
-            f"{self.base_url}/chat/stream", json=payload,
-            headers=self.headers, stream=True, timeout=300, allow_redirects=False))
-
 
 def prompt_credentials():
     console.print("[bold cyan]Авторизируйтесь через email. Регистрация — по приглашению владельца.[/bold cyan]")
@@ -398,21 +393,6 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
     run_tool_calls(tool_calls, history, current_dir, handlers=handlers, logger=logger)
 
 
-def iter_stream_events(response):
-    if isinstance(response, StreamResult):
-        yield from response.events
-        return
-    for raw_line in response.iter_lines():
-        if not raw_line:
-            continue
-        try:
-            line = raw_line.decode("utf-8").strip()
-            if not line.startswith("data: "):
-                continue
-            yield json.loads(line[6:])
-        except (ValueError, UnicodeError) as e:
-            logger.exception(f"Некорректное событие потока: {e}")
-
 
 def display_stream_response(response, has_pending_tool: bool):
     full_response = ""
@@ -447,6 +427,9 @@ def display_stream_response(response, has_pending_tool: bool):
                     break
         finally:
             status.stop()
+            close = getattr(response, "close", None)
+            if close:
+                close()
             if started_text and not line_ended:
                 sys.stdout.write("\n")
                 sys.stdout.flush()

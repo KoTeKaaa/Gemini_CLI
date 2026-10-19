@@ -59,7 +59,7 @@ class SessionRefreshTest(unittest.TestCase):
         with patch.object(self.app.requests, "post", side_effect=[
             unauthorized, refreshed, success,
         ]) as post:
-            self.assertIs(self.client.stream_chat({"message": "hello"}), success)
+            self.assertEqual(self.client.stream_chat({"message": "hello"}).status_code, 200)
         self.assertEqual(post.call_args_list[0].kwargs["headers"],
                          {"Authorization": "Bearer expired"})
         self.assertEqual(post.call_args_list[2].kwargs["headers"],

@@ -3,9 +3,57 @@
 from typing import Optional, List, Dict, Any
 import requests
 from pathlib import Path
+import json
+from uuid import uuid4
 
 from ..client.profiles import canonical_origin, RemoteSessions
 from ..tools.results import failure
+from .base import StreamResult
+
+
+def decode_sse(response):
+    data = []
+    size = 0
+    def decode():
+        value = json.loads("\n".join(data))
+        if not isinstance(value, dict) or value.get("type") not in {"text", "tool_call", "error", "usage", "done"}:
+            raise ValueError()
+        if value["type"] in {"text", "error"} and not isinstance(value.get("content"), str):
+            raise ValueError()
+        if value["type"] == "tool_call" and (not isinstance(value.get("name"), str)
+                                               or not isinstance(value.get("args"), dict)):
+            raise ValueError()
+        return value
+    try:
+        for raw in response.iter_lines():
+            for line in raw.decode("utf-8").splitlines() or [""]:
+                if not line and data:
+                    yield decode()
+                    data, size = [], 0
+                elif line.startswith("data:"):
+                    size += len(line)
+                    if size > 65536:
+                        raise ValueError()
+                    data.append(line[5:].lstrip())
+                    # Existing servers/fixtures also emit one JSON per data line.
+                    try:
+                        json.loads("\n".join(data))
+                    except ValueError:
+                        continue
+                    yield decode()
+                    data, size = [], 0
+        if data:
+            yield decode()
+    except (requests.RequestException, ValueError, UnicodeError):
+        yield {"type": "error", "content": "Поток прерван или содержит некорректное событие"}
+    finally:
+        close = getattr(response, "close", None)
+        if close:
+            close()
+
+
+def events_from_response(response):
+    yield from response.events if isinstance(response, StreamResult) else decode_sse(response)
 
 
 class RemoteBackend:
@@ -102,7 +150,22 @@ class RemoteBackend:
         response.close()
         return request() if self._renew_session() else response
 
+    def stream_chat(self, payload: dict) -> StreamResult:
+        request = {**payload, "request_id": payload.get("request_id") or str(uuid4())}
+        response = self._authorized_request(lambda: self.transport.post(
+            f"{self.base_url}/chat/stream", json=request, headers=self.headers,
+            stream=True, timeout=(10, 100), allow_redirects=False))
+        if response.status_code == 200:
+            return StreamResult(events=decode_sse(response), on_close=response.close)
+        try:
+            detail = response.json().get("detail", "Запрос отклонён сервером")
+            return StreamResult(status_code=response.status_code, detail=str(detail)[:512])
+        finally:
+            response.close()
+
     def web_tool(self, kind: str, payload: dict) -> dict:
+        if kind == "search":
+            payload = {**payload, "request_id": payload.get("request_id") or str(uuid4())}
         try:
             response = self._authorized_request(lambda: self.transport.post(
                 f"{self.base_url}/tools/web/{kind}", json=payload, headers=self.headers,
