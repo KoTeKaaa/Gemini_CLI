@@ -261,7 +261,10 @@ def prompt_credentials():
 
 
 def choose_setting(title, values):
-    return radiolist_dialog(title=title, text="Esc — отмена", values=values).run()
+    try:
+        return radiolist_dialog(title=title, text="Esc — отмена", values=values).run()
+    except (EOFError, KeyboardInterrupt):
+        return None
 
 
 def settings_controller():

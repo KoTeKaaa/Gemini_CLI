@@ -67,6 +67,9 @@ def configure_local(*, choose_storage, read_secret, notify, existing=None, profi
         notify("Сохранение ключей не подтверждено. Прежний режим остаётся активным.")
         return None
     except Exception as error:
+        if isinstance(error, ModuleNotFoundError):
+            notify("Для Local установите локальные зависимости: ./client/run.sh --with-local")
+            return None
         code = getattr(error, "code", None)
         notify("Провайдер ограничил проверку квотой; попробуйте позже" if code == 429
                else "Не удалось проверить ключ или сеть. Прежние ключи сохранены.")

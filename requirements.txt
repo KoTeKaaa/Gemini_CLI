@@ -1,2 +1,2 @@
--r client/requirements.txt
+-r client/requirements-local.txt
 -r deploy/requirements-server.txt

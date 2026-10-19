@@ -15,3 +15,5 @@ server_config.json
 /.venv-win/
 /dist/
 /build/
+__pycache__/
+supabase/.temp/

@@ -2,7 +2,7 @@ name: Build Windows client
 
 on:
   push:
-    branches: [dev]
+    branches: [dev, 'feature/**']
   workflow_dispatch:
   workflow_call:
 
