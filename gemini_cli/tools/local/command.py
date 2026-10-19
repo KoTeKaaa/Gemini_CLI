@@ -1,14 +1,16 @@
 """Запуск локальной команды после явного подтверждения."""
 
 import json
+from contextlib import nullcontext
 import logging
-import subprocess
+from ...client.process import ManagedProcess
 from typing import Callable
 
 
 def execute_command(
     args: dict, current_dir: str, *, approve: Callable[[str], bool],
     notify: Callable[[str], None], logger: logging.Logger,
+    cancelled=lambda: False, on_process=None, monitor=nullcontext,
 ) -> str:
     command = args.get("command", "").strip()
     if not command:
@@ -16,27 +18,22 @@ def execute_command(
     if not approve(command):
         return "Выполнение команды отменено пользователем."
 
+    if cancelled():
+        return json.dumps({"status": "cancelled"})
     notify("[green]Запуск процесса...[/green]")
+    process = None
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=current_dir,
-            text=True,
-            capture_output=True,
-            timeout=120
-        )
-
-        response_data = {
-            "exit_code": result.returncode,
-            "stdout": result.stdout,
-            "stderr": result.stderr
-        }
-        return json.dumps(response_data, ensure_ascii=False)
-
-    except subprocess.TimeoutExpired:
-        notify("[red]❌ Превышено время ожидания (лимит 2 минуты)[/red]")
-        return json.dumps({"error": "Превышено время ожидания выполнения команды (Timeout 120s)"})
-    except Exception as e:
-        logger.exception(f"Необработанное исключение: {e}")
-        return json.dumps({"error": f"Критическая ошибка вызова подпроцесса: {str(e)}"})
+        process = ManagedProcess(command, current_dir)
+        if on_process:
+            on_process(process)
+        with monitor():
+            status = process.wait(timeout=120, cancelled=cancelled)
+        return json.dumps({"status": status, "exit_code": process.poll(),
+                           "stdout": process.stdout.read(), "stderr": process.stderr.read()},
+                          ensure_ascii=False)
+    except Exception:
+        logger.exception("Ошибка запуска локальной команды")
+        return json.dumps({"error": "Не удалось выполнить команду"})
+    finally:
+        if process is not None:
+            process.close()

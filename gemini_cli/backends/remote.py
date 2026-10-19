@@ -4,12 +4,31 @@ from typing import Optional, List, Dict, Any
 import requests
 from pathlib import Path
 import json
+import socket
 from uuid import uuid4
 
 from ..client.profiles import canonical_origin, RemoteSessions
 from ..tools.results import failure
 from .base import StreamResult
 from ..protocol.images import IMAGE_PROTOCOL, validate_payload_images
+
+
+def interrupt_http(response):
+    # requests has no public cancel API; shutdown the active socket before close
+    # so a concurrent urllib3 read releases its buffered-reader lock promptly.
+    raw = getattr(response, "raw", None)
+    connection = getattr(raw, "_connection", None)
+    sock = getattr(connection, "sock", None)
+    if sock is None:
+        sock = raw
+        for attribute in ("_fp", "fp", "raw", "_sock"):
+            sock = getattr(sock, attribute, None)
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+    response.close()
 
 
 def decode_sse(response):
@@ -119,7 +138,7 @@ class RemoteBackend:
                 return False
         return False
 
-    def _renew_session(self) -> bool:
+    def _renew_session(self, *, interactive=True) -> bool:
         previous = self.sessions.load(self.account_id)
         refresh = previous.get("refresh_token")
         if refresh:
@@ -143,27 +162,30 @@ class RemoteBackend:
         self.token = None
         self.sessions.clear(self.account_id)
         self.notify("Сессия истекла. Войдите снова.")
-        self.login()
+        if interactive:
+            self.login()
         return bool(self.token)
 
     @property
     def headers(self):
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
-    def _authorized_request(self, request):
+    def _authorized_request(self, request, *, interactive=True):
         response = request()
         if response.status_code != 401:
             return response
         response.close()
-        return request() if self._renew_session() else response
+        return request() if self._renew_session(interactive=interactive) else response
 
     def stream_chat(self, payload: dict) -> StreamResult:
         try:
             if validate_payload_images(payload):
                 capability = self._authorized_request(lambda: self.transport.get(
                     f"{self.base_url}/capabilities", headers=self.headers,
-                    timeout=10, allow_redirects=False))
+                    timeout=10, allow_redirects=False), interactive=False)
                 try:
+                    if capability.status_code == 401:
+                        return StreamResult(401, detail="Сессия истекла. Войдите снова; черновик сохранён")
                     if capability.status_code != 200 or capability.json().get("images") != IMAGE_PROTOCOL:
                         return StreamResult(400, detail="Сервер не поддерживает изображения; обновите сервер")
                 finally:
@@ -173,9 +195,10 @@ class RemoteBackend:
         request = {**payload, "request_id": payload.get("request_id") or str(uuid4())}
         response = self._authorized_request(lambda: self.transport.post(
             f"{self.base_url}/chat/stream", json=request, headers=self.headers,
-            stream=True, timeout=(10, 100), allow_redirects=False))
+            stream=True, timeout=(10, 100), allow_redirects=False), interactive=False)
         if response.status_code == 200:
-            return StreamResult(events=decode_sse(response), on_close=response.close)
+            return StreamResult(events=decode_sse(response), on_close=response.close,
+                                on_cancel=lambda: interrupt_http(response))
         try:
             detail = response.json().get("detail", "Запрос отклонён сервером")
             return StreamResult(status_code=response.status_code, detail=str(detail)[:512])
@@ -188,8 +211,10 @@ class RemoteBackend:
         try:
             response = self._authorized_request(lambda: self.transport.post(
                 f"{self.base_url}/tools/web/{kind}", json=payload, headers=self.headers,
-                timeout=25, allow_redirects=False))
+                timeout=25, allow_redirects=False), interactive=False)
             with response:
+                if response.status_code == 401:
+                    return failure("auth_required", "Сессия истекла. Войдите снова")
                 if response.status_code != 200:
                     return failure("network", "Веб-инструмент недоступен")
                 result = response.json()

@@ -4,6 +4,9 @@ from gemini_cli.client.input import DraftInput, result_panel
 from prompt_toolkit.key_binding import merge_key_bindings
 from gemini_cli.client.draft import Draft
 from gemini_cli.client.shell import launch_shell
+from gemini_cli.client.sessions import SessionManager, session_command
+from gemini_cli.client.work_input import WorkInput
+from gemini_cli.client.work_view import WorkView
 from gemini_cli.protocol.images import encode_images
 from gemini_cli.runtime.attachments import attachment_text, bound_image_history
 import os
@@ -19,6 +22,8 @@ from urllib.parse import urlsplit
 import requests
 from gemini_cli.backends.base import Backend, StreamResult
 from gemini_cli.runtime.history import trim_history
+from gemini_cli.runtime.turn import TurnState
+from gemini_cli.backends.cancellation import open_stream, run_cancellable
 from gemini_cli.client.settings import Settings, backend_identity
 from gemini_cli.protocol.limits import TOOLS_HISTORY_THRESHOLD, TOOLS_WIRE_THRESHOLD
 from gemini_cli.backends.remote import RemoteBackend, events_from_response as iter_stream_events
@@ -248,9 +253,13 @@ def confirm_command(command: str) -> bool:
     return True
 
 
-def handle_execute_command(args: dict, current_dir: str) -> str:
-    return execute_command(args, current_dir, approve=confirm_command,
-                           notify=console.print, logger=logger)
+def handle_execute_command(args: dict, current_dir: str, *, state=None) -> str:
+    return execute_command(
+        args, current_dir, approve=confirm_command, notify=console.print, logger=logger,
+        cancelled=state.cancelled.is_set if state else lambda: False,
+        on_process=getattr(getattr(state, "view", None), "set_process", None),
+        monitor=(state.view.monitor if state is not None and hasattr(state, "view")
+                 else lambda: WorkInput(state)))
 
 
 class GeminiAPIClient(RemoteBackend):
@@ -394,11 +403,12 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
 
 
 def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
-                       current_dir: str, *, turn: ToolTurn | None = None, api_client: Backend | None = None) -> None:
+                       current_dir: str, *, turn: ToolTurn | None = None, api_client: Backend | None = None, state=None) -> None:
     handlers = {
         "read_local_files": handle_read_files,
         "write_local_files": handle_write_files,
-        "execute_command": handle_execute_command,
+        "execute_command": (handle_execute_command if state is None else
+                            lambda args, cwd: handle_execute_command(args, cwd, state=state)),
         "find_files": lambda args, cwd: json.dumps(find_files(args, cwd), ensure_ascii=False),
         "replace_in_file": lambda args, cwd: json.dumps(replace_in_file(
             args, cwd, approve=confirm_content_scope, confirm_diff=confirm_replacement), ensure_ascii=False),
@@ -409,17 +419,25 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
     }
     if turn is not None and api_client is not None:
         def web_handler(kind, args):
-            result = (turn.search(args, api_client.web_tool) if kind == "search"
-                      else turn.read(args, api_client.web_tool))
+            operation = lambda: (turn.search(args, api_client.web_tool) if kind == "search"
+                                 else turn.read(args, api_client.web_tool))
+            try:
+                if state is None:
+                    result = operation()
+                else:
+                    with state.view.monitor() if hasattr(state, "view") else WorkInput(state):
+                        result = run_cancellable(operation, state)
+            except InterruptedError:
+                return json.dumps(failure("cancelled", "Ход отменён; результат веб-вызова не принят"))
             turn.report(kind, json.loads(result), lambda text: console.print(Text(text)))
             return result
         handlers["web_search"] = lambda args, _cwd: web_handler("search", args)
         handlers["read_url"] = lambda args, _cwd: web_handler("read", args)
-    run_tool_calls(tool_calls, history, current_dir, handlers=handlers, logger=logger)
+    run_tool_calls(tool_calls, history, current_dir, handlers=handlers, logger=logger, state=state)
 
 
 
-def display_stream_response(response, has_pending_tool: bool):
+def display_stream_response(response, has_pending_tool: bool, state=None):
     full_response = ""
     tool_calls_received = []
     error_content = None
@@ -427,13 +445,18 @@ def display_stream_response(response, has_pending_tool: bool):
                    if has_pending_tool else "[bold green]✨ Gemini думает...[/bold green]")
     use_screen = (console.is_terminal and not console.is_dumb_terminal
                   and not console.legacy_windows)
-    with console.screen() if use_screen else nullcontext():
+    view = getattr(state, "view", None) if use_screen else None
+    with WorkInput(state, view.handle if view else None), (view.screen() if view else
+            console.screen() if use_screen else nullcontext()):
         status = console.status(status_text, spinner="dots")
         started_text = False
         line_ended = False
-        status.start()
+        if view is None:
+            status.start()
         try:
             for event in iter_stream_events(response):
+                if state is not None and not state.accepts(event):
+                    continue
                 event_type = event.get("type")
                 if event_type == "text":
                     fragment = event.get("content", "")
@@ -442,8 +465,11 @@ def display_stream_response(response, has_pending_tool: bool):
                         if not started_text:
                             status.stop()
                             started_text = True
-                        sys.stdout.write(fragment)
-                        sys.stdout.flush()
+                        if view is not None:
+                            view.update_text(full_response)
+                        else:
+                            sys.stdout.write(fragment)
+                            sys.stdout.flush()
                         line_ended = fragment.endswith("\n")
                 elif event_type == "tool_call":
                     tool_calls_received.append(event)
@@ -455,9 +481,11 @@ def display_stream_response(response, has_pending_tool: bool):
             close = getattr(response, "close", None)
             if close:
                 close()
-            if started_text and not line_ended:
+            if view is None and started_text and not line_ended:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
+    if state is not None and state.cancelled.is_set():
+        return "", []
     if error_content is not None:
         console.print(f"[bold red]Ошибка:[/] {error_content}")
         return "", []
@@ -524,10 +552,15 @@ def main(backend: Backend | None = None):
 
     temporary_history: List[Dict[str, str]] = []
     states = {}
+    sessions = SessionManager()
     console.print(Text(f"Backend: {api_client.mode}"))
 
     while True:
         try:
+            # Reauthentication belongs to the UI thread, outside raw work input.
+            if isinstance(api_client, RemoteBackend) and not api_client.token:
+                if not api_client.login():
+                    break
             draft_input.take_notice()
             dir_name = os.path.basename(current_dir) or current_dir
             prompt_text = f" {dir_name} › "
@@ -581,10 +614,18 @@ def main(backend: Backend | None = None):
                 table.add_row("/chat", "Сменить или создать комнату диалога")
                 table.add_row("/delete", "Удалить текущий постоянный чат")
                 table.add_row("/cd {путь}", "Изменить текущую рабочую папку для Gemini")
+                table.add_row("/session", "list/start NAME/attach NAME/stop NAME; Ctrl+] — detach")
                 table.add_row("/term", "Открыть оболочку; exit-to-cli возвращает в этот чат")
                 table.add_row("exit, quit, q", "Выход из приложения")
 
                 console.print(Panel(table, title="[bold green]Справка[/bold green]", expand=False))
+                continue
+
+            if first_line.split()[0] == "/session":
+                try:
+                    session_command(sessions, user_input, current_dir, lambda text: console.print(Text(text)))
+                except (ValueError, OSError) as error:
+                    console.print(Text(str(error)))
                 continue
 
             if first_line.split()[0] == "/term":
@@ -692,6 +733,8 @@ def main(backend: Backend | None = None):
             temporary_history.append(row)
             bound_image_history(temporary_history)
 
+            state = TurnState()
+            state.view = WorkView(console, state)
             turn = ToolTurn()
             tool_rounds = 0
             while True:
@@ -700,17 +743,19 @@ def main(backend: Backend | None = None):
                 temporary_history = trim_history(temporary_history, 20)
                 payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary, turn,
                                                end_tool_turn=ending)
+                payload = state.request(payload)
                 has_pending_tool = payload["continue_after_tool"]
 
                 try:
-                    response = api_client.stream_chat(payload)
+                    with state.view.monitor():
+                        response = open_stream(api_client, payload, state)
                 except Exception:
                     console.print(Text("Соединение прервано. Черновик сохранён; повторите отправку."))
                     break
 
                 if response.status_code == 200:
                     full_response, tool_calls_received = display_stream_response(
-                        response, has_pending_tool)
+                        response, has_pending_tool, state)
 
                     if tool_calls_received:
                         if ending:
@@ -719,7 +764,9 @@ def main(backend: Backend | None = None):
                         if full_response:
                             temporary_history.append({"role": "model", "content": full_response})
                         execute_tool_calls(tool_calls_received, temporary_history, current_dir,
-                                           turn=turn, api_client=api_client)
+                                           turn=turn, api_client=api_client, state=state)
+                        if state.cancelled.is_set():
+                            break
                         console.print("[dim]Передаю результаты выполнения обратно на сервер...[/dim]")
                         continue
 
@@ -727,6 +774,7 @@ def main(backend: Backend | None = None):
                         console.rule(style="dim #4285F4")
                         temporary_history.append({"role": "model", "content": full_response})
                         draft.clear()
+                        state.finish()
                         break
 
                     break
@@ -742,6 +790,12 @@ def main(backend: Backend | None = None):
                     logger.error(f"Ошибка сервера ({response.status_code}): {err_detail}")
                     break
 
+            if state.cancelled.is_set():
+                row["status"] = "cancelled"
+                console.print(Text("Ход отменён. Выполненные действия и расход квоты не откатываются. Черновик сохранён."))
+            else:
+                state.finish("failed")
+
         except KeyboardInterrupt:
             console.print("\n[yellow]Выход...[/yellow]")
             break
@@ -751,6 +805,7 @@ def main(backend: Backend | None = None):
             break
 
 
+    sessions.close()
     preview_warning = draft_input.close()
     if preview_warning:
         console.print(Text(preview_warning))

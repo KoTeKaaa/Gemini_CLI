@@ -88,4 +88,32 @@ def persistent_history_rows(messages: list[dict], before_user_content: str | Non
         restored.append({key: message.get(key) for key in
                          ("role", "name", "call_id", "thought_signature")}
                         | {"content": content, "args": args})
-    return restored
+    return complete_tool_pairs(restored)
+
+
+def complete_tool_pairs(history):
+    repaired, pending = [], []
+    def flush():
+        for call in pending:
+            repaired.append({"role": "tool", "name": call["name"],
+                "call_id": call.get("call_id"), "thought_signature": None, "args": None,
+                "content": json.dumps({
+                    "status": "interrupted", "message":
+                    "Ход прерван; сохранённый результат отсутствует. Действие могло выполниться. Не повторять автоматически."},
+                    ensure_ascii=False)})
+        pending.clear()
+    for row in history:
+        role = row.get("role")
+        if role == "model" and row.get("name"):
+            pending.append(row)
+        elif role == "tool":
+            match = next((call for call in pending if call.get("name") == row.get("name")
+                          and (row.get("call_id") is None or call.get("call_id") == row.get("call_id"))), None)
+            if match is not None:
+                row = {**row, "call_id": match.get("call_id")}
+                pending.remove(match)
+        else:
+            flush()
+        repaired.append(row)
+    flush()
+    return repaired

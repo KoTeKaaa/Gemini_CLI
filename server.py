@@ -114,6 +114,7 @@ class MessageItem(BaseModel):
 class StreamChatPayload(BaseModel):
     images: List[Dict[str, Any]] = Field(default_factory=list, max_length=4, repr=False)
     request_id: Optional[UUID] = None
+    turn_id: Optional[UUID] = None
     message: str = Field(default="", max_length=32768)
     chat_id: Optional[str] = None
     model_name: ModelName = "gemini-3.5-flash-lite"
@@ -375,7 +376,10 @@ def stream_chat(
 
     def event_generator():
         full_response = ""
+        sequence = 0
         try:
+            if job.cancelled.is_set():
+                return
             if payload.chat_id and not payload.continue_after_tool:
                 save_message_to_db(user.db, payload.chat_id, "user", payload.message)
 
@@ -410,7 +414,14 @@ def stream_chat(
             has_calls, failed = False, False
             permitted = set(TOOLS) - ({"web_search"} if not os.getenv("TAVILY_API_KEY") else set())
             for event in stream_events(client, model=payload.model_name, contents=full_contents,
-                                       supported_tools=sorted(requested_tools), permitted_tools=permitted):
+                                       supported_tools=sorted(requested_tools), permitted_tools=permitted,
+                                       cancelled=job.cancelled.is_set):
+                if job.cancelled.is_set():
+                    return
+                if payload.turn_id is not None:
+                    event = {**event, "turn_id": str(payload.turn_id),
+                             "request_id": str(payload.request_id), "sequence": sequence}
+                    sequence += 1
                 if event["type"] == "text":
                     full_response += event["content"]
                 elif event["type"] == "error":
@@ -423,7 +434,7 @@ def stream_chat(
                         save_message_to_db(user.db, payload.chat_id, "model",
                             f"[Вызов локального инструмента: {event['name']}]", event["name"], event["args"])
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
-            if payload.chat_id and full_response and not has_calls and not failed:
+            if payload.chat_id and full_response and not has_calls and not failed and not job.cancelled.is_set():
                 save_message_to_db(user.db, payload.chat_id, "model", full_response)
 
         except Exception as e:
