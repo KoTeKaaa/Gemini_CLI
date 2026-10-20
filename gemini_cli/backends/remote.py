@@ -246,6 +246,18 @@ class RemoteBackend:
     def context_info(self, payload):
         return self._history_request("/chat/context", payload)
 
+    def compact_chat(self, payload, cancelled=lambda: False):
+        if cancelled():
+            return {"summary": None, "boundary_id": None, "reason": "cancelled"}
+        request = {**payload, "request_id": payload.get("request_id") or str(uuid4())}
+        result = self._history_request("/chat/compact", request)
+        if cancelled():
+            return {**result, "summary": None, "boundary_id": None, "reason": "cancelled"}
+        if request.get("chat_id") and result.get("reason") == "ready" and result.get("summary"):
+            self._history_request("/chat/summary", {"chat_id": request["chat_id"],
+                "summary": result["summary"], "boundary_id": result["boundary_id"]})
+        return result
+
     def fork_chat(self, chat_id, title, boundary_id=None):
         from uuid import UUID
         return self._history_request(f"/chats/{UUID(str(chat_id))}/fork",

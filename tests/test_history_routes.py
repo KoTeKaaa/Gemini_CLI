@@ -13,6 +13,9 @@ from gemini_cli.server.history_routes import register_history_routes
 class Row(BaseModel):
     role: str
     content: str
+    id: str | None = None
+    turn_id: str | None = None
+    status: str | None = None
 
 
 class Payload(BaseModel):
@@ -50,9 +53,10 @@ class HistoryRoutesTests(unittest.TestCase):
         self.provider.models.get.return_value = SimpleNamespace(input_token_limit=10000, output_token_limit=1000)
         self.get_provider = Mock(return_value=self.provider)
         self.authorize = Mock(return_value={'features': ['execute_command']})
+        self.reserve = Mock()
         app = FastAPI()
         register_history_routes(app, get_user=user, provider=self.get_provider, payload_model=Payload,
-                                authorize=self.authorize, reserve=Mock())
+                                authorize=self.authorize, reserve=self.reserve)
         self.client = TestClient(app)
         self.headers = {'Authorization': 'owner'}
 
@@ -83,6 +87,62 @@ class HistoryRoutesTests(unittest.TestCase):
         self.get_provider.assert_not_called()
 
 
+    def completed_history(self):
+        rows = []
+        for index in range(5):
+            turn = str(uuid4())
+            rows += [{'role': 'user', 'content': str(index), 'id': str(uuid4()),
+                      'turn_id': turn, 'status': 'completed'},
+                     {'role': 'model', 'content': 'answer', 'id': str(uuid4()),
+                      'turn_id': turn, 'status': 'completed'}]
+        return rows
+
+    def test_compact_candidate_is_budgeted_but_never_persisted(self):
+        self.store.read.return_value = self.completed_history()
+        with patch('gemini_cli.server.history_routes.stream_events', return_value=iter([
+                {'type': 'text', 'content': 'safe summary'}])):
+            response = self.client.post('/chat/compact', json={'chat_id': self.chat,
+                'request_id': str(uuid4())}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['reason'], 'ready')
+        self.reserve.assert_called_once()
+        self.store.set_summary.assert_not_called()
+        self.reserve.side_effect = HTTPException(429, 'exhausted')
+        response = self.client.post('/chat/compact', json={'chat_id': self.chat,
+            'request_id': str(uuid4())}, headers=self.headers)
+        self.assertEqual(response.status_code, 429)
+
+    def test_compact_without_boundary_has_no_provider_cost(self):
+        response = self.client.post('/chat/compact', json={'chat_id': self.chat,
+            'request_id': str(uuid4())}, headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['reason'], 'no_completed_boundary')
+        self.reserve.assert_not_called()
+        self.get_provider.assert_not_called()
+
+    def test_summary_apply_validates_owner_and_whole_boundary(self):
+        self.store.read.return_value = rows = self.completed_history()
+        payload = {'chat_id': self.chat, 'summary': 'safe', 'boundary_id': rows[3]['id']}
+        response = self.client.post('/chat/summary', json=payload, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.store.set_summary.assert_called_once_with(self.chat, 'safe', rows[3]['id'])
+        self.store.set_summary.reset_mock()
+        response = self.client.post('/chat/summary', json=dict(payload, boundary_id=rows[-1]['id']), headers=self.headers)
+        self.assertEqual(response.status_code, 400)
+        response = self.client.post('/chat/summary', json=payload, headers={'Authorization': 'foreign'})
+        self.assertEqual(response.status_code, 404)
+        self.store.set_summary.assert_not_called()
+
+    def test_temp_compaction_accepts_over_stream_row_limit(self):
+        rows = self.completed_history() * 101
+        with patch('gemini_cli.server.history_routes.stream_events', return_value=iter([
+                {'type': 'text', 'content': 'summary'}])):
+            response = self.client.post('/chat/compact', json={'history': rows,
+                'request_id': str(uuid4())}, headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['reason'], 'ready')
+
+
 class RemoteHistoryAPITests(unittest.TestCase):
     def test_remote_history_context_fork_requests_are_authenticated_and_closed(self):
         from gemini_cli.backends.remote import RemoteBackend
@@ -106,3 +166,29 @@ class RemoteHistoryAPITests(unittest.TestCase):
             with self.assertRaises(LookupError):
                 backend.get_history(chat)
             self.assertEqual(response.close.call_count, 4)
+
+    def test_remote_compact_cancelled_candidate_is_not_applied(self):
+        from gemini_cli.backends.remote import RemoteBackend
+        from threading import Event
+        backend = RemoteBackend('https://example.test')
+        cancelled = Event()
+        def candidate(path, payload=None):
+            self.assertEqual(path, '/chat/compact')
+            cancelled.set()
+            return {'summary': 'late', 'boundary_id': str(uuid4()), 'reason': 'ready'}
+        backend._history_request = Mock(side_effect=candidate)
+        result = backend.compact_chat({'chat_id': str(uuid4())}, cancelled.is_set)
+        self.assertEqual(result['reason'], 'cancelled')
+        self.assertIsNone(result['summary'])
+        self.assertEqual(backend._history_request.call_count, 1)
+
+    def test_remote_compact_applies_only_ready_saved_candidate(self):
+        from gemini_cli.backends.remote import RemoteBackend
+        backend = RemoteBackend('https://example.test')
+        candidate = {'summary': 'safe', 'boundary_id': str(uuid4()), 'reason': 'ready'}
+        backend._history_request = Mock(side_effect=[candidate, {'status': 'ok'}])
+        chat = str(uuid4())
+        self.assertEqual(backend.compact_chat({'chat_id': chat}), candidate)
+        self.assertEqual(backend._history_request.call_args_list[1].args,
+                         ('/chat/summary', {'chat_id': chat, 'summary': 'safe',
+                                            'boundary_id': candidate['boundary_id']}))
