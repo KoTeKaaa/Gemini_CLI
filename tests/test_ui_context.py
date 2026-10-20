@@ -33,7 +33,7 @@ class UIContextTests(unittest.TestCase):
             prompt.assert_not_called()
 
     def test_explicit_history_limit_and_summary_payload(self):
-        rows = [{"role": "user", "content": "question"}]
+        rows = [{"id": "event", "role": "user", "content": "question"}]
         summary = {"summary": "context", "boundary_id": "event"}
         payload = self.app.build_stream_payload(rows, None, "model", True, summary=summary)
         self.assertEqual(payload["summary_boundary"], "event")
@@ -146,13 +146,13 @@ class UIContextTests(unittest.TestCase):
              patch.object(self.app.console, 'rule'), patch.object(self.app, 'WorkView'), \
              patch.object(self.app, 'open_stream') as stream, \
              patch.object(self.app, 'display_stream_response', return_value=('answer', [])), \
-             patch.object(self.app, 'compact_context', return_value=candidate) as compact:
+             patch.object(self.app, 'compact_context', side_effect=lambda client, rows, *args: {**candidate, 'boundary_id': rows[1]['id']}) as compact:
             stream.return_value.status_code = 200
             session.return_value.prompt.side_effect = ['first', '/compact', 'second', 'exit']
             self.app.main(backend)
             self.assertEqual(len(compact.call_args.args[1]), 4)
             self.assertEqual(stream.call_args.args[1]['summary'], 'safe context')
-            self.assertEqual(stream.call_args.args[1]['summary_boundary'], 'boundary')
+            self.assertEqual(stream.call_args.args[1]['summary_boundary'], compact.call_args.args[1][1]['id'])
 
     def test_temporary_fork_refused_without_backend_call(self):
         backend = Mock(mode='local')
@@ -163,3 +163,66 @@ class UIContextTests(unittest.TestCase):
             self.app.main(backend)
             backend.fork_chat.assert_not_called()
             backend.stream_chat.assert_not_called()
+
+    def test_wire_summary_tail_keeps_full_archive(self):
+        rows = [{'id': str(index), 'role': 'model', 'content': 'answer'} for index in range(1200)]
+        rows[-1] = {'id': 'last', 'role': 'user', 'content': 'question'}
+        summary = {'summary': 'old context', 'boundary_id': '1100'}
+        result = self.app.build_stream_payload(rows, None, 'model', True, summary=summary)
+        self.assertEqual(len(rows), 1200)
+        self.assertEqual(result['history'][0]['id'], '1100')
+        self.assertEqual(len(result['history']), 99)
+        self.assertEqual(len(self.app.context_payload(rows, 'saved', 'model')['history']), 1000)
+        self.assertEqual(len(self.app.context_payload(rows, None, 'model')['history']), 1200)
+        with self.assertRaises(ValueError):
+            self.app.context_payload(rows * 9, None, 'model')
+
+    def test_persistent_active_turn_over_limit_is_not_split(self):
+        rows = [{'role': 'user', 'content': 'question'}] + [
+            {'role': 'tool', 'content': 'result'} for _ in range(1000)]
+        with self.assertRaises(ValueError):
+            self.app.build_stream_payload(rows, 'saved', 'model', False)
+
+    def test_startup_history_error_preserves_chat_and_draft(self):
+        backend = Mock(mode='local')
+        backend.get_history.side_effect = ValueError('unavailable')
+        with patch.object(self.app, 'show_chat_menu', return_value=('saved', False)), \
+             patch.object(self.app, 'PromptSession') as session, \
+             patch.object(self.app, 'print_banner'), patch.object(self.app.console, 'print') as output:
+            session.return_value.prompt.side_effect = ['exit']
+            self.app.main(backend)
+            self.assertTrue(any('Не удалось загрузить историю' in getattr(getattr(call.args[0], 'renderable', None), 'plain', '') for call in output.call_args_list))
+            backend.stream_chat.assert_not_called()
+
+    def test_unknown_context_never_attempts_auto_compact(self):
+        backend = Mock(mode='local')
+        with patch.object(self.app, 'show_chat_menu', return_value=(None, True)), \
+             patch.object(self.app, 'PromptSession') as session, \
+             patch.object(self.app, 'print_banner'), patch.object(self.app.console, 'print'), \
+             patch.object(self.app.console, 'rule'), patch.object(self.app, 'WorkView'), \
+             patch.object(self.app, 'open_stream') as stream, \
+             patch.object(self.app, 'display_stream_response', return_value=('answer', [])), \
+             patch.object(self.app, 'inspect_context', return_value={'input_token_limit': None}), \
+             patch.object(self.app, 'compact_context') as compact:
+            stream.return_value.status_code = 200
+            session.return_value.prompt.side_effect = ['question', 'exit']
+            self.app.main(backend)
+            compact.assert_not_called()
+
+    def test_auto_failure_fingerprint_and_cancel_no_send(self):
+        backend = Mock(mode='local')
+        info = {'input_tokens': 80, 'input_token_limit': 100, 'output_token_limit': 10}
+        results = [{'reason': 'summary_failed', 'fingerprint': 'failed'}, {'reason': 'cancelled'}]
+        with patch.object(self.app, 'show_chat_menu', return_value=(None, True)), \
+             patch.object(self.app, 'PromptSession') as session, \
+             patch.object(self.app, 'print_banner'), patch.object(self.app.console, 'print'), \
+             patch.object(self.app.console, 'rule'), patch.object(self.app, 'WorkView'), \
+             patch.object(self.app, 'open_stream') as stream, \
+             patch.object(self.app, 'display_stream_response', return_value=('answer', [])), \
+             patch.object(self.app, 'inspect_context', return_value=info), \
+             patch.object(self.app, 'compact_context', side_effect=results) as compact:
+            stream.return_value.status_code = 200
+            session.return_value.prompt.side_effect = ['first', 'second', 'exit']
+            self.app.main(backend)
+            self.assertEqual(stream.call_count, 1)
+            self.assertEqual(compact.call_args.kwargs['blocked_fingerprint'], 'failed')

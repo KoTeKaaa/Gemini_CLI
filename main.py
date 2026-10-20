@@ -9,7 +9,7 @@ from gemini_cli.client.shell import launch_shell
 from gemini_cli.client.work_input import WorkInput
 from gemini_cli.client.work_view import WorkView
 from gemini_cli.protocol.images import encode_images
-from gemini_cli.runtime.attachments import attachment_text, bound_image_history
+from gemini_cli.runtime.attachments import attachment_text, bound_image_history, restore_images
 import os
 import sys
 import json
@@ -335,7 +335,35 @@ def show_chat_menu(client: Backend, current_id=None, recent_ids=(), query="") ->
         return result, False
 
 
+def context_wire_history(history, summary=None, *, strict=True):
+    """Retain the archive, transmitting only its represented boundary and tail."""
+    if summary and summary.get("boundary_id"):
+        index = next((i for i, row in enumerate(history)
+                      if row.get("id") == summary["boundary_id"]), None)
+        if index is None:
+            if strict:
+                raise ValueError("Граница сводки отсутствует в контексте. Сжатие нужно повторить.")
+        else:
+            history = history[index:]
+    return history
+
+
+def inspect_context(client, payload):
+    state = TurnState()
+    state.view = WorkView(console, state)
+    try:
+        with state.view.monitor():
+            return run_cancellable(lambda: client.context_info(payload), state)
+    finally:
+        state.finish()
+
+
 def context_payload(history, chat_id, model, summary=None):
+    history = context_wire_history(history, summary, strict=chat_id is None)
+    if chat_id is not None:
+        history = history[-1000:]  # Stored history remains authoritative and complete.
+    elif len(history) > 10000:
+        raise ValueError("Сжатие ограничено 10000 событиями; начните новый чат.")
     payload = {"history": history, "chat_id": chat_id, "model_name": model}
     if summary:
         payload.update(summary=summary.get("summary"),
@@ -343,14 +371,17 @@ def context_payload(history, chat_id, model, summary=None):
     return payload
 
 
-def compact_context(client, history, chat_id, model, summary=None):
+def compact_context(client, history, chat_id, model, summary=None, *, blocked_fingerprint=None):
     """The worker returns a candidate; cancellation rejects late UI results."""
     state = TurnState()
     state.view = WorkView(console, state)
     try:
+        payload = context_payload(history, chat_id, model, summary)
+        if blocked_fingerprint:
+            payload["blocked_fingerprint"] = blocked_fingerprint
         with state.view.monitor():
             result = run_cancellable(lambda: client.compact_chat(
-                context_payload(history, chat_id, model, summary),
+                payload,
                 cancelled=state.cancelled.is_set), state)
         if state.cancelled.is_set():
             raise InterruptedError("Сжатие отменено")
@@ -420,6 +451,14 @@ def show_model_selection_menu(current_model: str) -> str:
 def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
                          model_name: str, is_temporary: bool, turn: ToolTurn | None = None,
                          *, end_tool_turn: bool = False, summary=None) -> Dict[str, Any]:
+    history = context_wire_history(history, summary, strict=is_temporary)
+    if not is_temporary and len(history) > 1000:
+        if history[-1].get("role") == "tool":
+            start = next((i for i in range(len(history) - 1, -1, -1)
+                          if history[i].get("role") == "user"), 0)
+            if len(history) - start > 1000:
+                raise ValueError("Текущий ход превышает 1000 событий; продолжение остановлено.")
+        history = history[-1000:]
     if not history or len(history) > 1000:
         raise ValueError("Контекст пуст или превышает 1000 событий. Используйте /compact или новый чат.")
     continuing = bool(history and history[-1].get("role") == "tool")
@@ -592,11 +631,15 @@ def main(backend: Backend | None = None):
 
     temporary_history: List[Dict[str, str]] = []
     buffers, states, summary = ChatBuffers(), {}, None
+    auto_attempts = {}
     buffers.visit(backend_identity(api_client), chat_id)
     if not is_temporary:
-        loaded = api_client.get_history(chat_id)
-        if isinstance(loaded, list):
-            temporary_history = loaded
+        try:
+            loaded = api_client.get_history(chat_id)
+            if isinstance(loaded, list):
+                temporary_history = loaded
+        except Exception:
+            console.print(result_panel("Не удалось загрузить историю. Backend продолжит постоянный чат; локальный просмотр пока недоступен.", title="Чаты", error=True))
 
     def remember():
         buffers.save(backend_identity(api_client), chat_id, temporary_history, draft, summary)
@@ -616,6 +659,23 @@ def main(backend: Backend | None = None):
         nonlocal temporary_history, draft, summary
         temporary_history, draft, summary = saved["history"], saved["draft"], saved["summary"]
         draft_input.draft = draft
+    def apply_summary(result):
+        nonlocal summary, temporary_history
+        text = result.get("summary")
+        if (result.get("reason") != "ready" or not isinstance(text, str)
+                or not text.strip() or len(text) > 8192 or not result.get("boundary_id")):
+            return False
+        summary = result
+        if not is_temporary:
+            try:
+                stored = api_client.get_history(chat_id)
+                if isinstance(stored, list):
+                    temporary_history = restore_images(stored, temporary_history)
+            except Exception:
+                pass  # Persisted summary is authoritative; keep the full live archive.
+        remember()
+        return True
+
     console.print(Text(f"Backend: {api_client.mode}"))
 
     while True:
@@ -747,9 +807,8 @@ def main(backend: Backend | None = None):
                     continue
                 try:
                     result = compact_context(api_client, temporary_history, chat_id, current_model, summary)
-                    if result.get("summary") and result.get("boundary_id") and result.get("reason") == "ready":
-                        summary = result
-                        remember()
+                    if apply_summary(result):
+                        auto_attempts.pop((backend_identity(api_client), chat_id), None)
                         message = "Сводка обновлена. Полная история сохранена."
                     else:
                         message = {"cancelled": "Сжатие отменено. Контекст сохранён.",
@@ -841,9 +900,35 @@ def main(backend: Backend | None = None):
             except ValueError as error:
                 console.print(Text(str(error)))
                 continue
-            if len(temporary_history) >= 1000:
-                console.print(result_panel("Достигнут предел 1000 событий. Используйте /compact или новый чат.", title="Контекст", error=True))
+            try:
+                preview = build_stream_payload(temporary_history + [row], chat_id, current_model, is_temporary, summary=summary)
+            except ValueError as error:
+                console.print(result_panel(str(error), title="Контекст", error=True))
                 continue
+            key = (backend_identity(api_client), chat_id)
+            marker = (current_model, tuple((event.get("id"), event.get("status")) for event in temporary_history),
+                      (summary or {}).get("boundary_id"))
+            previous = auto_attempts.get(key, (None, None))
+            if previous[0] != marker:
+                try:
+                    info = inspect_context(api_client, preview)
+                    if isinstance(info, dict) and should_auto_compact(info):
+                        result = compact_context(api_client, temporary_history, chat_id, current_model, summary,
+                                                 blocked_fingerprint=previous[1])
+                        if result.get("reason") == "cancelled":
+                            console.print(result_panel("Сжатие отменено. Сообщение не отправлено; черновик сохранён.", title="Контекст"))
+                            continue
+                        if apply_summary(result):
+                            auto_attempts.pop(key, None)
+                            console.print(result_panel("Контекст автоматически сжат; полная история сохранена.", title="Контекст"))
+                        else:
+                            auto_attempts[key] = (marker, result.get("fingerprint"))
+                            console.print(result_panel("Автосжатие не выполнено. Повтор той же попытки отключён; доступна /compact.", title="Контекст", error=True))
+                except InterruptedError:
+                    console.print(result_panel("Оценка отменена. Сообщение не отправлено; черновик сохранён.", title="Контекст"))
+                    continue
+                except Exception:
+                    pass  # Unavailable provider metadata must not invent model limits.
             state = TurnState()
             row.update(id=str(uuid4()), turn_id=state.turn_id, status="running")
             console.print("\n[bold cyan]Gemini:[/bold cyan]")

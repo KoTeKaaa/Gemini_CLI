@@ -45,10 +45,14 @@ class ChatMenuCancelTest(unittest.TestCase):
         self.assertEqual(client.stream_chat.call_count, 2)
         second_payload = client.stream_chat.call_args_list[1].args[0]
         self.assertIsNone(second_payload["chat_id"])
-        self.assertEqual(second_payload["history"], [
-            {"role": "user", "content": "first"},
-            {"role": "model", "content": "first answer"},
-        ])
+        rows = second_payload["history"]
+        self.assertEqual([(row["role"], row["content"]) for row in rows],
+                         [("user", "first"), ("model", "first answer")])
+        from uuid import UUID
+        for row in rows:
+            UUID(row["id"])
+            self.assertEqual(row["status"], "completed")
+        self.assertEqual(rows[0]["turn_id"], rows[1]["turn_id"])
 
     def test_escape_after_chat_command_keeps_persistent_chat(self):
         client = Mock(mode="remote")

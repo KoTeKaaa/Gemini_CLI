@@ -93,3 +93,15 @@ class LocalHistoryAPITests(unittest.TestCase):
         self.assertEqual(self.backend.chats.metadata(self.chat), before)
         with self.assertRaises(ValueError):
             self.backend.compact_chat({'history': self.rows * (10000 // len(self.rows) + 1)})
+
+    def test_temporary_compact_can_recover_archive_over_stream_limit(self):
+        rows = []
+        for index in range(510):
+            rows.extend([{'role': 'user', 'content': str(index), 'id': str(uuid4()), 'status': 'completed'},
+                         {'role': 'model', 'content': 'answer', 'id': str(uuid4()), 'status': 'completed'}])
+        with patch('gemini_cli.backends.local.stream_events', return_value=iter([
+                {'type': 'text', 'content': 'summary of old turns'}])):
+            result = self.backend.compact_chat({'history': rows})
+        self.assertEqual(result['reason'], 'ready')
+        self.assertEqual(result['boundary_id'], rows[-5]['id'])
+        self.assertEqual(len(rows), 1020)
