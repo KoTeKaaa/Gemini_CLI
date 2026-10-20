@@ -64,7 +64,7 @@ class WorkView:
     @contextmanager
     def screen(self):
         if self.console.is_terminal and not self.console.is_dumb_terminal:
-            with Live(console=self.console, screen=False, refresh_per_second=10,
+            with Live(console=self.console, screen=True, refresh_per_second=10,
                       transient=True, get_renderable=lambda: Group(self.spinner, self.render())):
                 yield
         else:
