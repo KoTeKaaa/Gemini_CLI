@@ -48,7 +48,7 @@ def install_runtime(source: Path, destination: Path) -> None:
             output.chmod(0o755)
             for name in files:
                 module = current / name
-                if relative == Path("backends") and name not in {"__init__.py", "genai.py"}:
+                if relative == Path("backends") and name not in {"__init__.py", "genai.py", "model_info.py"}:
                     continue
                 panel_asset = (relative.as_posix() in {"server/admin/templates", "server/admin/static"}
                                and module.suffix in {".html", ".css", ".js"})
