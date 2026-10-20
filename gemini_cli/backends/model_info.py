@@ -47,14 +47,15 @@ def model_info(provider, model: str, cache_scope=None, *, refresh=False) -> dict
 
 
 def count_context(provider, model: str, contents, instruction="", tools=None) -> dict:
-    """Explicit refresh only: count the exact request; no history/token cache.
+    """Count bare contents only; Developer API SDK rejects instruction/tools.
 
-    SDK-compatible dict config keeps this module independent of SDK imports.
+    Full request accounting remains a labelled estimate until the SDK can count
+    every request field. Never present a partial count as an exact total.
     """
+    if instruction or tools:
+        return {"prompt_token_count": None, "source": "unavailable"}
     try:
-        count = provider.models.count_tokens(
-            model=model, contents=contents,
-            config={"system_instruction": instruction, "tools": tools or []})
+        count = provider.models.count_tokens(model=model, contents=contents)
         total = count.total_tokens
         if type(total) is int and total >= 0:
             return {"prompt_token_count": total, "source": "provider_count"}

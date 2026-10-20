@@ -1,4 +1,4 @@
-"""Context metadata tests use fake providers only; no keys or network."""
+"""Context metadata tests use mocked transports; no real credentials or network."""
 import subprocess
 import sys
 import unittest
@@ -46,16 +46,43 @@ class ModelInfoTests(unittest.TestCase):
             self.assertNotIn('private', str(result))
         self.assertEqual(self.provider.models.get.call_count, 2)
 
-    def test_explicit_count_includes_exact_request(self):
+    def test_full_request_count_stays_unavailable_without_invalid_sdk_call(self):
         contents, tools = [{'parts': [{'text': 'hello'}]}], [{'function_declarations': []}]
+        for instruction, declarations in (('instruction', tools), ('instruction', []), ('', tools)):
+            with self.subTest(instruction=instruction, tools=bool(declarations)):
+                result = metadata.count_context(self.provider, 'model', contents, instruction, declarations)
+                self.assertIsNone(result['prompt_token_count'])
+                self.assertEqual(result['source'], 'unavailable')
+        self.provider.models.count_tokens.assert_not_called()
+        estimate = estimate_context(contents, instruction='instruction', tools=tools, measured_usage=result)
+        self.assertTrue(estimate['estimated'])
+        self.assertEqual(estimate['source'], 'estimate')
+
+    def test_bare_contents_count_and_private_failure(self):
+        contents = [{'parts': [{'text': 'hello'}]}]
         self.provider.models.count_tokens.return_value = SimpleNamespace(total_tokens=42)
-        result = metadata.count_context(self.provider, 'model', contents, 'instruction', tools)
+        result = metadata.count_context(self.provider, 'model', contents)
         self.assertEqual(result['prompt_token_count'], 42)
-        self.provider.models.count_tokens.assert_called_once_with(
-            model='model', contents=contents,
-            config={'system_instruction': 'instruction', 'tools': tools})
+        self.provider.models.count_tokens.assert_called_once_with(model='model', contents=contents)
         self.provider.models.count_tokens.side_effect = RuntimeError('private')
         self.assertIsNone(metadata.count_context(self.provider, 'model', contents)['prompt_token_count'])
+
+    def test_real_developer_sdk_conversion_reaches_mocked_transport_for_bare_contents(self):
+        from google import genai
+        with genai.Client(api_key='fixture', vertexai=False) as client, patch.object(
+                client._api_client, 'request', return_value=SimpleNamespace(body='{"totalTokens":7}', headers={})) as transport:
+            result = metadata.count_context(client, 'gemini-fixture', 'hello')
+            self.assertEqual(result, {'prompt_token_count': 7, 'source': 'provider_count'})
+            transport.assert_called_once()
+            request = transport.call_args.args
+            self.assertEqual(request[0], 'post')
+            self.assertTrue(request[1].endswith(':countTokens'))
+            self.assertIn('contents', request[2])
+            self.assertNotIn('systemInstruction', request[2])
+            self.assertNotIn('tools', request[2])
+            unavailable = metadata.count_context(client, 'gemini-fixture', 'hello', 'instruction', [{}])
+            self.assertEqual(unavailable, {'prompt_token_count': None, 'source': 'unavailable'})
+            self.assertEqual(transport.call_count, 1)
 
     def test_import_does_not_require_sdk(self):
         result = subprocess.run([sys.executable, '-S', '-B', '-c',
