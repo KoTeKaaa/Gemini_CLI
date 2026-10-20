@@ -13,6 +13,7 @@ class FakeQuery:
         self.table = table
         self.filters = {}
         self.row = None
+        self.bounds = None
 
     def select(self, *_args):
         return self
@@ -22,6 +23,10 @@ class FakeQuery:
         return self
 
     def order(self, *_args, **_kwargs):
+        return self
+
+    def range(self, start, end):
+        self.bounds = (start, end)
         return self
 
     def insert(self, row):
@@ -34,10 +39,11 @@ class FakeQuery:
             self.db.messages.append(self.row)
             return SimpleNamespace(data=[self.row])
         rows = self.db.chats if self.table == "chats" else self.db.messages
-        return SimpleNamespace(data=[
-            row for row in rows
-            if all(row.get(key) == value for key, value in self.filters.items())
-        ])
+        selected = [row for row in rows
+                    if all(row.get(key) == value for key, value in self.filters.items())]
+        if self.bounds:
+            selected = selected[self.bounds[0]:self.bounds[1] + 1]
+        return SimpleNamespace(data=selected)
 
 
 class FakeDb:

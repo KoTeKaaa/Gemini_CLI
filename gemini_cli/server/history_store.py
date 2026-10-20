@@ -15,7 +15,14 @@ class HistoryStore:
 
     def read(self, chat_id):
         self.metadata(chat_id)
-        return self.db.table("messages").select("*").eq("chat_id", chat_id).order("sequence").execute().data
+        rows, offset = [], 0
+        while True:
+            page = self.db.table("messages").select("*").eq("chat_id", chat_id).order(
+                "sequence").range(offset, offset + 499).execute().data
+            if not page:
+                return rows
+            rows.extend(page)
+            offset += len(page)
 
     def append(self, chat_id, rows, *, turn_id=None, request_id=None, start=0, status="running"):
         self.metadata(chat_id)

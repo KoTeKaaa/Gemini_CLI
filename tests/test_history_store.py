@@ -28,3 +28,11 @@ class HistoryStoreTests(unittest.TestCase):
         with self.assertRaises(LookupError):
             HistoryStore(db, "owner").append("foreign", [{"role": "user", "content": "x"}])
         db.rpc.assert_not_called()
+
+    def test_read_paginates_past_supabase_default_row_limit(self):
+        from tests.test_chat_stream_ownership import FakeDb
+        db = FakeDb()
+        db.messages = [{"chat_id": "own", "sequence": i, "content": str(i)} for i in range(1237)]
+        rows = HistoryStore(db, "user-a").read("own")
+        self.assertEqual(len(rows), 1237)
+        self.assertEqual(rows[-1]["sequence"], 1236)
