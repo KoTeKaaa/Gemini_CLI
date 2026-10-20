@@ -426,30 +426,40 @@ HTTPS и порт **9443**. Для локального HTTP-сервера ис
 ```
 
 Скрипт создаёт отдельное окружение `.venv-win`, устанавливает зависимости обоих режимов
-и PyInstaller. Файл находится в `dist\gemini-cli.exe`. Автоматические Windows-сборки
-и Windows-проверки временно приостановлены. Ручная сборка остаётся доступна,
-но текущие изменения не подтверждены запуском на Windows.
+и PyInstaller. Файл находится в `dist\gemini-cli.exe`. CI собирает Windows x64
+на Python 3.12, проверяет клиент и автономный запуск готового `.exe`.
 
-### 🚀 Готовый релиз для Linux
+### 🚀 Готовый релиз для Linux и Windows
 
 В [последнем релизе](https://github.com/KoTeKaaa/Gemini_CLI/releases/latest) доступны
-`gemini-cli-linux-x64` и `SHA256SUMS`. Linux x64 собирается на Ubuntu 22.04 и
-включает оба режима — отдельная установка Python для готового файла не нужна.
-Скачайте оба файла в одну папку, проверьте сумму и запустите клиент:
+`gemini-cli-linux-x64`, `gemini-cli-windows-x64.exe` и `SHA256SUMS` с контрольными
+суммами обеих сборок. Они включают Local и Remote — отдельная установка Python
+для готового файла не нужна. Linux x64 собирается на Ubuntu 22.04.
+
+На Linux скачайте `gemini-cli-linux-x64` и `SHA256SUMS` в одну папку:
 
 ```bash
-sha256sum -c SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
 chmod +x gemini-cli-linux-x64
 ./gemini-cli-linux-x64
+```
+
+На Windows скачайте `gemini-cli-windows-x64.exe` и `SHA256SUMS` в одну папку,
+откройте в ней PowerShell, проверьте сумму и запустите клиент:
+
+```powershell
+$expected = (Select-String -Path .\SHA256SUMS -Pattern '  gemini-cli-windows-x64\.exe$').Line.Split(' ')[0]
+$actual = (Get-FileHash .\gemini-cli-windows-x64.exe -Algorithm SHA256).Hash
+if ($actual -ne $expected) { throw 'SHA256 mismatch' }
+.\gemini-cli-windows-x64.exe
 ```
 
 При первом запуске выберите Local с личным Gemini API key или Remote с адресом
 своего сервера. Изменить выбор можно через `/settings`.
 
 Workflow `Build and publish release` публикует файлы по тегу `v*` только после
-проверки автономного запуска с временным профилем. Windows-сборки и их CI-проверки
-временно приостановлены: новый `.exe` в этом релизе не публикуется. Запуск Windows
-из исходников и ручная сборка описаны выше.
+успешных сборок и проверок автономного запуска обеих платформ с временным профилем.
+Запуск из исходников и собственная сборка описаны выше.
 
 ---
 
@@ -480,11 +490,9 @@ Workflow `Build and publish release` публикует файлы по тегу
 python -B -m unittest discover -s tests -p test_package_import.py -v
 ```
 
-В релизном workflow эта же команда выполняется на Linux с Python 3.12 без
-установки зависимостей. CI собирает Linux-клиент и проверяет автономный запуск
-с временным профилем без серверных ключей. Задания `package-import` и `build`
-на Windows в workflow `Build Windows client` временно отключены; Linux-проверки
-этого workflow продолжают выполняться.
+В CI эта же команда выполняется без установки зависимостей. Клиент собирается
+для Linux и Windows; обе сборки проходят проверку автономного запуска с временным
+профилем без серверных ключей. Windows-проверки используют Python 3.12.
 
 Остальные проверки в настроенном окружении:
 
@@ -505,5 +513,5 @@ bash tests/test_deploy_install.sh
 ## Автодеплой после dev → main
 
 [Настройка и эксплуатация](docs/auto-deploy.md): сервер сам забирает точный коммит main
-после успешной регрессии и обязательных проверок клиента (сейчас Linux). Существующий серверный env сохраняется;
+после успешной регрессии и обязательных проверок клиента на Linux и Windows. Существующий серверный env сохраняется;
 при сбое проверки новой версии выполняется откат. Ключи VPS и провайдеров в GitHub не передаются.
