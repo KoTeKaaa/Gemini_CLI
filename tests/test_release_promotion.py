@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+import shutil
 import tempfile
 import unittest
 from unittest.mock import Mock
@@ -55,6 +57,7 @@ class ReleasePromotionTest(unittest.TestCase):
             self.assertEqual(Path(config['env']).read_bytes(), b'API_KEY=rotated-by-owner\n')
             self.assertFalse(Path(config['override']).exists())
 
+    @unittest.skipUnless(os.name == "posix", "Release promotion requires Linux runuser")
     def test_staging_under_private_umask_keeps_runtime_readable(self):
         import io
         import os
@@ -65,7 +68,30 @@ class ReleasePromotionTest(unittest.TestCase):
             state = Path(root) / 'state'; state.mkdir()
             config = dict(state=str(state), releases=str(Path(root) / 'releases'),
                           repository='owner/repo', user='gemini-cli')
+            # Model the VPS layout: runuser exists in sbin, not in bin.
+            tools = state / 'tools'
+            (tools / 'sbin').mkdir(parents=True)
+            (tools / 'bin').mkdir()
+            runuser = tools / 'sbin/runuser'
+            runuser.write_text('#!/bin/sh\nexit 0\n')
+            runuser.chmod(0o755)
+            pip_calls = []
             def command(args, **kwargs):
+                if args[0] == 'runuser':
+                    environment = kwargs['env']
+                    # subprocess resolves runuser using this exact clean env,
+                    # before it can drop privileges and launch the venv Python.
+                    fixture_path = os.pathsep.join(str(tools / Path(folder).name)
+                                                   for folder in environment['PATH'].split(os.pathsep))
+                    resolved = shutil.which(args[0], path=fixture_path)
+                    self.assertIsNotNone(resolved, 'Sanitized PATH must resolve runuser')
+                    self.assertEqual(Path(resolved), runuser)
+                    self.assertTrue(os.access(resolved, os.X_OK))
+                    self.assertEqual(args[:4], ['runuser', '-u', config['user'], '--'])
+                    self.assertEqual(set(environment), {'PATH', 'LANG', 'PYTHONDONTWRITEBYTECODE'})
+                    self.assertNotIn('/untrusted/operator/bin', environment['PATH'].split(os.pathsep))
+                    self.assertNotIn('PRIVATE_FIXTURE', str(environment))
+                    pip_calls.append(args)
                 if 'archive' in args:
                     output = next(value.split('=', 1)[1] for value in args if value.startswith('--output='))
                     with tarfile.open(output, 'w') as bundle:
@@ -74,11 +100,16 @@ class ReleasePromotionTest(unittest.TestCase):
                             bundle.addfile(info, io.BytesIO(b'\n'))
             previous = os.umask(0o077)
             try:
-                with patch('deploy.promote.command', side_effect=command), \
+                with patch.dict(os.environ, {'PATH': '/untrusted/operator/bin',
+                                             'API_KEY': 'PRIVATE_FIXTURE', 'PIP_INDEX_URL': 'PRIVATE_FIXTURE'}), \
+                     patch('deploy.promote.command', side_effect=command), \
                      patch('deploy.promote.subprocess.check_output', return_value=b'a' * 40):
                     release = prepare_release(config, 'a' * 40)
             finally:
                 os.umask(previous)
+            self.assertEqual(len(pip_calls), 2)
+            self.assertEqual(pip_calls[0][4:8], [str(release / '.venv/bin/python'), '-m', 'pip', 'install'])
+            self.assertEqual(pip_calls[1][4:], [str(release / '.venv/bin/python'), '-m', 'pip', 'check'])
             self.assertEqual(Path(config['releases']).stat().st_mode & 0o777, 0o755)
             self.assertEqual(release.stat().st_mode & 0o777, 0o755)
             self.assertEqual((release / 'requirements-server.txt').stat().st_mode & 0o777, 0o644)
