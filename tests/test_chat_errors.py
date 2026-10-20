@@ -22,12 +22,21 @@ class ChatErrorsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home}):
             cls.main = importlib.import_module("main")
 
+    def setUp(self):
+        # These tests isolate history/transport; subscription guards have HTTP tests.
+        guard = patch.object(self.server, "require_subscription", return_value={"features": list(self.server.TOOLS)})
+        guard.start()
+        self.addCleanup(guard.stop)
+        budget = patch.object(self.server, "reserve_request")
+        budget.start()
+        self.addCleanup(budget.stop)
+
     def test_failed_message_insert_reaches_stream_client(self):
         db = Mock()
         db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
             {"id": "chat-1"}
         ]
-        db.table.return_value.select.return_value.eq.return_value.order.return_value.execute.return_value.data = []
+        db.table.return_value.select.return_value.eq.return_value.order.return_value.range.return_value.execute.return_value.data = []
         db.table.return_value.insert.return_value.execute.side_effect = OSError("database unavailable")
         user = self.server.UserContext("user-1", db)
         model = SimpleNamespace(models=SimpleNamespace(
@@ -50,7 +59,7 @@ class ChatErrorsTest(unittest.TestCase):
         db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
             {"id": "chat-1"}
         ]
-        db.table.return_value.select.return_value.eq.return_value.order.return_value.execute.return_value.data = []
+        db.table.return_value.select.return_value.eq.return_value.order.return_value.range.return_value.execute.return_value.data = []
         db.table.return_value.insert.return_value.execute.side_effect = [
             SimpleNamespace(data=[{}]), OSError("database unavailable")
         ]
@@ -77,7 +86,7 @@ class ChatErrorsTest(unittest.TestCase):
                 db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
                     {"id": "chat-1"}
                 ]
-                db.table.return_value.select.return_value.eq.return_value.order.return_value.execute.side_effect = OSError(
+                db.table.return_value.select.return_value.eq.return_value.order.return_value.range.return_value.execute.side_effect = OSError(
                     "history unavailable"
                 )
                 model = SimpleNamespace(models=SimpleNamespace(

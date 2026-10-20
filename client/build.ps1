@@ -9,7 +9,7 @@ if (-not (Test-Path $venvPython)) {
     if ($LASTEXITCODE -ne 0) { throw 'Cannot create the Windows virtual environment.' }
 }
 
-& $venvPython -m pip install -r (Join-Path $PSScriptRoot 'requirements.txt')
+& $venvPython -m pip install -r (Join-Path $PSScriptRoot 'requirements-local.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Cannot install client dependencies.' }
 & $venvPython -m pip install 'pyinstaller>=6.22,<7'
 if ($LASTEXITCODE -ne 0) { throw 'Cannot install PyInstaller.' }
@@ -18,6 +18,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Client dependencies are inconsistent.' }
 
 & $venvPython -m PyInstaller --noconfirm --clean --onefile `
     --name gemini-cli `
+    --hidden-import PIL.PngImagePlugin --hidden-import PIL.JpegImagePlugin --hidden-import PIL.WebPImagePlugin --hidden-import PIL.BmpImagePlugin --collect-all google.genai --collect-all trafilatura --collect-submodules keyring.backends `
     --distpath (Join-Path $projectDir 'dist') `
     --workpath (Join-Path $projectDir 'build') `
     --specpath (Join-Path $projectDir 'build') `

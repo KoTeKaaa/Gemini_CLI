@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 
 class CdCommandTest(unittest.TestCase):
@@ -33,7 +33,7 @@ class CdCommandTest(unittest.TestCase):
                   patch.object(self.app.console, "print") as printed,
                   patch("builtins.input", side_effect=AssertionError("unexpected prompt"))):
                 session.return_value.prompt.side_effect = commands
-                self.app.main()
+                self.app.main(backend=Mock(mode="remote"))
 
             output = "\n".join(str(call.args[0]) for call in printed.call_args_list)
             for directory in (root / "first", nested, absolute, absolute / "child"):

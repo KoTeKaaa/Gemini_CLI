@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Завершить приглашение аккаунта</h1>
+<p>Установите пароль для обычного входа в CLI. Подписка активируется отдельной ссылкой.</p>
+<form id="account-confirmation">
+  <label>Новый пароль<input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></label>
+  <button type="submit">Установить пароль</button>
+</form>
+{% endblock %}

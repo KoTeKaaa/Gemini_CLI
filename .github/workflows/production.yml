@@ -1,0 +1,54 @@
+name: Verify production release
+
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: production-checks-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install complete test dependencies
+        run: python -m pip install -r requirements.txt httpx
+      - name: Check dependency consistency
+        run: python -m pip check
+      - name: Regression tests
+        run: python -B -m unittest discover -s tests -p 'test_*.py' -q
+      - name: Deployment preflight
+        run: bash tests/test_deploy_install.sh
+      - name: Whitespace check
+        run: git diff-tree --check HEAD
+      - name: Require a merged dev PR for production
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq \
+            '.[] | select(.merged_at != null and .base.ref == "main" and .head.ref == "dev" and .head.repo.full_name == .base.repo.full_name) | .number' > "$RUNNER_TEMP/production-origin"
+          test -s "$RUNNER_TEMP/production-origin" || { echo 'Production requires a merged dev -> main PR'; exit 1; }
+
+  clients:
+    uses: ./.github/workflows/windows-client.yml
+
+  production-ready:
+    needs: [tests, clients]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: All required checks passed for this revision
+        run: echo 'Release checks passed; the server independently verifies main and merge origin before deployment.'

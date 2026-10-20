@@ -13,6 +13,10 @@ cat > "$temp_dir/server.env" <<'EOF'
 API_KEY=test-key
 SUPABASE_URL=https://example.supabase.co
 SUPABASE_ANON_KEY=test-anon-key
+SUPABASE_SERVICE_ROLE_KEY=test-service-key
+ADMIN_USER_ID=00000000-0000-0000-0000-000000000001
+ADMIN_ORIGIN=https://127.0.0.1:9444
+ADMIN_SESSION_SECRET=0123456789abcdef0123456789abcdef
 TEST_USER_PASSWORD=must-not-be-copied
 EOF
 
@@ -20,6 +24,12 @@ args=(--check --host 127.0.0.1 --cert-file "$temp_dir/fullchain.pem"
       --key-file "$temp_dir/key.pem" --env-file "$temp_dir/server.env")
 "$project_dir/deploy/install.sh" "${args[@]}" | grep -q 'Checks passed'
 "$project_dir/deploy/install.sh" "${args[@]}" --cert-mode existing | grep -q 'Checks passed'
+if "$project_dir/deploy/install.sh" "${args[@]}" --panel-port 9443 >/dev/null 2>&1; then
+    echo 'Conflicting panel port accepted' >&2; exit 1
+fi
+if "$project_dir/deploy/install.sh" "${args[@]}" --panel-port 9445 >/dev/null 2>&1; then
+    echo 'Panel origin mismatch accepted' >&2; exit 1
+fi
 
 if "$project_dir/deploy/install.sh" --check --cert-mode issue --host 127.0.0.1 \
     --env-file "$temp_dir/server.env" >/dev/null 2>&1; then

@@ -15,6 +15,8 @@ def check(executable: Path) -> None:
         config.mkdir()
         (config / "server_config.json").write_text(
             json.dumps({"server_url": "http://localhost:9"}), encoding="utf-8")
+        (config / "settings.json").write_text(
+            json.dumps({"mode": "remote", "remote_origin": "http://localhost:9"}), encoding="utf-8")
         (config / "session.json").write_text(
             json.dumps({"access_token": "smoke-fixture-token"}), encoding="utf-8")
         environment = os.environ.copy()

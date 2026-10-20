@@ -18,6 +18,12 @@ class MixedToolsTest(unittest.TestCase):
             "SUPABASE_ANON_KEY": "test-anon-key", "TAVILY_API_KEY": "fixture",
         }):
             main, server = importlib.import_module("main"), importlib.import_module("server")
+            guard = patch.object(server, "require_subscription", return_value={"features": list(server.TOOLS)})
+            guard.start()
+            self.addCleanup(guard.stop)
+            budget = patch.object(server, "reserve_request")
+            budget.start()
+            self.addCleanup(budget.stop)
             path = Path(root) / "file.txt"
             path.write_text("PRIVATE-OLD\n")
             db = fixtures.FakeDb()
@@ -51,7 +57,7 @@ class MixedToolsTest(unittest.TestCase):
                   patch.object(main, "handle_execute_command", side_effect=OSError("PRIVATE-ERROR")),
                   patch.object(main.requests, "post", side_effect=post)):
                 for _ in range(3):
-                    payload = main.build_stream_payload(history, "chat-1", "fixture", False, turn)
+                    payload = main.build_stream_payload(history, "chat-1", "gemini-3.5-flash-lite", False, turn)
                     response = server.stream_chat(server.StreamChatPayload(**payload), user)
                     events = list(main.iter_stream_events(SimpleNamespace(iter_lines=lambda: response.body_iterator)))
                     calls = [event for event in events if event["type"] == "tool_call"]

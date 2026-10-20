@@ -39,6 +39,15 @@ class EventLoopTest(unittest.TestCase):
         }):
             cls.server = importlib.import_module("server")
 
+    def setUp(self):
+        # These tests isolate history/transport; subscription guards have HTTP tests.
+        guard = patch.object(self.server, "require_subscription", return_value={"features": list(self.server.TOOLS)})
+        guard.start()
+        self.addCleanup(guard.stop)
+        budget = patch.object(self.server, "reserve_request")
+        budget.start()
+        self.addCleanup(budget.stop)
+
     def test_stream_completes_while_chat_query_is_slow(self):
         server = self.server
         for handler in (server.get_current_user, server.get_chats,

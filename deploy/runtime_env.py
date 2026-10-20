@@ -5,7 +5,8 @@ from pathlib import Path
 
 REQUIRED = ("API_KEY", "SUPABASE_URL", "SUPABASE_ANON_KEY")
 OPTIONAL = ("TAVILY_API_KEY", "SEARCH_PER_MINUTE", "READ_PER_MINUTE", "WEB_TIMEOUT_SECONDS",
-            "WEB_MAX_BYTES", "WEB_MAX_CHARS", "WEB_MAX_REDIRECTS")
+            "WEB_MAX_BYTES", "WEB_MAX_CHARS", "WEB_MAX_REDIRECTS", "SUPABASE_SERVICE_ROLE_KEY",
+            "ADMIN_USER_ID", "ADMIN_ORIGIN", "ADMIN_SESSION_SECRET")
 
 
 def build_environment(source: Path, destination: Path) -> None:

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
+from google.genai import types
 
 
 class FakeQuery:
@@ -16,6 +17,7 @@ class FakeQuery:
         self.table = table
         self.filters = {}
         self.row = None
+        self.bounds = None
 
     def select(self, *_args):
         return self
@@ -27,6 +29,10 @@ class FakeQuery:
     def order(self, *_args, **_kwargs):
         return self
 
+    def range(self, start, end):
+        self.bounds = (start, end)
+        return self
+
     def insert(self, row):
         self.row = row
         return self
@@ -36,10 +42,11 @@ class FakeQuery:
             self.db.messages.append(self.row)
             return SimpleNamespace(data=[self.row])
         rows = self.db.chats if self.table == "chats" else self.db.messages
-        return SimpleNamespace(data=[
-            row for row in rows
-            if all(row.get(key) == value for key, value in self.filters.items())
-        ])
+        selected = [row for row in rows
+                    if all(row.get(key) == value for key, value in self.filters.items())]
+        if self.bounds:
+            selected = selected[self.bounds[0]:self.bounds[1] + 1]
+        return SimpleNamespace(data=selected)
 
 
 class FakeDb:
@@ -62,6 +69,23 @@ class ToolContinuationTest(unittest.TestCase):
         }):
             cls.main = importlib.import_module("main")
             cls.server = importlib.import_module("server")
+
+    def setUp(self):
+        # These tests isolate history/transport; subscription guards have HTTP tests.
+        guard = patch.object(self.server, "require_subscription", return_value={"features": list(self.server.TOOLS)})
+        guard.start()
+        self.addCleanup(guard.stop)
+        budget = patch.object(self.server, "reserve_request")
+        budget.start()
+        self.addCleanup(budget.stop)
+
+    def test_legacy_history_is_not_silently_truncated_on_resume(self):
+        db = FakeDb()
+        db.messages = [{"chat_id": "chat-1", "role": "user", "content": "x" * 40000}]
+        db.messages += [{"chat_id": "chat-1", "role": "user", "content": str(index)} for index in range(24)]
+        result = self.server.build_history_from_db(db, "chat-1")
+        self.assertEqual(len(result), 25)
+        self.assertIn("x" * 40000, str(result))
 
     def test_request_tool_result_answer_has_one_original_request(self):
         for temporary in (False, True):
@@ -87,7 +111,7 @@ class ToolContinuationTest(unittest.TestCase):
                     self.server, "StreamingResponse",
                     side_effect=lambda generator, **_kwargs: SimpleNamespace(body_iterator=generator),
                 ):
-                    first = self.main.build_stream_payload(history, chat_id, "test-model", temporary)
+                    first = self.main.build_stream_payload(history, chat_id, "gemini-3.5-flash-lite", temporary)
                     self.assertFalse(first["continue_after_tool"])
                     response = self.send(first, user)
                     self.assertIn(b'"tool_call"', b"".join(response.body_iterator))
@@ -98,7 +122,7 @@ class ToolContinuationTest(unittest.TestCase):
                         {"role": "tool", "content": '{"output":"/work"}',
                          "name": "execute_command"},
                     ])
-                    second = self.main.build_stream_payload(history, chat_id, "test-model", temporary)
+                    second = self.main.build_stream_payload(history, chat_id, "gemini-3.5-flash-lite", temporary)
                     self.assertTrue(second["continue_after_tool"])
                     self.assertEqual(second["message"], "")
                     response = self.send(second, user)
@@ -156,7 +180,7 @@ class ToolContinuationTest(unittest.TestCase):
             # A reopened client has no local copy of the older exchange.
             history = [{"role": "user", "content": "Run pwd"}]
             response = self.send(
-                self.main.build_stream_payload(history, "chat-1", "test-model", False), user
+                self.main.build_stream_payload(history, "chat-1", "gemini-3.5-flash-lite", False), user
             )
             list(response.body_iterator)
             history.extend([
@@ -166,7 +190,7 @@ class ToolContinuationTest(unittest.TestCase):
                  "name": "execute_command"},
             ])
             response = self.send(
-                self.main.build_stream_payload(history, "chat-1", "test-model", False), user
+                self.main.build_stream_payload(history, "chat-1", "gemini-3.5-flash-lite", False), user
             )
             list(response.body_iterator)
 
@@ -205,7 +229,7 @@ class ToolContinuationTest(unittest.TestCase):
                 ), patch.object(self.main, "handle_execute_command", side_effect=[
                     '{"output":"/work"}', '{"output":"today"}'
                 ]) as execute:
-                    first = self.main.build_stream_payload(history, chat_id, "test-model", temporary)
+                    first = self.main.build_stream_payload(history, chat_id, "gemini-3.5-flash-lite", temporary)
                     response = self.send(first, user)
                     stream = SimpleNamespace(iter_lines=lambda: response.body_iterator)
                     events = list(self.main.iter_stream_events(stream))
@@ -213,7 +237,7 @@ class ToolContinuationTest(unittest.TestCase):
                     self.assertEqual([call["call_id"] for call in calls], ["call-1", "call-2"])
                     self.main.execute_tool_calls(calls, history, "/work")
                     self.assertEqual(execute.call_count, 2)
-                    second = self.main.build_stream_payload(history, chat_id, "test-model", temporary)
+                    second = self.main.build_stream_payload(history, chat_id, "gemini-3.5-flash-lite", temporary)
                     response = self.send(second, user)
                     self.assertIn(b"Both done", b"".join(response.body_iterator))
 
@@ -242,13 +266,13 @@ class ToolContinuationTest(unittest.TestCase):
         def generate_content_stream(**kwargs):
             seen_contents.append(kwargs["contents"])
             if len(seen_contents) == 1:
-                part = self.server.types.Part(
-                    function_call=self.server.types.FunctionCall(
+                part = types.Part(
+                    function_call=types.FunctionCall(
                         name="execute_command", args={"command": "pwd"}, id="call-1"),
                     thought_signature=signature,
                 )
                 yield SimpleNamespace(candidates=[SimpleNamespace(
-                    content=self.server.types.Content(role="model", parts=[part])
+                    content=types.Content(role="model", parts=[part])
                 )], function_calls=[part.function_call], text=None)
             else:
                 yield SimpleNamespace(function_calls=None, text="Done")
@@ -304,7 +328,7 @@ class ToolContinuationTest(unittest.TestCase):
                     "args": {"command": "fixture"}, "call_id": "final-call"},
                    {"role": "tool", "name": "execute_command", "content": '{"stdout":"final result"}',
                     "call_id": "final-call"}]
-        payload = self.main.build_stream_payload(history, "chat-1", "fixture", False, end_tool_turn=True)
+        payload = self.main.build_stream_payload(history, "chat-1", "gemini-3.5-flash-lite", False, end_tool_turn=True)
         self.assertEqual(payload["supported_tools"], [])
         generate = Mock(side_effect=AssertionError("Unexpected model call"))
         model = SimpleNamespace(models=SimpleNamespace(generate_content_stream=generate))
@@ -354,7 +378,7 @@ class ToolContinuationTest(unittest.TestCase):
             side_effect=lambda generator, **_kwargs: SimpleNamespace(body_iterator=generator),
         ):
             response = self.send({
-                "chat_id": "chat-1", "message": "What happened?", "model_name": "test-model"
+                "chat_id": "chat-1", "message": "What happened?", "model_name": "gemini-3.5-flash-lite"
             }, user)
             self.assertIn(b"Next answer", b"".join(response.body_iterator))
 
@@ -397,13 +421,13 @@ class ToolContinuationTest(unittest.TestCase):
             self.server, "StreamingResponse",
             side_effect=lambda generator, **_kwargs: SimpleNamespace(body_iterator=generator),
         ), patch.object(self.main.console, "print"), patch("builtins.input", return_value="y"):
-            first = self.send(self.main.build_stream_payload(history, "chat-1", "test-model", False), user)
+            first = self.send(self.main.build_stream_payload(history, "chat-1", "gemini-3.5-flash-lite", False), user)
             events = list(self.main.iter_stream_events(
                 SimpleNamespace(iter_lines=lambda: first.body_iterator)
             ))
             self.main.execute_tool_calls([event for event in events if event["type"] == "tool_call"],
                                          history, workspace.name)
-            second = self.send(self.main.build_stream_payload(history, "chat-1", "test-model", False), user)
+            second = self.send(self.main.build_stream_payload(history, "chat-1", "gemini-3.5-flash-lite", False), user)
             list(second.body_iterator)
 
         response = seen_contents[1][-1].parts[0].function_response

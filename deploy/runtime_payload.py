@@ -35,18 +35,24 @@ def install_runtime(source: Path, destination: Path) -> None:
         for directory, subdirs, files in os.walk(
                 package, followlinks=False, onerror=abort_walk):
             current = Path(directory)
+            relative = current.relative_to(package)
             subdirs[:] = [
                 name for name in subdirs
                 if name.isidentifier() and name not in {"tests", "__pycache__"}
                 and not (current / name).is_symlink()
+                and not (relative == Path(".") and name == "client")
+                and not (relative == Path("tools") and name == "local")
             ]
-            relative = current.relative_to(package)
             output = staged_package / relative
             output.mkdir(parents=True, exist_ok=True)
             output.chmod(0o755)
             for name in files:
                 module = current / name
-                if (module.suffix != ".py" or not module.stem.isidentifier()
+                if relative == Path("backends") and name not in {"__init__.py", "genai.py", "model_info.py"}:
+                    continue
+                panel_asset = (relative.as_posix() in {"server/admin/templates", "server/admin/static"}
+                               and module.suffix in {".html", ".css", ".js"})
+                if ((module.suffix != ".py" and not panel_asset) or not module.stem.isidentifier()
                         or name.startswith("test_") or name.endswith("_test.py")
                         or name == "conftest.py" or module.is_symlink()
                         or not module.is_file()):

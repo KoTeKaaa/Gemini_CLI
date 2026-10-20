@@ -2,7 +2,7 @@ name: Build Windows client
 
 on:
   push:
-    branches: [dev]
+    branches: [dev, 'feature/**']
   workflow_dispatch:
   workflow_call:
 
@@ -10,6 +10,29 @@ permissions:
   contents: read
 
 jobs:
+  linux-input:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.10'
+      - name: Install standalone client dependencies
+        run: python -m pip install -r client/requirements-local.txt
+      - name: Check input and image contracts
+        run: python -B -m unittest tests.test_backend_imports tests.test_clipboard tests.test_clipboard_linux tests.test_clipboard_windows tests.test_draft tests.test_draft_input tests.test_large_paste tests.test_input_completion tests.test_file_attachment tests.test_workspace_snapshot tests.test_image_preview tests.test_text_editor tests.test_input_regressions tests.test_images_contract tests.test_manual_shell tests.test_shell_pty tests.test_work_input_pty tests.test_term_command tests.test_managed_process tests.test_windows_job tests.test_turn_state tests.test_stream_cancel tests.test_remote_http_cancel tests.test_remote_work_auth tests.test_work_input tests.test_work_view tests.test_execution_steps tests.test_runtime_history -q
+      - name: Check S4 context and recovery contracts
+        run: python -B -m unittest tests.test_context_selection tests.test_context_info tests.test_compaction tests.test_chat_buffers tests.test_local_chats tests.test_local_chats_v2 tests.test_local_chat_state tests.test_local_fork tests.test_local_summary_cancel tests.test_local_recovery_backend tests.test_local_history_apis tests.test_ui_context tests.test_stream_display tests.test_profiles -q
+      - name: Build and check Linux executable
+        run: |
+          ./client/build.sh
+          python client/check_executable.py dist/gemini-cli
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gemini-cli-linux-x64-preview
+          path: dist/gemini-cli
+          if-no-files-found: error
+
   package-import:
     runs-on: windows-latest
     steps:
@@ -32,6 +55,12 @@ jobs:
       - name: Build executable
         shell: pwsh
         run: ./client/build.ps1
+      - name: Check input and image contracts
+        shell: pwsh
+        run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_backend_imports tests.test_clipboard tests.test_clipboard_windows tests.test_draft tests.test_draft_input tests.test_large_paste tests.test_input_completion tests.test_file_attachment tests.test_workspace_snapshot tests.test_image_preview tests.test_text_editor tests.test_input_regressions tests.test_images_contract tests.test_manual_shell tests.test_shell_pty tests.test_work_input_pty tests.test_term_command tests.test_managed_process tests.test_windows_job tests.test_turn_state tests.test_stream_cancel tests.test_remote_http_cancel tests.test_remote_work_auth tests.test_work_input tests.test_work_view tests.test_execution_steps tests.test_runtime_history -q
+      - name: Check S4 context and recovery contracts
+        shell: pwsh
+        run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_context_selection tests.test_context_info tests.test_compaction tests.test_chat_buffers tests.test_local_chats tests.test_local_chats_v2 tests.test_local_chat_state tests.test_local_fork tests.test_local_summary_cancel tests.test_local_recovery_backend tests.test_local_history_apis tests.test_ui_context tests.test_stream_display tests.test_profiles -q
       - name: Check executable
         shell: pwsh
         run: |
