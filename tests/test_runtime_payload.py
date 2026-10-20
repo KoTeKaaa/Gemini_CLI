@@ -57,6 +57,36 @@ class RuntimePayloadTest(unittest.TestCase):
         self.assertEqual((self.destination / "gemini_cli/server/routes.py")
                          .read_text(encoding="utf-8"), "value = 1\n")
 
+    def test_actual_server_payload_imports_without_client_code_or_network(self):
+        repository = Path(__file__).resolve().parents[1]
+        install_runtime(repository, self.destination)
+        self.assertTrue((self.destination / "gemini_cli/backends/model_info.py").is_file())
+        self.assertFalse((self.destination / "gemini_cli/client").exists())
+        self.assertFalse((self.destination / "gemini_cli/backends/remote.py").exists())
+        smoke = """
+import pathlib
+import sys
+def deny_network(event, args):
+    if event in {'socket.connect', 'socket.getaddrinfo', 'socket.sendto'}:
+        raise AssertionError('Payload import attempted network access')
+sys.addaudithook(deny_network)
+sys.path.insert(0, sys.argv[1])
+import server
+assert pathlib.Path(server.__file__).resolve() == pathlib.Path(sys.argv[1]) / 'server.py'
+assert not any(name == 'gemini_cli.client' or name.startswith('gemini_cli.client.') for name in sys.modules)
+assert {'/chat/context', '/chat/compact', '/chat/summary'} <= {getattr(route, 'path', None) for route in server.app.routes}
+assert server.deployment_health()['status'] == 'ok'
+server.client.close()
+"""
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", "-c", smoke, str(self.destination)],
+            cwd=self.destination, capture_output=True, text=True, timeout=20,
+            env={"API_KEY": "fixture", "SUPABASE_URL": "https://example.supabase.co",
+                 "SUPABASE_ANON_KEY": "fixture", "ADMIN_SESSION_SECRET": "fixture",
+                 "HOME": str(self.root), "PYTHON_DOTENV_DISABLED": "1"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_only_declared_panel_asset_locations_are_copied(self):
         for name in ("gemini_cli/server/admin/templates/login.html", "gemini_cli/server/admin/static/panel.js",
                      "gemini_cli/server/admin/static/panel.css"):

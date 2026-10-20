@@ -1,32 +1,35 @@
+from gemini_cli.runtime.history import trim_history
 from gemini_cli.client.file_attachment import attach_file
 from gemini_cli.client.completion import InputCompleter
-from gemini_cli.client.input import DraftInput, result_panel
+from gemini_cli.client.input import DraftInput, result_panel, safe_label
 from prompt_toolkit.key_binding import merge_key_bindings
 from gemini_cli.client.draft import Draft
+from gemini_cli.client.chat_buffers import ChatBuffers, filter_chats
 from gemini_cli.client.shell import launch_shell
 from gemini_cli.client.work_input import WorkInput
 from gemini_cli.client.work_view import WorkView
 from gemini_cli.protocol.images import encode_images
-from gemini_cli.runtime.attachments import attachment_text, bound_image_history
+from gemini_cli.runtime.attachments import attachment_text, bound_image_history, restore_images, MARKER
 import os
 import sys
 import json
 import ipaddress
 import tempfile
+from uuid import uuid4
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 from urllib.parse import urlsplit
 
 import requests
 from gemini_cli.backends.base import Backend, StreamResult
-from gemini_cli.runtime.history import trim_history
+from gemini_cli.runtime.compaction import should_auto_compact, completed_boundaries
 from gemini_cli.runtime.turn import TurnState
 from gemini_cli.backends.cancellation import open_stream, run_cancellable
 from gemini_cli.client.settings import Settings, backend_identity
 from gemini_cli.protocol.limits import TOOLS_HISTORY_THRESHOLD, TOOLS_WIRE_THRESHOLD
 from gemini_cli.backends.remote import RemoteBackend, events_from_response as iter_stream_events
 from prompt_toolkit import PromptSession
-from prompt_toolkit.shortcuts import radiolist_dialog
+from prompt_toolkit.shortcuts import radiolist_dialog, yes_no_dialog
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit import HTML
@@ -301,42 +304,147 @@ def settings_controller():
         notify=lambda message: console.print(Text(message)))
 
 
-def show_chat_menu(client: Backend) -> Optional[tuple[Optional[str], bool]]:
+def show_chat_menu(client: Backend, current_id=None, recent_ids=(), query="") -> Optional[tuple[Optional[str], bool]]:
     db_chats = client.get_chats()
     if db_chats is None:
         return None
+    while True:
+        values = [("temporary", "Войти во временный чат"),
+                  ("new", "+ Создать новую комнату диалога"),
+                  ("search", "Поиск по названию…")]
+        for chat in filter_chats(db_chats, query, current_id, recent_ids):
+            marker = " · текущий" if chat["is_current"] else ""
+            values.append((chat["id"], f"Чат: {chat['title']} ({chat['created_at'][:10]}){marker}"))
+        result = radiolist_dialog(title="Выбор комнаты",
+            text=f"Поиск: {query}" if query else "Выберите чат для работы или создайте новый:",
+            values=values).run()
+        if result == "search":
+            query = input("Название чата (пусто — все): ").strip()
+            continue
+        if result is None:
+            return None
+        if result == "temporary":
+            return None, True
+        if result == "new":
+            title = input("Введите название нового чата: ").strip() or "Новый диалог"
+            new_chat = client.create_chat(title)
+            if new_chat:
+                return new_chat["id"], False
+            console.print(result_panel("Не удалось создать чат.", title="Чаты", error=True))
+            return None
+        return result, False
 
-    values = [
-        ("temporary", "Войти во временный чат"),
-        ("new", "+ Создать новую комнату диалога"),
-    ]
 
-    for c in db_chats:
-        values.append((c["id"], f"Чат: {c['title']} ({c['created_at'][:10]})"))
+def context_wire_history(history, summary=None, *, strict=True):
+    """Retain the archive, transmitting only its represented boundary and tail."""
+    if summary and summary.get("boundary_id"):
+        index = next((i for i, row in enumerate(history)
+                      if row.get("id") == summary["boundary_id"]), None)
+        if index is None:
+            if strict:
+                raise ValueError("Граница сводки отсутствует в контексте. Сжатие нужно повторить.")
+        else:
+            history = history[index:]
+    return history
 
-    result = radiolist_dialog(
-        title="Выбор комнаты",
-        text="Выберите чат для работы или создайте новый:",
-        values=values,
-    ).run()
 
-    if result is None:
+def inspect_context(client, payload):
+    state = TurnState()
+    state.view = WorkView(console, state)
+    try:
+        with state.view.monitor():
+            return run_cancellable(lambda: client.context_info(payload), state)
+    finally:
+        state.finish()
+
+
+def context_payload(history, chat_id, model, summary=None):
+    history = context_wire_history(history, summary, strict=chat_id is None)
+    if chat_id is not None:
+        history = history[-1000:]  # Stored history remains authoritative and complete.
+    elif len(history) > 10000:
+        raise ValueError("Сжатие ограничено 10000 событиями; начните новый чат.")
+    payload = {"history": history, "chat_id": chat_id, "model_name": model}
+    if summary:
+        payload.update(summary=summary.get("summary"),
+                       summary_boundary=summary.get("boundary_id"))
+    return payload
+
+
+def compact_context(client, history, chat_id, model, summary=None, *, blocked_fingerprint=None):
+    """The worker returns a candidate; cancellation rejects late UI results."""
+    state = TurnState()
+    state.view = WorkView(console, state)
+    try:
+        payload = context_payload(history, chat_id, model, summary)
+        if blocked_fingerprint:
+            payload["blocked_fingerprint"] = blocked_fingerprint
+        with state.view.monitor():
+            result = run_cancellable(lambda: client.compact_chat(
+                payload,
+                cancelled=state.cancelled.is_set), state)
+        if state.cancelled.is_set():
+            raise InterruptedError("Сжатие отменено")
+        if not isinstance(result, dict):
+            raise ValueError("Backend не вернул результат сжатия")
+        if isinstance(client, RemoteBackend) and chat_id and result.get("reason") == "ready":
+            # WorkInput is already detached. A committed RPC cannot be cancelled.
+            console.print(result_panel("Сохраняю сводку. Дождитесь завершения.", title="Контекст"))
+            client.apply_compaction(payload, result)
+        return result
+    except InterruptedError:
+        return {"reason": "cancelled", "summary": None, "boundary_id": None}
+    finally:
+        state.finish()
+
+
+def failed_prompt_after(history, boundary_id):
+    index = next((i for i, row in enumerate(history)
+                  if (row.get("id") or row.get("event_id")) == boundary_id), None)
+    if index is None:
         return None
+    turns = []
+    for row in history[index + 1:]:
+        if row.get("role") == "user":
+            turns.append([])
+        if turns:
+            turns[-1].append(row)
+    for turn in reversed(turns):
+        if any(row.get("status") in {"failed", "cancelled"} for row in turn):
+            content = turn[0].get("content")
+            if isinstance(content, str):
+                text = content.rsplit(MARKER, 1)[0]
+                if text.strip():
+                    return text
+    return None
 
-    if result == "temporary":
-        return None, True
 
-    if result == "new":
-        title = input("Введите название нового чата: ").strip()
-        if not title:
-            title = "Новый диалог"
-        new_chat = client.create_chat(title)
-        if new_chat:
-            return new_chat["id"], False
-        console.print("[red]Не удалось создать чат. Переключаем во временный режим.[/red]")
-        return None, True
-
-    return result, False
+def fork_context(client, chat_id, title=""):
+    history = client.get_history(chat_id)
+    if not isinstance(history, list):
+        raise ValueError("История исходного чата недоступна")
+    boundaries = completed_boundaries(history)
+    if not boundaries:
+        raise ValueError("Нет завершённых ходов с достоверными идентификаторами для форка")
+    values = [(index, f"{index + 1}. {safe_label(row.get('content', ''))[:90]}")
+              for index, row in enumerate(boundaries)]
+    choice = radiolist_dialog(title="Граница форка", text="Включить историю до выбранного завершённого хода:",
+                              values=values, default=len(values) - 1).run()
+    if choice is None:
+        return None
+    title = title.strip() or input("Название нового чата: ").strip()
+    if not title:
+        return None
+    selected = boundaries[choice]
+    result = client.fork_chat(chat_id, title, selected.get("id") or selected.get("event_id"))
+    if not isinstance(result, dict) or not result.get("id"):
+        raise ValueError("Не удалось создать форк чата")
+    failed = failed_prompt_after(history, selected.get("id") or selected.get("event_id"))
+    if failed and yes_no_dialog(title="Восстановление запроса",
+            text="Вернуть текст последнего неудачного или отменённого запроса в черновик? "
+                 "Отправка останется ручной; вложения нужно прикрепить заново.").run():
+        result = {**result, "_restore_prompt": failed}
+    return result
 
 
 def show_model_selection_menu(current_model: str) -> str:
@@ -372,7 +480,17 @@ def show_model_selection_menu(current_model: str) -> str:
 
 def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
                          model_name: str, is_temporary: bool, turn: ToolTurn | None = None,
-                         *, end_tool_turn: bool = False) -> Dict[str, Any]:
+                         *, end_tool_turn: bool = False, summary=None) -> Dict[str, Any]:
+    history = context_wire_history(history, summary, strict=is_temporary)
+    if not is_temporary and len(history) > 1000:
+        if history[-1].get("role") == "tool":
+            start = next((i for i in range(len(history) - 1, -1, -1)
+                          if history[i].get("role") == "user"), 0)
+            if len(history) - start > 1000:
+                raise ValueError("Текущий ход превышает 1000 событий; продолжение остановлено.")
+        history = history[-1000:]
+    if not history or len(history) > 1000:
+        raise ValueError("Контекст пуст или превышает 1000 событий. Используйте /compact или новый чат.")
     continuing = bool(history and history[-1].get("role") == "tool")
     payload: Dict[str, Any] = {
         "message": "" if continuing else history[-1]["content"],
@@ -391,6 +509,8 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
         payload["history"] = history[:-1]
     if not continuing and history[-1].get("images"):
         payload["images"] = history[-1]["images"]
+    if summary:
+        payload.update(summary=summary.get("summary"), summary_boundary=summary.get("boundary_id"))
     text_payload = {key: value for key, value in payload.items() if key != "images"}
     if "history" in text_payload:
         text_payload["history"] = [{key: value for key, value in row.items() if key != "images"}
@@ -540,7 +660,52 @@ def main(backend: Backend | None = None):
                             style=my_style, bottom_toolbar=draft_input.status)
 
     temporary_history: List[Dict[str, str]] = []
-    states = {}
+    buffers, states, summary = ChatBuffers(), {}, None
+    auto_attempts = {}
+    buffers.visit(backend_identity(api_client), chat_id)
+    if not is_temporary:
+        try:
+            loaded = api_client.get_history(chat_id)
+            if isinstance(loaded, list):
+                temporary_history = loaded
+        except Exception:
+            console.print(result_panel("Не удалось загрузить историю. Backend продолжит постоянный чат; локальный просмотр пока недоступен.", title="Чаты", error=True))
+
+    def remember():
+        buffers.save(backend_identity(api_client), chat_id, temporary_history, draft, summary)
+
+    def load_buffer(client, target_id):
+        scope = backend_identity(client)
+        saved = buffers.restore(scope, target_id)
+        if saved is None:
+            history = [] if target_id is None else client.get_history(target_id)
+            if not isinstance(history, list):
+                raise ValueError("История чата недоступна; переключение отменено")
+            saved = {"history": history, "draft": Draft(), "summary": None}
+            buffers.visit(scope, target_id)
+        return saved
+
+    def apply_buffer(saved):
+        nonlocal temporary_history, draft, summary
+        temporary_history, draft, summary = saved["history"], saved["draft"], saved["summary"]
+        draft_input.draft = draft
+    def apply_summary(result):
+        nonlocal summary, temporary_history
+        text = result.get("summary")
+        if (result.get("reason") != "ready" or not isinstance(text, str)
+                or not text.strip() or len(text) > 8192 or not result.get("boundary_id")):
+            return False
+        summary = result
+        if not is_temporary:
+            try:
+                stored = api_client.get_history(chat_id)
+                if isinstance(stored, list):
+                    temporary_history = restore_images(stored, temporary_history)
+            except Exception:
+                pass  # Persisted summary is authoritative; keep the full live archive.
+        remember()
+        return True
+
     console.print(Text(f"Backend: {api_client.mode}"))
 
     while True:
@@ -600,6 +765,9 @@ def main(backend: Backend | None = None):
                 table.add_row("/model", "Сменить ИИ модель")
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")
                 table.add_row("/chat", "Сменить или создать комнату диалога")
+                table.add_row("/clear", "Очистить временный чат и его черновик; постоянный чат сохраняется")
+                table.add_row("/compact", "Сжать завершённые ходы в контекст; Esc отменяет")
+                table.add_row("/fork Новый вариант", "Создать отдельный чат до выбранного завершённого хода")
                 table.add_row("/delete", "Удалить текущий постоянный чат")
                 table.add_row("/cd {путь}", "Изменить текущую рабочую папку для Gemini")
                 table.add_row("/term", "Открыть оболочку; exit-to-cli возвращает в этот чат")
@@ -628,12 +796,18 @@ def main(backend: Backend | None = None):
                     continue
                 replacement = settings.configure(force=True)
                 if replacement is not None:
-                    states[backend_identity(api_client)] = (chat_id, is_temporary, temporary_history, current_model)
-                    draft.clear()
-                    api_client = replacement
-                    chat_id, is_temporary, temporary_history, current_model = states.get(
-                        backend_identity(api_client), (None, True, [], current_model))
-                    console.print(Text(f"Backend: {api_client.mode}; история профиля восстановлена"))
+                    remember()
+                    states[backend_identity(api_client)] = (chat_id, is_temporary, current_model)
+                    target_id, target_temporary, target_model = states.get(
+                        backend_identity(replacement), (None, True, current_model))
+                    try:
+                        saved = load_buffer(replacement, target_id)
+                    except ValueError as error:
+                        console.print(result_panel(str(error), title="Чаты", error=True))
+                        continue
+                    api_client, chat_id, is_temporary, current_model = replacement, target_id, target_temporary, target_model
+                    apply_buffer(saved)
+                    console.print(result_panel(f"Backend: {api_client.mode}; черновик и контекст восстановлены", title="Чаты"))
                 continue
 
             if first_line.startswith("/delete"):
@@ -647,8 +821,7 @@ def main(backend: Backend | None = None):
                         console.print("[green]Чат удалён. Переключаемся во временный режим.[/green]")
                         chat_id = None
                         is_temporary = True
-                        temporary_history = []
-                        draft.clear()
+                        apply_buffer(load_buffer(api_client, None))
                     else:
                         console.print("[red]Не удалось удалить чат.[/red]")
                 continue
@@ -658,16 +831,66 @@ def main(backend: Backend | None = None):
                 current_model = show_model_selection_menu(current_model)
                 continue
 
+            if first_line.split()[0] == "/compact":
+                if user_input.strip() != "/compact":
+                    console.print(result_panel("Использование: /compact (без аргументов).", title="Контекст", error=True))
+                    continue
+                try:
+                    result = compact_context(api_client, temporary_history, chat_id, current_model, summary)
+                    if apply_summary(result):
+                        auto_attempts.pop((backend_identity(api_client), chat_id), None)
+                        message = "Сводка обновлена. Полная история сохранена."
+                    else:
+                        message = {"cancelled": "Сжатие отменено. Контекст сохранён.",
+                                   "no_completed_boundary": "Недостаточно завершённых ходов для сжатия."}.get(
+                                       result.get("reason"), "Сжатие не выполнено. Контекст сохранён.")
+                    console.print(result_panel(message, title="Контекст", error=not bool(result.get("summary"))))
+                except Exception:
+                    console.print(result_panel("Не удалось сжать контекст. История сохранена.", title="Контекст", error=True))
+                continue
+
+            if first_line.split()[0] == "/fork":
+                if is_temporary:
+                    console.print(result_panel("/fork доступна только в постоянном чате.", title="Форк", error=True))
+                    continue
+                try:
+                    fork = fork_context(api_client, chat_id, first_line.partition(" ")[2])
+                    if fork:
+                        remember()
+                        saved = load_buffer(api_client, fork["id"])
+                        chat_id, is_temporary = fork["id"], False
+                        apply_buffer(saved)
+                        if fork.get("_restore_prompt"):
+                            draft.text = (draft.text + "\n\n" if draft.text else "") + fork["_restore_prompt"]
+                            remember()
+                        console.print(result_panel("Форк создан; история скопирована без повторного выполнения действий.", title="Форк"))
+                except Exception:
+                    console.print(result_panel("Не удалось открыть форк. Исходный чат и черновик сохранены.", title="Форк", error=True))
+                continue
+
+            if first_line.split()[0] == "/clear":
+                if first_line.strip() != "/clear" or not is_temporary:
+                    console.print(result_panel("/clear доступна без аргументов только во временном чате.", title="Контекст", error=True))
+                else:
+                    apply_buffer(buffers.clear_temporary(backend_identity(api_client)))
+                    console.print(result_panel("Временный контекст и черновик очищены.", title="Контекст"))
+                continue
+
             if first_line.startswith("/chat"):
-                selected_chat = show_chat_menu(api_client)
+                selected_chat = show_chat_menu(api_client, current_id=chat_id,
+                    recent_ids=buffers.recent_ids(backend_identity(api_client)))
                 if selected_chat is None:
                     continue
                 new_chat_id, new_is_temporary = selected_chat
                 if new_chat_id != chat_id or new_is_temporary != is_temporary:
-                    chat_id = new_chat_id
-                    is_temporary = new_is_temporary
-                    temporary_history = []
-                    draft.clear()
+                    remember()
+                    try:
+                        saved = load_buffer(api_client, new_chat_id)
+                    except ValueError as error:
+                        console.print(result_panel(str(error), title="Чаты", error=True))
+                        continue
+                    chat_id, is_temporary = new_chat_id, new_is_temporary
+                    apply_buffer(saved)
                     chat_mode = "ВРЕМЕННЫЙ" if is_temporary else "ПОСТОЯННЫЙ"
                     console.print(f"[yellow]Переключились на чат. Режим: {chat_mode}[/yellow]\n")
                 continue
@@ -710,20 +933,53 @@ def main(backend: Backend | None = None):
             except ValueError as error:
                 console.print(Text(str(error)))
                 continue
+            try:
+                preview = build_stream_payload(temporary_history + [row], chat_id, current_model, is_temporary, summary=summary)
+            except ValueError as error:
+                console.print(result_panel(str(error), title="Контекст", error=True))
+                continue
+            key = (backend_identity(api_client), chat_id)
+            marker = (current_model, tuple((event.get("id"), event.get("status")) for event in temporary_history),
+                      (summary or {}).get("boundary_id"))
+            previous = auto_attempts.get(key, (None, None))
+            if previous[0] != marker:
+                try:
+                    info = inspect_context(api_client, preview)
+                    if isinstance(info, dict) and should_auto_compact(info):
+                        result = compact_context(api_client, temporary_history, chat_id, current_model, summary,
+                                                 blocked_fingerprint=previous[1])
+                        if result.get("reason") == "cancelled":
+                            console.print(result_panel("Сжатие отменено. Сообщение не отправлено; черновик сохранён.", title="Контекст"))
+                            continue
+                        if apply_summary(result):
+                            auto_attempts.pop(key, None)
+                            console.print(result_panel("Контекст автоматически сжат; полная история сохранена.", title="Контекст"))
+                        else:
+                            auto_attempts[key] = (marker, result.get("fingerprint"))
+                            console.print(result_panel("Автосжатие не выполнено. Повтор той же попытки отключён; доступна /compact.", title="Контекст", error=True))
+                except InterruptedError:
+                    console.print(result_panel("Оценка отменена. Сообщение не отправлено; черновик сохранён.", title="Контекст"))
+                    continue
+                except Exception:
+                    pass  # Unavailable provider metadata must not invent model limits.
+            state = TurnState()
+            row.update(id=str(uuid4()), turn_id=state.turn_id, status="running")
             console.print("\n[bold cyan]Gemini:[/bold cyan]")
             temporary_history.append(row)
             bound_image_history(temporary_history)
 
-            state = TurnState()
             state.view = WorkView(console, state)
             turn = ToolTurn()
             tool_rounds = 0
             while True:
                 tool_rounds += 1
                 ending = tool_rounds > 12
-                temporary_history = trim_history(temporary_history, 20)
-                payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary, turn,
-                                               end_tool_turn=ending)
+                try:
+                    payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary, turn,
+                                                   end_tool_turn=ending, summary=summary)
+                except ValueError as error:
+                    console.print(result_panel(str(error), title="Контекст", error=True))
+                    break
                 payload = state.request(payload)
                 has_pending_tool = payload["continue_after_tool"]
 
@@ -746,7 +1002,8 @@ def main(backend: Backend | None = None):
                             console.print("[yellow]Сервер не поддерживает завершение цепочки инструментов.[/yellow]")
                             break
                         if full_response:
-                            temporary_history.append({"role": "model", "content": full_response})
+                            temporary_history.append({"role": "model", "content": full_response, "id": str(uuid4()),
+                                                  "turn_id": state.turn_id, "status": "running"})
                         execute_tool_calls(tool_calls_received, temporary_history, current_dir,
                                            turn=turn, api_client=api_client, state=state)
                         if state.cancelled.is_set():
@@ -756,7 +1013,8 @@ def main(backend: Backend | None = None):
 
                     if full_response:
                         console.rule(style="dim #4285F4")
-                        temporary_history.append({"role": "model", "content": full_response})
+                        temporary_history.append({"role": "model", "content": full_response, "id": str(uuid4()),
+                                                  "turn_id": state.turn_id, "status": "running"})
                         draft.clear()
                         state.finish()
                         break
@@ -779,6 +1037,10 @@ def main(backend: Backend | None = None):
                 console.print(Text("Ход отменён. Выполненные действия и расход квоты не откатываются. Черновик сохранён."))
             else:
                 state.finish("failed")
+            for event in temporary_history:
+                if event.get("turn_id") == state.turn_id:
+                    event["status"] = state.status
+            remember()
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Выход...[/yellow]")

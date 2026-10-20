@@ -67,6 +67,6 @@ class ServerLimitsTest(unittest.TestCase):
         from server import StreamChatPayload
         for payload in ({"message": "x" * 32769}, {"model_name": "forged"},
                         {"supported_tools": ["forged"]},
-                        {"history": [{"role": "user", "content": "x"}] * 101}):
+                        {"history": [{"role": "user", "content": "x"}] * 1001}):
             with self.subTest(payload=list(payload)), self.assertRaises(ValidationError):
                 StreamChatPayload(**payload)

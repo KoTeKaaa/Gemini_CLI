@@ -224,6 +224,48 @@ class RemoteBackend:
         except (requests.RequestException, ValueError):
             return failure("network", "Сетевая ошибка веб-инструмента; автоматического повтора нет")
 
+    def _history_request(self, path, payload=None):
+        method = self.transport.get if payload is None else self.transport.post
+        arguments = {} if payload is None else {"json": payload}
+        response = self._authorized_request(lambda: method(
+            f"{self.base_url}{path}", headers=self.headers, timeout=(10, 100),
+            allow_redirects=False, **arguments), interactive=False)
+        try:
+            if response.status_code == 404:
+                raise LookupError("Чат не найден или сервер не поддерживает историю S4")
+            if response.status_code != 200:
+                raise ValueError(f"Операция с историей отклонена ({response.status_code})")
+            return response.json()
+        finally:
+            response.close()
+
+    def get_history(self, chat_id):
+        from uuid import UUID
+        return self._history_request(f"/chats/{UUID(str(chat_id))}/history")
+
+    def context_info(self, payload):
+        return self._history_request("/chat/context", payload)
+
+    def compact_chat(self, payload, cancelled=lambda: False):
+        if cancelled():
+            return {"summary": None, "boundary_id": None, "reason": "cancelled"}
+        request = {**payload, "request_id": payload.get("request_id") or str(uuid4())}
+        result = self._history_request("/chat/compact", request)
+        if cancelled():
+            return {**result, "summary": None, "boundary_id": None, "reason": "cancelled"}
+        return result
+
+    def apply_compaction(self, payload, result):
+        # Called on the UI thread only after the cancellable generation finishes.
+        if payload.get("chat_id") and result.get("reason") == "ready" and result.get("summary"):
+            self._history_request("/chat/summary", {"chat_id": payload["chat_id"],
+                "summary": result["summary"], "boundary_id": result["boundary_id"]})
+
+    def fork_chat(self, chat_id, title, boundary_id=None):
+        from uuid import UUID
+        return self._history_request(f"/chats/{UUID(str(chat_id))}/fork",
+                                     {"title": title, "boundary_id": boundary_id})
+
     def get_chats(self) -> Optional[List[Dict[str, Any]]]:
         try:
             r = self._authorized_request(lambda: self.transport.get(

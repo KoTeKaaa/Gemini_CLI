@@ -86,7 +86,8 @@ def persistent_history_rows(messages: list[dict], before_user_content: str | Non
         content, args = persistent_tool_message(message["role"], message.get("name"),
                                                 message.get("content") or "", message.get("args"))
         restored.append({key: message.get(key) for key in
-                         ("role", "name", "call_id", "thought_signature")}
+                         ("role", "name", "call_id", "thought_signature", "id", "turn_id",
+                          "request_id", "event_index", "status", "sequence")}
                         | {"content": content, "args": args})
     return complete_tool_pairs(restored)
 
@@ -97,6 +98,8 @@ def complete_tool_pairs(history):
         for call in pending:
             repaired.append({"role": "tool", "name": call["name"],
                 "call_id": call.get("call_id"), "thought_signature": None, "args": None,
+                "id": None, "turn_id": None, "request_id": None, "event_index": None,
+                "status": None, "sequence": None,
                 "content": json.dumps({
                     "status": "interrupted", "message":
                     "Ход прерван; сохранённый результат отсутствует. Действие могло выполниться. Не повторять автоматически."},
