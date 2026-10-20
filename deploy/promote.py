@@ -126,7 +126,7 @@ def prepare_release(config: dict, sha: str) -> Path:
     command(['chown', '-R', config['user'], str(release / '.venv')])
     python = str(release / '.venv/bin/python')
     prefix = ['runuser', '-u', config['user'], '--']
-    clean_env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'}
+    clean_env = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'}
     command(prefix + [python, '-m', 'pip', 'install', '--no-cache-dir', '--disable-pip-version-check',
                       '-r', str(requirements)], env=clean_env)
     command(prefix + [python, '-m', 'pip', 'check'], env=clean_env)
