@@ -1,5 +1,6 @@
 """Shared accounting for the actual built local/server context request."""
 import json
+import base64
 import math
 
 
@@ -12,7 +13,11 @@ def _shape(value):
     if isinstance(value, dict):
         result, media = {}, False
         for key, child in value.items():
-            shaped, nested = _shape(child)
+            if key == "thought_signature" and isinstance(child, bytes):
+                # Signatures are provider metadata, not image/audio payloads.
+                shaped, nested = base64.b64encode(child).decode("ascii"), False
+            else:
+                shaped, nested = _shape(child)
             result[key] = shaped
             media |= nested or key in ("inline_data", "file_data", "images") and bool(child)
         return result, media

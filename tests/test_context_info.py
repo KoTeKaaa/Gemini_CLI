@@ -121,3 +121,13 @@ class ContextInfoTests(unittest.TestCase):
         result = estimate_context([], {'input_token_limit': 10}, measured_usage={'prompt_token_count': 20})
         self.assertEqual(result['remaining_tokens'], 0)
         self.assertEqual(result['source'], 'provider_usage')
+
+    def test_tool_signature_is_counted_as_metadata_not_unknown_media(self):
+        from google.genai import types
+        contents = [types.Content(role='model', parts=[types.Part(
+            function_call=types.FunctionCall(name='read_file_lines', args={'path': 'test.txt'}),
+            thought_signature=b'sig')])]
+        result = estimate_context(contents, {'input_token_limit': 10000})
+        self.assertIsInstance(result['input_tokens'], int)
+        self.assertEqual(result['source'], 'estimate')
+        self.assertFalse(result['has_unmeasured_media'])
