@@ -44,9 +44,9 @@ class LocalBackend:
     def fork_chat(self, chat_id, title, boundary_id=None):
         return self.chats.fork(chat_id, title, boundary_id)
 
-    def _history_source(self, payload):
+    def _history_source(self, payload, *, max_rows=1000):
         history = payload.get("history") or []
-        if not isinstance(history, list) or len(history) > 1000:
+        if not isinstance(history, list) or len(history) > max_rows:
             raise ValueError("Превышен предел истории запроса")
         chat_id = payload.get("chat_id")
         return self.chats.read(chat_id) if chat_id else history
@@ -82,7 +82,7 @@ class LocalBackend:
         return estimate_context(contents, info, AGENT_INSTRUCTION, tools, measured_usage=usage)
 
     def compact_chat(self, payload, cancelled=lambda: False):
-        history = self._history_source(payload)
+        history = self._history_source(payload, max_rows=10000)
         model = payload.get("model_name", MODEL_IDS[0])
         if model not in MODEL_IDS:
             raise ValueError("Неизвестная модель")

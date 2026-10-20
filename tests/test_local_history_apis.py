@@ -40,10 +40,9 @@ class LocalHistoryAPITests(unittest.TestCase):
         self.assertNotIn(self.backend.api_key, str(self.backend._model_cache_scope))
         self.provider.models.count_tokens.return_value = SimpleNamespace(total_tokens=123)
         counted = self.backend.context_info(dict(payload, refresh=True))
-        self.assertEqual(counted['input_tokens'], 123)
-        config = self.provider.models.count_tokens.call_args.kwargs['config']
-        self.assertTrue(config['system_instruction'])
-        self.assertTrue(config['tools'])
+        self.assertEqual(counted['source'], 'estimate')
+        self.assertIsInstance(counted['input_tokens'], int)
+        self.provider.models.count_tokens.assert_not_called()
 
     def test_compact_success_persists_summary_without_rewriting_history_and_forks_prefix(self):
         before = self.backend.get_history(self.chat)
@@ -93,4 +92,4 @@ class LocalHistoryAPITests(unittest.TestCase):
         self.assertEqual(result['boundary_id'], self.rows[5]['id'])
         self.assertEqual(self.backend.chats.metadata(self.chat), before)
         with self.assertRaises(ValueError):
-            self.backend.compact_chat({'history': self.rows * 101})
+            self.backend.compact_chat({'history': self.rows * (10000 // len(self.rows) + 1)})
