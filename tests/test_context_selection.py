@@ -39,3 +39,11 @@ class ContextSelectionTests(unittest.TestCase):
         self.assertEqual(len(result), 2)
         self.assertIn("task and decisions", result[0]["content"])
         self.assertEqual(result[-1]["id"], "3")
+
+    def test_finished_latest_turn_is_redacted_on_new_request(self):
+        history = [{"role": "user", "content": "read"},
+                   {"role": "model", "name": "read_local_files", "content": "call"},
+                   {"role": "tool", "name": "read_local_files", "content": "PRIVATE"},
+                   {"role": "model", "content": "done"}]
+        self.assertNotIn("PRIVATE", str(select_context(None, history)))
+        self.assertIn("PRIVATE", str(select_context(None, history, continuing=True)))

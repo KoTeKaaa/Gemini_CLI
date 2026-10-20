@@ -36,7 +36,7 @@ def select_context(stored, incoming, *, continuing=False, turn_id=None,
     """
     incoming = [dict(row) for row in incoming]
     if stored is None:
-        active = current_turn(incoming) if incoming else []
+        active = current_turn(incoming) if continuing and incoming else []
         previous = incoming[:len(incoming) - len(active)]
     elif continuing:
         active = current_turn(incoming)

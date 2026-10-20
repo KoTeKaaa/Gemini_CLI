@@ -104,7 +104,9 @@ class LocalBackend:
             return "".join(fragments)
         result = run_compaction(history, summarize, cancelled=cancelled,
                                 blocked_fingerprint=payload.get("blocked_fingerprint"),
-                                keep_turns=payload.get("keep_turns", 2))
+                                keep_turns=payload.get("keep_turns", 2),
+                                previous_summary=payload.get("summary") if not payload.get("chat_id") else None,
+                                previous_boundary=payload.get("summary_boundary"))
         if cancelled():
             return {**result, "summary": None, "boundary_id": None, "reason": "cancelled"}
         if payload.get("chat_id") and result["summary"]:

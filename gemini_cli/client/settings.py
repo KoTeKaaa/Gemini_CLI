@@ -70,4 +70,5 @@ class Settings:
 def backend_identity(backend):
     if backend.mode == "remote":
         return ("remote", backend.base_url, backend.account_id)
-    return ("local", "default")
+    return ("local", getattr(backend, "profile", "default"),
+            str(getattr(getattr(backend, "chats", None), "path", "memory")))

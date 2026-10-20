@@ -109,3 +109,16 @@ class CompactionTests(unittest.TestCase):
         self.assertFalse(should_auto_compact({**info, 'input_token_limit': None}, 100))
         self.assertFalse(should_auto_compact({**info, 'has_unmeasured_media': True}, 100))
         self.assertFalse(should_auto_compact(info, {'input_tokens': None}))
+
+    def test_repeated_compaction_keeps_previous_summary_with_wire_tail(self):
+        history = [{"role": "model", "id": "old-boundary", "content": "old answer"}]
+        for i in range(4):
+            history += [{"role": "user", "id": f"u{i}", "content": f"question{i}"},
+                        {"role": "model", "id": f"m{i}", "content": f"answer{i}"}]
+        captured = []
+        result = run_compaction(history, lambda rows: captured.extend(rows) or "updated",
+                                previous_summary="prior decisions", previous_boundary="old-boundary")
+        self.assertEqual(result["reason"], "ready")
+        self.assertEqual(result["boundary_id"], "m1")
+        self.assertIn("prior decisions", str(captured))
+        self.assertNotIn("question3", str(captured))

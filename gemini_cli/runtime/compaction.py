@@ -79,9 +79,22 @@ def prepare_compaction(history, *, keep_turns=2) -> dict:
 
 
 def run_compaction(history, summarize, *, cancelled=lambda: False,
-                   blocked_fingerprint=None, keep_turns=2) -> dict:
+                   blocked_fingerprint=None, keep_turns=2, previous_summary=None,
+                   previous_boundary=None) -> dict:
     """Generate a candidate only; pass a failed fingerprint back to block retries."""
+    if previous_summary is not None:
+        if (not isinstance(previous_summary, str) or not previous_summary.strip()
+                or len(previous_summary) > MAX_SUMMARY_CHARS):
+            raise ValueError("Некорректная предыдущая сводка")
+        boundary = next((i for i, row in enumerate(history)
+                         if row.get("id") == previous_boundary), None)
+        if boundary is None:
+            raise ValueError("Граница предыдущей сводки отсутствует")
+        history = history[boundary + 1:]
     prepared = prepare_compaction(history, keep_turns=keep_turns)
+    if previous_summary is not None:
+        prepared["source"].insert(0, {"role": "user", "content":
+            "Предыдущая сводка диалога:\n" + previous_summary})
     fingerprint = sha256(json.dumps({key: prepared[key] for key in ("source", "boundary_id")},
                                    sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     result = {"summary": None, "boundary_id": None, "fingerprint": fingerprint,
