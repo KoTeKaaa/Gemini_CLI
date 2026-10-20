@@ -34,7 +34,7 @@ class WorkViewTests(unittest.TestCase):
 
     def test_monitor_keeps_spinner_and_uses_transient_alternate_screen(self):
         output = io.StringIO()
-        console = Console(file=output, force_terminal=True, width=80)
+        console = Console(file=output, force_terminal=True, legacy_windows=False, width=80)
         view = WorkView(console, TurnState())
         with patch.dict("os.environ", {"TERM": "xterm"}), \
                 patch("gemini_cli.client.work_view.Live") as live:
@@ -60,7 +60,7 @@ class WorkViewTests(unittest.TestCase):
         for failure in (False, True):
             output = io.StringIO()
             state = TurnState()
-            view = WorkView(Console(file=output, force_terminal=True, width=80, height=12), state)
+            view = WorkView(Console(file=output, force_terminal=True, legacy_windows=False, width=80, height=12), state)
             with patch.dict("os.environ", {"TERM": "xterm"}):
                 try:
                     with view.monitor():
@@ -82,7 +82,7 @@ class WorkViewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home, "TERM": "xterm"}):
             app = importlib.import_module("main")
             output = io.StringIO()
-            console = Console(file=output, force_terminal=True, width=80, height=12)
+            console = Console(file=output, force_terminal=True, legacy_windows=False, width=80, height=12)
             state, response = TurnState(), Mock()
             events = [{"type": "text", "content": "FINAL_"},
                       {"type": "text", "content": "RESPONSE_UNIQUE"}]
@@ -101,7 +101,7 @@ class WorkViewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home, "TERM": "xterm"}):
             app = importlib.import_module("main")
             output = io.StringIO()
-            console = Console(file=output, force_terminal=True, width=80, height=12)
+            console = Console(file=output, force_terminal=True, legacy_windows=False, width=80, height=12)
             state, response = TurnState(), Mock()
             def events():
                 yield {"type": "text", "content": "PARTIAL_UNIQUE"}
