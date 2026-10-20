@@ -9,7 +9,7 @@ from gemini_cli.client.shell import launch_shell
 from gemini_cli.client.work_input import WorkInput
 from gemini_cli.client.work_view import WorkView
 from gemini_cli.protocol.images import encode_images
-from gemini_cli.runtime.attachments import attachment_text, bound_image_history, restore_images
+from gemini_cli.runtime.attachments import attachment_text, bound_image_history, restore_images, MARKER
 import os
 import sys
 import json
@@ -29,7 +29,7 @@ from gemini_cli.client.settings import Settings, backend_identity
 from gemini_cli.protocol.limits import TOOLS_HISTORY_THRESHOLD, TOOLS_WIRE_THRESHOLD
 from gemini_cli.backends.remote import RemoteBackend, events_from_response as iter_stream_events
 from prompt_toolkit import PromptSession
-from prompt_toolkit.shortcuts import radiolist_dialog
+from prompt_toolkit.shortcuts import radiolist_dialog, yes_no_dialog
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit import HTML
@@ -398,6 +398,21 @@ def compact_context(client, history, chat_id, model, summary=None, *, blocked_fi
         state.finish()
 
 
+def failed_prompt_after(history, boundary_id):
+    index = next((i for i, row in enumerate(history)
+                  if (row.get("id") or row.get("event_id")) == boundary_id), None)
+    if index is None:
+        return None
+    for row in reversed(history[index + 1:]):
+        if row.get("role") == "user" and row.get("status") in {"failed", "cancelled"}:
+            content = row.get("content")
+            if isinstance(content, str):
+                text = content.rsplit(MARKER, 1)[0]
+                if text.strip():
+                    return text
+    return None
+
+
 def fork_context(client, chat_id, title=""):
     history = client.get_history(chat_id)
     if not isinstance(history, list):
@@ -418,6 +433,11 @@ def fork_context(client, chat_id, title=""):
     result = client.fork_chat(chat_id, title, selected.get("id") or selected.get("event_id"))
     if not isinstance(result, dict) or not result.get("id"):
         raise ValueError("Не удалось создать форк чата")
+    failed = failed_prompt_after(history, selected.get("id") or selected.get("event_id"))
+    if failed and yes_no_dialog(title="Восстановление запроса",
+            text="Вернуть текст последнего неудачного или отменённого запроса в черновик? "
+                 "Отправка останется ручной; вложения нужно прикрепить заново.").run():
+        result = {**result, "_restore_prompt": failed}
     return result
 
 
@@ -834,6 +854,9 @@ def main(backend: Backend | None = None):
                         saved = load_buffer(api_client, fork["id"])
                         chat_id, is_temporary = fork["id"], False
                         apply_buffer(saved)
+                        if fork.get("_restore_prompt"):
+                            draft.text = (draft.text + "\n\n" if draft.text else "") + fork["_restore_prompt"]
+                            remember()
                         console.print(result_panel("Форк создан; история скопирована без повторного выполнения действий.", title="Форк"))
                 except Exception:
                     console.print(result_panel("Не удалось открыть форк. Исходный чат и черновик сохранены.", title="Форк", error=True))

@@ -226,3 +226,57 @@ class UIContextTests(unittest.TestCase):
             self.app.main(backend)
             self.assertEqual(stream.call_count, 1)
             self.assertEqual(compact.call_args.kwargs['blocked_fingerprint'], 'failed')
+
+    def test_failed_prompt_restore_requires_confirmation_and_ignores_images(self):
+        from gemini_cli.runtime.attachments import MARKER
+        backend = Mock()
+        completed = [
+            {'role': role, 'content': 'text', 'id': event_id, 'turn_id': 'turn', 'status': 'completed'}
+            for role, event_id in [('user', 'u'), ('model', 'm')]]
+        backend.get_history.return_value = completed + [
+            {'role': 'user', 'id': 'failed', 'status': 'failed', 'content': 'retry text' + MARKER + '[image metadata]',
+             'images': [{'data': b'private image'}]},
+            {'role': 'tool', 'status': 'failed', 'content': 'private output'}]
+        backend.fork_chat.return_value = {'id': 'fork'}
+        for confirm in [False, True]:
+            with patch.object(self.app, 'radiolist_dialog') as boundary, \
+                 patch.object(self.app, 'yes_no_dialog') as prompt:
+                boundary.return_value.run.return_value = 0
+                prompt.return_value.run.return_value = confirm
+                result = self.app.fork_context(backend, 'source', 'title')
+                self.assertEqual(result.get('_restore_prompt'), 'retry text' if confirm else None)
+                prompt.assert_called_once()
+                self.assertNotIn('private', str(result))
+                backend.stream_chat.assert_not_called()
+        backend.get_history.return_value = completed
+        with patch.object(self.app, 'radiolist_dialog') as boundary, patch.object(self.app, 'yes_no_dialog') as prompt:
+            boundary.return_value.run.return_value = 0
+            self.app.fork_context(backend, 'source', 'title')
+            prompt.assert_not_called()
+
+    def test_failed_prompt_must_be_after_boundary_and_explicitly_failed(self):
+        rows = [{'id': 'before', 'role': 'user', 'content': 'old', 'status': 'failed'},
+                {'id': 'boundary', 'role': 'model', 'content': 'answer', 'status': 'completed'},
+                {'id': 'later', 'role': 'user', 'content': 'normal', 'status': 'completed'}]
+        self.assertIsNone(self.app.failed_prompt_after(rows, 'boundary'))
+        rows[-1]['status'] = 'cancelled'
+        self.assertEqual(self.app.failed_prompt_after(rows, 'boundary'), 'normal')
+        self.assertIsNone(self.app.failed_prompt_after(rows, 'missing'))
+
+    def test_fork_draft_restore_preserves_source_unsent_draft_and_never_sends(self):
+        from gemini_cli.client.draft import Draft
+        draft = Draft('unsent source')
+        draft.add_text_file('source.txt', 'source attachment')
+        backend = Mock(mode='local')
+        backend.get_history.return_value = []
+        with patch.object(self.app, 'show_chat_menu', side_effect=[('source', False), ('source', False)]), \
+             patch.object(self.app, 'Draft', side_effect=[draft, Draft()]), \
+             patch.object(self.app, 'fork_context', return_value={'id': 'fork', '_restore_prompt': 'retry text'}), \
+             patch.object(self.app, 'PromptSession') as session, \
+             patch.object(self.app, 'print_banner'), patch.object(self.app.console, 'print'):
+            session.return_value.prompt.side_effect = ['/fork title', '/chat', 'exit']
+            self.app.main(backend)
+            self.assertEqual([call.kwargs['default'] for call in session.return_value.prompt.call_args_list],
+                             ['unsent source', 'retry text', 'unsent source'])
+            self.assertEqual(draft.files, [('source.txt', 'source attachment')])
+            backend.stream_chat.assert_not_called()
