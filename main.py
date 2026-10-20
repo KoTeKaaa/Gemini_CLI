@@ -387,6 +387,10 @@ def compact_context(client, history, chat_id, model, summary=None, *, blocked_fi
             raise InterruptedError("Сжатие отменено")
         if not isinstance(result, dict):
             raise ValueError("Backend не вернул результат сжатия")
+        if isinstance(client, RemoteBackend) and chat_id and result.get("reason") == "ready":
+            # WorkInput is already detached. A committed RPC cannot be cancelled.
+            console.print(result_panel("Сохраняю сводку. Дождитесь завершения.", title="Контекст"))
+            client.apply_compaction(payload, result)
         return result
     except InterruptedError:
         return {"reason": "cancelled", "summary": None, "boundary_id": None}

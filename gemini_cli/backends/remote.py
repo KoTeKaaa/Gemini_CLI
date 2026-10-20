@@ -253,10 +253,13 @@ class RemoteBackend:
         result = self._history_request("/chat/compact", request)
         if cancelled():
             return {**result, "summary": None, "boundary_id": None, "reason": "cancelled"}
-        if request.get("chat_id") and result.get("reason") == "ready" and result.get("summary"):
-            self._history_request("/chat/summary", {"chat_id": request["chat_id"],
-                "summary": result["summary"], "boundary_id": result["boundary_id"]})
         return result
+
+    def apply_compaction(self, payload, result):
+        # Called on the UI thread only after the cancellable generation finishes.
+        if payload.get("chat_id") and result.get("reason") == "ready" and result.get("summary"):
+            self._history_request("/chat/summary", {"chat_id": payload["chat_id"],
+                "summary": result["summary"], "boundary_id": result["boundary_id"]})
 
     def fork_chat(self, chat_id, title, boundary_id=None):
         from uuid import UUID

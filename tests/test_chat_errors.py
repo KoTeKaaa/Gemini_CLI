@@ -36,7 +36,7 @@ class ChatErrorsTest(unittest.TestCase):
         db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
             {"id": "chat-1"}
         ]
-        db.table.return_value.select.return_value.eq.return_value.order.return_value.execute.return_value.data = []
+        db.table.return_value.select.return_value.eq.return_value.order.return_value.range.return_value.execute.return_value.data = []
         db.table.return_value.insert.return_value.execute.side_effect = OSError("database unavailable")
         user = self.server.UserContext("user-1", db)
         model = SimpleNamespace(models=SimpleNamespace(
@@ -59,7 +59,7 @@ class ChatErrorsTest(unittest.TestCase):
         db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
             {"id": "chat-1"}
         ]
-        db.table.return_value.select.return_value.eq.return_value.order.return_value.execute.return_value.data = []
+        db.table.return_value.select.return_value.eq.return_value.order.return_value.range.return_value.execute.return_value.data = []
         db.table.return_value.insert.return_value.execute.side_effect = [
             SimpleNamespace(data=[{}]), OSError("database unavailable")
         ]
@@ -86,7 +86,7 @@ class ChatErrorsTest(unittest.TestCase):
                 db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
                     {"id": "chat-1"}
                 ]
-                db.table.return_value.select.return_value.eq.return_value.order.return_value.execute.side_effect = OSError(
+                db.table.return_value.select.return_value.eq.return_value.order.return_value.range.return_value.execute.side_effect = OSError(
                     "history unavailable"
                 )
                 model = SimpleNamespace(models=SimpleNamespace(

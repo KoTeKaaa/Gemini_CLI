@@ -8,6 +8,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from .history_store import HistoryStore
+from .limits import SLOTS
 from ..backends.genai import AGENT_INSTRUCTION, to_gemini, stream_events
 from ..backends.model_info import model_info, count_context
 from ..protocol.images import validate_payload_images
@@ -95,12 +96,12 @@ def register_history_routes(app, *, get_user, provider, payload_model, authorize
 
     @app.post("/chat/compact")
     def compact_chat(payload: CompactPayload, user=Depends(get_user)):
-        authorize(user, model=payload.model_name)
+        rights = authorize(user, model=payload.model_name)
         with history_errors():
             history = (HistoryStore(user.db, user.user_id).read(payload.chat_id) if payload.chat_id else
                        [row if isinstance(row, dict) else row.model_dump(mode="json") for row in payload.history])
             reservation_errors = []
-            def summarize(source):
+            def generate_summary(source):
                 try:
                     reserve(user, operation="gemini", request_id=payload.request_id, model=payload.model_name)
                 except HTTPException as error:
@@ -119,6 +120,16 @@ def register_history_routes(app, *, get_user, provider, payload_model, authorize
                     elif event.get("type") in {"error", "tool_call"}:
                         raise ValueError("Не удалось создать сводку")
                 return "".join(fragments)
+            def summarize(source):
+                try:
+                    SLOTS.acquire(user.user_id, rights.get("parallel_limit", 1))
+                except HTTPException as error:
+                    reservation_errors.append(error)
+                    raise
+                try:
+                    return generate_summary(source)
+                finally:
+                    SLOTS.release(user.user_id)
             result = run_compaction(history, summarize, keep_turns=payload.keep_turns,
                 blocked_fingerprint=payload.blocked_fingerprint,
                 previous_summary=payload.summary if not payload.chat_id else None,

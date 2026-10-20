@@ -143,6 +143,25 @@ class HistoryRoutesTests(unittest.TestCase):
         self.assertEqual(response.json()['reason'], 'ready')
 
 
+    def test_compaction_obeys_shared_generation_slots_and_releases_on_error(self):
+        from gemini_cli.server.limits import GenerationSlots
+        slots = GenerationSlots(total=1)
+        self.store.read.return_value = self.completed_history()
+        slots.acquire('owner', 1)
+        with patch('gemini_cli.server.history_routes.SLOTS', slots):
+            response = self.client.post('/chat/compact', json={'chat_id': self.chat,
+                'request_id': str(uuid4())}, headers=self.headers)
+            self.assertEqual(response.status_code, 429)
+            self.reserve.assert_not_called()
+            self.get_provider.assert_not_called()
+            slots.release('owner')
+            self.reserve.side_effect = HTTPException(429, 'exhausted')
+            response = self.client.post('/chat/compact', json={'chat_id': self.chat,
+                'request_id': str(uuid4())}, headers=self.headers)
+            self.assertEqual(response.status_code, 429)
+            self.assertEqual(slots.active, {})
+
+
 class RemoteHistoryAPITests(unittest.TestCase):
     def test_remote_history_context_fork_requests_are_authenticated_and_closed(self):
         from gemini_cli.backends.remote import RemoteBackend
@@ -189,6 +208,8 @@ class RemoteHistoryAPITests(unittest.TestCase):
         backend._history_request = Mock(side_effect=[candidate, {'status': 'ok'}])
         chat = str(uuid4())
         self.assertEqual(backend.compact_chat({'chat_id': chat}), candidate)
+        self.assertEqual(backend._history_request.call_count, 1)
+        backend.apply_compaction({'chat_id': chat}, candidate)
         self.assertEqual(backend._history_request.call_args_list[1].args,
                          ('/chat/summary', {'chat_id': chat, 'summary': 'safe',
                                             'boundary_id': candidate['boundary_id']}))
