@@ -1,3 +1,5 @@
+from gemini_cli.server.history_store import HistoryStore
+from gemini_cli.runtime.context import select_context, current_turn
 from gemini_cli.runtime.attachments import restore_images
 from gemini_cli.protocol.images import IMAGE_PROTOCOL, MAX_WIRE_BYTES, validate_payload_images
 import os
@@ -109,6 +111,11 @@ class MessageItem(BaseModel):
     args: Optional[Dict[str, Any]] = None
     call_id: Optional[str] = None
     thought_signature: Optional[str] = None
+    id: Optional[UUID] = None
+    turn_id: Optional[UUID] = None
+    request_id: Optional[UUID] = None
+    event_index: Optional[int] = Field(default=None, ge=0)
+    status: Optional[Literal["legacy", "running", "completed", "cancelled", "failed"]] = None
 
 
 class StreamChatPayload(BaseModel):
@@ -118,7 +125,9 @@ class StreamChatPayload(BaseModel):
     message: str = Field(default="", max_length=32768)
     chat_id: Optional[str] = None
     model_name: ModelName = "gemini-3.5-flash-lite"
-    history: Optional[List[MessageItem]] = Field(default=None, max_length=100)
+    history: Optional[List[MessageItem]] = Field(default=None, max_length=1000)
+    summary: Optional[str] = Field(default=None, max_length=8192)
+    summary_boundary: Optional[UUID] = None
     current_dir: Optional[str] = None
     continue_after_tool: bool = False
     supported_tools: Optional[List[str]] = Field(default=None, max_length=32)
@@ -277,7 +286,8 @@ def save_message_to_db(
         role: Literal["user", "model", "tool"],
         content: str,
         name: Optional[str] = None,
-        args: Optional[Dict[str, Any]] = None
+        args: Optional[Dict[str, Any]] = None,
+        call_id=None, thought_signature=None
 ):
     content, args = persistent_tool_message(role, name, content, args)
     data = {
@@ -287,6 +297,10 @@ def save_message_to_db(
         "name": name,
         "args": args,
     }
+    if call_id is not None:
+        data["call_id"] = call_id
+    if thought_signature is not None:
+        data["thought_signature"] = thought_signature
     try:
         db.table("messages").insert(data).execute()
     except Exception as e:
@@ -328,6 +342,12 @@ def capabilities(user: UserContext = Depends(get_working_user)):
     return {"images": IMAGE_PROTOCOL}
 
 
+from gemini_cli.server.history_routes import register_history_routes
+register_history_routes(app, get_user=get_working_user, provider=lambda: client,
+    payload_model=StreamChatPayload, authorize=lambda *args, **kwargs: require_subscription(*args, **kwargs),
+    reserve=lambda *args, **kwargs: reserve_request(*args, **kwargs))
+
+
 @app.post("/chat/stream")
 def stream_chat(
         payload: StreamChatPayload,
@@ -354,34 +374,54 @@ def stream_chat(
         if not chat.data:
             raise HTTPException(status_code=404, detail="Чат не найден")
 
-    if payload.chat_id and payload.continue_after_tool:
-        current_turn_start = next(
-            (index for index in range(len(payload.history) - 1, -1, -1)
-             if payload.history[index].role == "user"), None
-        )
-        if current_turn_start is None:
-            raise HTTPException(status_code=400, detail="Ожидается исходный запрос перед результатом инструмента")
-        current_turn = payload.history[current_turn_start:]
-        history_content = build_history_from_db(
-            user.db, payload.chat_id, before_user_content=current_turn[0].content,
-            image_history=[item.model_dump() for item in payload.history]
-        ) + build_history_from_client(current_turn)
-    elif payload.chat_id:
-        history_content = build_history_from_db(user.db, payload.chat_id,
-                                                image_history=[item.model_dump() for item in payload.history or []])
-    elif payload.history:
-        history_content = build_history_from_client(payload.history)
-    else:
-        history_content = []
+    identified = bool(payload.chat_id and payload.turn_id and payload.request_id)
+    store = HistoryStore(user.db, user.user_id) if identified else None
+    incoming = [item.model_dump(mode="json") for item in payload.history or []]
+    stored, metadata = None, {}
+    if payload.chat_id:
+        try:
+            reader = store or HistoryStore(user.db, user.user_id)
+            stored, metadata = reader.read(payload.chat_id), reader.metadata(payload.chat_id)
+        except Exception:
+            raise HTTPException(503, "Не удалось загрузить историю чата") from None
+    try:
+        selected = select_context(stored, incoming, continuing=payload.continue_after_tool,
+            turn_id=str(payload.turn_id) if payload.turn_id else None,
+            summary=metadata.get("summary") if stored is not None else payload.summary,
+            summary_boundary=metadata.get("summary_boundary") if stored is not None else
+                             (str(payload.summary_boundary) if payload.summary_boundary else None))
+        history_content = to_gemini(selected)
+    except ValueError:
+        raise HTTPException(400, "Некорректная история или граница хода") from None
 
     def event_generator():
         full_response = ""
-        sequence = 0
+        sequence, ordinal, outcome = 0, 0, "failed"
+        acquired = False
+        def save_batch(rows):
+            nonlocal ordinal
+            if not payload.chat_id or job.cancelled.is_set():
+                return
+            if store:
+                ordinal = store.append(payload.chat_id, rows, turn_id=payload.turn_id,
+                    request_id=payload.request_id, start=ordinal)
+            else:
+                for row in rows:
+                    save_message_to_db(user.db, payload.chat_id, row["role"], row["content"],
+                        row.get("name"), row.get("args"), row.get("call_id"), row.get("thought_signature"))
+        def save(role, content, name=None, args=None, call_id=None, signature=None):
+            save_batch([{"role": role, "content": content, "name": name, "args": args,
+                         "call_id": call_id, "thought_signature": signature}])
         try:
             if job.cancelled.is_set():
                 return
+            require_subscription(user, model=payload.model_name, features=requested_tools)
+            if not payload.end_tool_turn:
+                reserve_request(user, operation="gemini", request_id=payload.request_id,
+                                model=payload.model_name, features=requested_tools)
+                acquired = True
             if payload.chat_id and not payload.continue_after_tool:
-                save_message_to_db(user.db, payload.chat_id, "user", payload.message)
+                save("user", payload.message)
 
             current_contents = list(history_content)
 
@@ -390,11 +430,9 @@ def stream_chat(
                     last_batch_start = len(payload.history) - 1
                     while last_batch_start and payload.history[last_batch_start - 1].role == "tool":
                         last_batch_start -= 1
-                    for tool_msg in payload.history[last_batch_start:]:
-                        save_message_to_db(
-                            user.db, payload.chat_id,
-                            "tool", tool_msg.content, tool_msg.name, None
-                        )
+                    save_batch([item.model_dump(mode="json") for item in payload.history[last_batch_start:]])
+                    if payload.end_tool_turn:
+                        acquired = True
                 full_contents = current_contents
             else:
                 active_message = to_gemini([{"role": "user", "content": payload.message, "images": payload.images}])[0]
@@ -404,13 +442,11 @@ def stream_chat(
             if payload.end_tool_turn:
                 message = "Достигнут предел продолжений инструментов. Последние результаты сохранены; продолжите новым сообщением."
                 if payload.chat_id:
-                    save_message_to_db(user.db, payload.chat_id, "model", message)
+                    save("model", message)
+                outcome = "completed"
                 yield f"data: {json.dumps({'type': 'text', 'content': message}, ensure_ascii=False)}\n\n".encode("utf-8")
                 return
 
-            require_subscription(user, model=payload.model_name, features=requested_tools)
-            reserve_request(user, operation="gemini", request_id=payload.request_id,
-                            model=payload.model_name, features=requested_tools)
             has_calls, failed = False, False
             permitted = set(TOOLS) - ({"web_search"} if not os.getenv("TAVILY_API_KEY") else set())
             for event in stream_events(client, model=payload.model_name, contents=full_contents,
@@ -428,14 +464,15 @@ def stream_chat(
                     failed = True
                 elif event["type"] == "tool_call":
                     if not has_calls and full_response and payload.chat_id:
-                        save_message_to_db(user.db, payload.chat_id, "model", full_response)
+                        save("model", full_response)
                     has_calls = True
                     if payload.chat_id:
-                        save_message_to_db(user.db, payload.chat_id, "model",
-                            f"[Вызов локального инструмента: {event['name']}]", event["name"], event["args"])
+                        save("model", f"[Вызов локального инструмента: {event['name']}]",
+                             event["name"], event["args"], event.get("call_id"), event.get("thought_signature"))
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
             if payload.chat_id and full_response and not has_calls and not failed and not job.cancelled.is_set():
-                save_message_to_db(user.db, payload.chat_id, "model", full_response)
+                save("model", full_response)
+            outcome = "failed" if failed else "completed"
 
         except Exception as e:
             error_msg = str(e)
@@ -453,6 +490,13 @@ def stream_chat(
                 "content": content
             }
             yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n".encode("utf-8")
+        finally:
+            if store and acquired:
+                try:
+                    store.finish(payload.chat_id, payload.request_id,
+                                 "cancelled" if job.cancelled.is_set() else outcome)
+                except Exception:
+                    print("[DB ERROR] Не удалось сохранить статус хода")
 
     job = StreamJob(event_generator(), user.user_id, rights.get("parallel_limit", 1))
     return StreamingResponse(job, media_type="text/event-stream")
