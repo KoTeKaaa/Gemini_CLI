@@ -280,3 +280,10 @@ class UIContextTests(unittest.TestCase):
                              ['unsent source', 'retry text', 'unsent source'])
             self.assertEqual(draft.files, [('source.txt', 'source attachment')])
             backend.stream_chat.assert_not_called()
+
+    def test_fork_restores_prompt_when_later_continuation_failed(self):
+        rows = [{'id': 'boundary', 'role': 'model', 'status': 'completed', 'content': 'done'},
+                {'id': 'request', 'role': 'user', 'status': 'completed', 'content': 'Retry this task'},
+                {'role': 'model', 'status': 'completed', 'name': 'read_file_lines', 'content': 'call'},
+                {'role': 'tool', 'status': 'failed', 'content': 'interrupted'}]
+        self.assertEqual(self.app.failed_prompt_after(rows, 'boundary'), 'Retry this task')

@@ -403,9 +403,15 @@ def failed_prompt_after(history, boundary_id):
                   if (row.get("id") or row.get("event_id")) == boundary_id), None)
     if index is None:
         return None
-    for row in reversed(history[index + 1:]):
-        if row.get("role") == "user" and row.get("status") in {"failed", "cancelled"}:
-            content = row.get("content")
+    turns = []
+    for row in history[index + 1:]:
+        if row.get("role") == "user":
+            turns.append([])
+        if turns:
+            turns[-1].append(row)
+    for turn in reversed(turns):
+        if any(row.get("status") in {"failed", "cancelled"} for row in turn):
+            content = turn[0].get("content")
             if isinstance(content, str):
                 text = content.rsplit(MARKER, 1)[0]
                 if text.strip():
