@@ -183,11 +183,13 @@ class LocalChats:
             db.execute("update messages set status=? where chat_id=? and request_id=? and status='running'",
                        (status, chat_id, request_id))
 
-    def set_summary(self, chat_id: str, summary: str, boundary_id: str):
+    def set_summary(self, chat_id: str, summary: str, boundary_id: str, *, cancelled=lambda: False):
         if not isinstance(summary, str) or not summary.strip():
             raise ValueError("Сводка должна содержать текст")
         with self.connection() as db:
             db.execute("begin immediate")
+            if cancelled():
+                raise InterruptedError("Сжатие отменено")
             if not db.execute("select 1 from chats where id=?", (chat_id,)).fetchone():
                 raise LookupError("Чат не найден в локальном профиле")
             boundary = db.execute("select * from messages where chat_id=? and id=?",
@@ -203,7 +205,11 @@ class LocalChats:
                 select summary_boundary from chats where id=?)""", (chat_id, chat_id)).fetchone()
             if previous and boundary["sequence"] < previous["sequence"]:
                 raise ValueError("Граница сводки не может перемещаться назад")
+            if cancelled():
+                raise InterruptedError("Сжатие отменено")
             db.execute("update chats set summary=?,summary_boundary=? where id=?", (summary, boundary_id, chat_id))
+            if cancelled():
+                raise InterruptedError("Сжатие отменено")
 
     @staticmethod
     def _check_boundary(db, chat_id: str, boundary):

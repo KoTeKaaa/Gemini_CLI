@@ -111,7 +111,7 @@ class LocalBackend:
             return {**result, "summary": None, "boundary_id": None, "reason": "cancelled"}
         if payload.get("chat_id") and result["summary"]:
             try:
-                self.chats.set_summary(payload["chat_id"], result["summary"], result["boundary_id"])
+                self.chats.set_summary(payload["chat_id"], result["summary"], result["boundary_id"], cancelled=cancelled)
             except (ValueError, LookupError):
                 return {**result, "summary": None, "boundary_id": None, "reason": "save_failed"}
         return result
