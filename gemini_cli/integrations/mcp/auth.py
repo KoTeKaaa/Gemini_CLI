@@ -107,6 +107,11 @@ class BrowserLogin:
         parsed = urlsplit(url)
         if parsed.scheme != 'https' or parsed.username or parsed.password:
             raise ValueError('MCP OAuth: требуется HTTPS авторизация')
+        if not self.connection.allow_private:
+            from ...tools.web.fetch import validate_target, timed_resolver
+            import time
+            await asyncio.to_thread(validate_target, url,
+                resolver=timed_resolver(time.monotonic() + self.connection.timeout))
         self.state = parse_qs(parsed.query).get('state', [None])[0]
         if not self.state or not await asyncio.to_thread(webbrowser.open, url):
             raise ValueError('MCP OAuth: браузер недоступен')

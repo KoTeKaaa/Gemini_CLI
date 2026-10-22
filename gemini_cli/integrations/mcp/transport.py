@@ -14,6 +14,23 @@ from ...runtime.history import bounded_tool_result
 MAX_DISCOVERY_BYTES = 65536
 
 
+def text_result(value):
+    content, unsupported = [], False
+    for part in value.content:
+        text = (getattr(part, 'text', None) if getattr(part, 'type', None) == 'text' else
+                getattr(getattr(part, 'resource', None), 'text', None)
+                if getattr(part, 'type', None) == 'resource' else None)
+        if isinstance(text, str):
+            content.append({'type': 'text', 'text': text})
+        else:
+            unsupported = True
+    result = {'content': content, 'isError': value.is_error,
+              'status': 'error' if value.is_error else 'ok', 'unsupported_media': unsupported}
+    if not content and not unsupported and getattr(value, 'structured_content', None) is not None:
+        result['structured'] = value.structured_content
+    return bounded_tool_result(json.dumps(result, ensure_ascii=False))
+
+
 class MCPUnavailable(RuntimeError):
     pass
 
@@ -25,6 +42,7 @@ class Session:
         self.login, self.storage = login, storage
         self.queue, self.ready = Queue(), Future()
         self.closed = False
+        self._loop = self._scope = self._current = None
         self.thread = threading.Thread(target=self._run, name="mcp-session", daemon=True)
         self.thread.start()
         try:
@@ -46,6 +64,8 @@ class Session:
                 self.ready.set_exception(MCPUnavailable("MCP: подключение недоступно"))
         finally:
             self.closed = True
+            if self._current is not None and not self._current.done():
+                self._current.set_exception(MCPUnavailable("MCP: соединение закрыто"))
             while not self.queue.empty():
                 item = self.queue.get_nowait()
                 if item and not item[2].done():
@@ -78,42 +98,46 @@ class Session:
     async def _serve(self):
         import anyio
         from mcp import Client
-        async with AsyncExitStack() as stack:
-            transport = await self._transport(stack)
-            client = await stack.enter_async_context(Client(
-                _open_transport(transport), read_timeout_seconds=self.connection.timeout))
-            self.ready.set_result(True)
-            while True:
-                item = await asyncio.to_thread(self.queue.get)
-                if item is None:
-                    break
-                operation, args, future, cancelled = item
-                try:
-                    with anyio.fail_after(self.connection.timeout):
-                        async with anyio.create_task_group() as group:
-                            async def watch_cancel(scope):
-                                while not cancelled():
-                                    await anyio.sleep(.05)
-                                scope.cancel()
-                            with anyio.CancelScope() as scope:
-                                group.start_soon(watch_cancel, scope)
-                                if operation == "list":
-                                    value = await client.list_tools(cache_mode="refresh")
-                                    raw = value.model_dump_json(by_alias=True)
-                                    if len(raw.encode()) > MAX_DISCOVERY_BYTES or value.next_cursor:
-                                        raise ValueError("Каталог MCP превышает лимит")
-                                    result = json.loads(raw)
-                                else:
-                                    value = await client.call_tool(args[0], args[1])
-                                    raw = value.model_dump_json(by_alias=True)
-                                    result = bounded_tool_result(raw)
+        self._loop = asyncio.get_running_loop()
+        with anyio.fail_after(self.connection.timeout) as lifetime:
+            self._scope = lifetime
+            async with AsyncExitStack() as stack:
+                transport = await self._transport(stack)
+                client = await stack.enter_async_context(Client(
+                    _open_transport(transport), read_timeout_seconds=self.connection.timeout))
+                self.ready.set_result(True)
+                self._scope.deadline = float("inf")
+                while True:
+                    item = await asyncio.to_thread(self.queue.get)
+                    if item is None:
+                        break
+                    operation, args, future, cancelled = item
+                    self._current = future
+                    try:
+                        with anyio.fail_after(self.connection.timeout):
+                            async with anyio.create_task_group() as group:
+                                async def watch_cancel(scope):
+                                    while not cancelled():
+                                        await anyio.sleep(.05)
+                                    scope.cancel()
+                                with anyio.CancelScope() as scope:
+                                    group.start_soon(watch_cancel, scope)
+                                    if operation == "list":
+                                        value = await client.list_tools(cache_mode="refresh")
+                                        raw = value.model_dump_json(by_alias=True)
+                                        if len(raw.encode()) > MAX_DISCOVERY_BYTES or value.next_cursor:
+                                            raise ValueError("Каталог MCP превышает лимит")
+                                        result = json.loads(raw)
+                                    else:
+                                        value = await client.call_tool(args[0], args[1])
+                                        result = text_result(value)
+                                    group.cancel_scope.cancel()
                                 group.cancel_scope.cancel()
-                            group.cancel_scope.cancel()
-                            if scope.cancel_called:
-                                raise MCPUnavailable("MCP: вызов отменён")
-                    future.set_result(result)
-                except Exception:
-                    future.set_exception(MCPUnavailable("MCP: вызов не выполнен (отмена, timeout или отказ сервиса)"))
+                                if scope.cancel_called:
+                                    raise MCPUnavailable("MCP: вызов отменён")
+                        future.set_result(result)
+                    except Exception:
+                        future.set_exception(MCPUnavailable("MCP: вызов не выполнен (отмена, timeout или отказ сервиса)"))
 
     def request(self, operation, *args, cancelled=lambda: False):
         if self.closed or cancelled():
@@ -128,8 +152,13 @@ class Session:
 
     def close(self):
         self.queue.put(None)
+        if self._loop is not None and self._scope is not None and not self.closed:
+            try:
+                self._loop.call_soon_threadsafe(self._scope.cancel)
+            except RuntimeError:
+                pass  # The session already finished between the checks.
         if self.thread is not threading.current_thread():
-            self.thread.join(timeout=self.connection.timeout + 6)
+            self.thread.join(timeout=8)
         self.closed = True
 
 

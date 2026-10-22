@@ -52,6 +52,9 @@ def http_client(connection, *, bearer=None, oauth=None):
             if 300 <= response.status_code < 400:
                 await response.aclose()
                 raise ValueError('MCP: redirect отклонён; настройте конечный URL явно')
+            if response.headers.get('content-encoding', 'identity') != 'identity':
+                await response.aclose()
+                raise ValueError('MCP: сжатые ответы не принимаются')
             response.stream = BoundedStream(response.stream)
             return response
 
@@ -59,5 +62,5 @@ def http_client(connection, *, bearer=None, oauth=None):
             await self.inner.aclose()
 
     return httpx2.AsyncClient(transport=GuardedTransport(), auth=oauth,
-        headers={'Authorization': 'Bearer ' + bearer} if bearer else {},
+        headers={'Accept-Encoding': 'identity', **({'Authorization': 'Bearer ' + bearer} if bearer else {})},
         follow_redirects=False, trust_env=False, timeout=connection.timeout)

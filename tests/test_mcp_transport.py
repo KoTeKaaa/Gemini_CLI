@@ -37,6 +37,25 @@ class MCPTransportTest(unittest.TestCase):
         finally:
             session.close()
 
+    def test_handshake_timeout_terminates_child(self):
+        import time
+        started = time.monotonic()
+        with self.assertRaises(MCPUnavailable):
+            Session(Connection('hung', 'stdio', command=sys.executable,
+                args=('-c', 'import time; time.sleep(30)'), timeout=1))
+        self.assertLess(time.monotonic() - started, 9)
+
+    def test_embedded_text_and_media_are_filtered(self):
+        import json
+        from types import SimpleNamespace as N
+        from gemini_cli.integrations.mcp.transport import text_result
+        value = N(content=[N(type='resource', resource=N(text='embedded text')),
+                           N(type='image', data='PRIVATE-BASE64')], is_error=False)
+        result = text_result(value)
+        self.assertIn('embedded text', result)
+        self.assertNotIn('PRIVATE-BASE64', result)
+        self.assertTrue(json.loads(result)['unsupported_media'])
+
     def test_missing_runtime_safe_error(self):
         with self.assertRaisesRegex(MCPUnavailable, 'runtime'):
             Session(Connection('missing', 'stdio', command='/missing/mcp-runtime', timeout=1))

@@ -19,6 +19,12 @@ class MCPHTTPTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         await client.get('https://other.invalid')
                 self.assertEqual(send.call_count, 1)
+            for response in (httpx2.Response(200, stream=httpx2.ByteStream(b'x' * 262145)),
+                             httpx2.Response(200, headers={'content-encoding': 'gzip'})):
+                with patch.object(httpx2.AsyncHTTPTransport, 'handle_async_request', return_value=response):
+                    async with http_client(connection) as client:
+                        with self.assertRaises(ValueError):
+                            await client.get(connection.url)
             for code in (401, 429):
                 with patch.object(httpx2.AsyncHTTPTransport, 'handle_async_request',
                                   return_value=httpx2.Response(code)):

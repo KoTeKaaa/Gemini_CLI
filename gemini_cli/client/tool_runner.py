@@ -31,7 +31,7 @@ def execute_tool_calls(
         def record(status):
             if state is not None:
                 state.record({"type": "step", "step_id": step_id,
-                              "name": tool_name if tool_name in TOOLS else "unknown",
+                              "name": tool_name if tool_name in TOOLS or MCP_NAME.fullmatch(tool_name or "") else "unknown",
                               "call_id": call.get("call_id"), "status": status})
         record("queued")
         tool_args = call.get("args", {})
@@ -71,5 +71,5 @@ def execute_tool_calls(
             "call_id": call.get("call_id"), "id": str(uuid4()),
             "turn_id": getattr(state, "turn_id", None), "status": "running"
         })
-        logged_name = tool_name if tool_name in TOOLS else "unknown"
+        logged_name = tool_name if tool_name in TOOLS else "mcp" if MCP_NAME.fullmatch(tool_name or "") else "unknown"
         logger.info("Tool вызов: %s", logged_name)
