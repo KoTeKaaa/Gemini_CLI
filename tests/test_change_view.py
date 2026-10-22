@@ -1,115 +1,79 @@
 import asyncio
-from pathlib import Path
-import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
-from gemini_cli.client.change_view import change_pages, diff_application, select_changes, select_undo_files
-from gemini_cli.tools.local.changes import ChangeSet
+from gemini_cli.client.change_view import change_pages, diff_application, handle_change_command
 
 
 class ChangeViewTest(unittest.TestCase):
-    def test_zero_selection_and_final_refusal_do_not_apply(self):
-        with tempfile.TemporaryDirectory() as root:
-            changes = ChangeSet(root)
-            item = changes.propose("one", "new")
-            for selected in ([], [(0, 0)]):
-                item.status = "proposed"
-                with patch("gemini_cli.client.change_view.diff_application", return_value=Mock()), \
-                     patch("gemini_cli.client.change_view.checkboxlist_dialog", return_value=Mock(run=lambda: selected)), \
-                     patch("gemini_cli.client.change_view.radiolist_dialog", return_value=Mock(run=lambda: "cancel")):
-                    select_changes(changes, [item])
-                self.assertEqual(item.status, "skipped")
-                self.assertFalse(Path(root, "one").exists())
+    def journal(self):
+        changes = Mock(root="/workspace")
+        changes.active_files.return_value = {"/workspace/one name.py": [], "/workspace/proposed": []}
+        changes.resolve_path.side_effect = lambda path: "/workspace/" + path
+        changes.file_diff.side_effect = lambda path: "DIFF " + path
+        changes.listing.return_value = "#1 — one name.py\n#2 — proposed"
+        return changes
 
-    def test_write_without_opening_diff(self):
-        with tempfile.TemporaryDirectory() as root:
-            changes = ChangeSet(root)
-            item = changes.propose("one", "new")
-            with patch("gemini_cli.client.change_view.diff_application") as preview, \
-                 patch("gemini_cli.client.change_view.checkboxlist_dialog", return_value=Mock(run=lambda: [(0, 0)])), \
-                 patch("gemini_cli.client.change_view.radiolist_dialog", return_value=Mock(run=lambda: "write")):
-                select_changes(changes, [item])
-            preview.assert_not_called()
-            self.assertEqual(item.status, "proposed")
-            self.assertEqual(item.target, b"new")
+    def test_bare_commands_list_files_without_diff_or_undo(self):
+        changes = self.journal()
+        for command in ("/diff", "/undo"):
+            with self.subTest(command=command), \
+                 patch("gemini_cli.client.change_view.diff_application") as view, \
+                 patch("gemini_cli.client.change_view.undo") as restore:
+                console = Mock(is_terminal=True)
+                self.assertTrue(handle_change_command(command, changes, console))
+                self.assertIn("#1 — one name.py", str(console.print.call_args.args[0].renderable))
+                view.assert_not_called()
+                restore.assert_not_called()
 
-    def test_explicit_diff_returns_to_confirmation(self):
-        with tempfile.TemporaryDirectory() as root:
-            changes = ChangeSet(root)
-            item = changes.propose("empty", "")
-            actions = iter(["diff", "write"])
-            with patch("gemini_cli.client.change_view.diff_application", return_value=Mock()) as preview, \
-                 patch("gemini_cli.client.change_view.checkboxlist_dialog", return_value=Mock(run=lambda: [(0, -1)])), \
-                 patch("gemini_cli.client.change_view.radiolist_dialog", side_effect=lambda **kw: Mock(run=lambda: next(actions))):
-                select_changes(changes, [item])
-            preview.assert_called_once()
-            self.assertIn("Создание пустого файла", preview.call_args.args[0][0][1])
-            self.assertEqual(item.status, "proposed")
+    def test_explicit_diff_opens_only_requested_path_and_accepts_spaces(self):
+        changes = self.journal()
+        for path in ("one name.py", "proposed"):
+            with self.subTest(path=path), patch("gemini_cli.client.change_view.diff_application", return_value=Mock()) as view:
+                self.assertTrue(handle_change_command("/diff " + path, changes, Mock(is_terminal=True)))
+                changes.resolve_path.assert_called_with(path)
+                self.assertEqual(view.call_args.args[0], [(path, "DIFF /workspace/" + path)])
+                view.return_value.run.assert_called_once()
 
-    def test_change_selection_preserves_previous_selection(self):
-        with tempfile.TemporaryDirectory() as root:
-            changes = ChangeSet(root)
-            items = [changes.propose(name, "new") for name in ("one", "two")]
-            selections = iter([[(0, 0)], [(1, 0)]])
-            actions = iter(["select", "write"])
-            with patch("gemini_cli.client.change_view.checkboxlist_dialog",
-                       side_effect=lambda **kw: Mock(run=lambda: next(selections))) as choose, \
-                 patch("gemini_cli.client.change_view.radiolist_dialog", side_effect=lambda **kw: Mock(run=lambda: next(actions))):
-                select_changes(changes, items)
-            self.assertEqual(choose.call_args.kwargs["default_values"], {(0, 0)})
-            self.assertEqual([item.status for item in items], ["skipped", "proposed"])
+    def test_explicit_undo_is_direct_and_scoped(self):
+        changes = self.journal()
+        with patch("gemini_cli.client.change_view.undo", return_value=[
+            {"filepath": "/workspace/one name.py", "status": "Восстановлено"}]) as restore, \
+             patch("gemini_cli.client.change_view.diff_application") as view:
+            console = Mock(is_terminal=True)
+            self.assertTrue(handle_change_command("/undo one name.py", changes, console))
+            self.assertEqual(restore.call_args.kwargs["selected_paths"], ["/workspace/one name.py"])
+            self.assertTrue(restore.call_args.kwargs["approve"]())
+            self.assertIn("Восстановлено", str(console.print.call_args.args[0].renderable))
+            view.assert_not_called()
 
-    def test_undo_selects_unique_applied_files(self):
-        from prompt_toolkit.widgets import CheckboxList
-        with tempfile.TemporaryDirectory() as root:
-            changes = ChangeSet(root)
-            one = changes.propose("one", "new")
-            two = changes.propose("two", "new")
-            changes.propose("skipped", "new")
-            one.status = two.status = "applied"
-            changes.entries.append(one)
-            for selected, expected in ((None, []), ([], []),
-                                       ([one.before.path], [one.before.path]),
-                                       ([one.before.path, two.before.path], [one.before.path, two.before.path])):
-                with self.subTest(selected=selected), \
-                     patch("gemini_cli.client.change_view.Application", return_value=Mock(run=lambda: selected)), \
-                     patch("gemini_cli.client.change_view.CheckboxList", wraps=CheckboxList) as choose:
-                    self.assertEqual(select_undo_files(changes), expected)
-                self.assertEqual(choose.call_args.kwargs["default_values"], [])
-                self.assertEqual(len(choose.call_args.kwargs["values"]), 2)
-            with patch("gemini_cli.client.change_view.Application") as choose:
-                self.assertEqual(select_undo_files(changes, interactive=False), [])
-                self.assertEqual(select_undo_files(ChangeSet(root)), [])
-                choose.assert_not_called()
+    def test_empty_invalid_and_nonterminal_do_not_open_diff_or_undo(self):
+        changes = self.journal()
+        with patch("gemini_cli.client.change_view.diff_application") as view, \
+             patch("gemini_cli.client.change_view.undo") as restore:
+            for command in ("/diff", "/undo one name.py"):
+                console = Mock(is_terminal=True)
+                self.assertTrue(handle_change_command(command, None, console))
+                self.assertIn("пока нет", str(console.print.call_args.args[0].renderable))
+            console = Mock(is_terminal=False)
+            self.assertTrue(handle_change_command("/diff proposed", changes, console))
+            self.assertIn("интерактивный терминал", str(console.print.call_args.args[0].renderable))
+            changes.resolve_path.side_effect = ValueError("Нет активных правок для этого файла")
+            self.assertTrue(handle_change_command("/undo missing", changes, Mock(is_terminal=True)))
+            view.assert_not_called()
+            restore.assert_not_called()
+        self.assertFalse(handle_change_command("/other", changes, Mock()))
+        self.assertFalse(handle_change_command("", changes, Mock()))
 
-    def test_undo_keyboard_selection_all_and_escape(self):
-        from prompt_toolkit.application import Application
-        with tempfile.TemporaryDirectory() as root:
-            changes = ChangeSet(root)
-            one, two = [changes.propose(name, "new") for name in ("one", "two")]
-            one.status = two.status = "applied"
-            for keys, expected in ((" \t\r", [one.before.path]),
-                                   ("\t\t\r", [one.before.path, two.before.path]),
-                                   ("\x1b", [])):
-                with self.subTest(keys=keys), create_pipe_input() as pipe:
-                    pipe.send_text(keys)
-                    with patch("gemini_cli.client.change_view.Application",
-                               side_effect=lambda **kw: Application(**kw, input=pipe, output=DummyOutput())):
-                        self.assertEqual(select_undo_files(changes), expected)
-
-    def test_empty_proposal_actual_and_long_unicode_lines(self):
-        with tempfile.TemporaryDirectory() as root:
-            changes = ChangeSet(root)
-            self.assertEqual(change_pages(changes), [])
-            item = changes.propose("one", "длинная" * 10000)
-            self.assertEqual(change_pages(changes), [])
-            self.assertIn("предложено", change_pages(changes, proposed=True)[0][0])
-            Path(root, "one").write_bytes(item.proposed)
-            changes.applied(item)
-            self.assertIn("фактически записано", change_pages(changes)[0][0])
+    def test_pages_only_use_active_files_and_no_empty_preview(self):
+        changes = self.journal()
+        self.assertEqual(change_pages(changes, filepath="/workspace/proposed"),
+                         [("proposed", "DIFF /workspace/proposed")])
+        changes.active_files.return_value = {}
+        self.assertEqual(change_pages(changes), [])
+        self.assertEqual(change_pages(changes, filepath="/workspace/proposed"), [])
 
     def test_navigation_search_and_exit(self):
         async def run():

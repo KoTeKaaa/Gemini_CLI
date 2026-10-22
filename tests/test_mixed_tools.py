@@ -55,7 +55,6 @@ class MixedToolsTest(unittest.TestCase):
                   patch.object(server, "StreamingResponse", side_effect=lambda generator, **_: SimpleNamespace(body_iterator=generator)),
                   patch.object(main.console, "print"), patch("builtins.input", return_value="y"),
                   patch.object(main, "CONFIG_DIR", home),
-                  patch.object(main, "select_changes", side_effect=lambda *a, **kw: None),
                   patch.object(main, "handle_execute_command", side_effect=OSError("PRIVATE-ERROR")),
                   patch.object(main.requests, "post", side_effect=post)):
                 for _ in range(3):

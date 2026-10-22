@@ -198,8 +198,8 @@ class FileSandboxTest(unittest.TestCase):
         write.assert_not_called()
         self.assertIn("отклонена пользователем", result["error"])
         self.assertEqual((self.base / "inside.txt").read_text(), "inside")
-        self.assertTrue(any(getattr(call.args[0], "renderable", None) == "replacement"
-                            for call in printed.call_args_list if call.args))
+        self.assertFalse(any(getattr(call.args[0], "renderable", None) == "replacement"
+                             for call in printed.call_args_list if call.args))
 
     @unittest.skipUnless(os.name == "posix", "POSIX permission bits")
     def test_write_preserves_existing_permissions(self):
