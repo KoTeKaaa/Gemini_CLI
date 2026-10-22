@@ -57,7 +57,14 @@ class Session:
         return await self._http_transport(stack)
 
     async def _http_transport(self, stack):
-        raise MCPUnavailable("MCP HTTP: транспорт недоступен")
+        from mcp.client.streamable_http import streamable_http_client
+        from .http import http_client
+        c = self.connection
+        factory = self.http_factory or http_client
+        client = await stack.enter_async_context(factory(c,
+            bearer=self.secrets.get("bearer"), oauth=self.oauth))
+        return await stack.enter_async_context(streamable_http_client(
+            c.url, http_client=client, max_sse_event_size=65536))
 
     async def _serve(self):
         import anyio

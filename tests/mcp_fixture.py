@@ -17,4 +17,8 @@ async def wait(seconds: int) -> str:
 
 
 if __name__ == '__main__':
-    server.run()
+    import sys
+    if len(sys.argv) > 1:
+        server.run(transport='streamable-http', port=int(sys.argv[1]))
+    else:
+        server.run()
