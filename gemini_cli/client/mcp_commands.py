@@ -13,6 +13,17 @@ USAGE = ('/mcp — подключения и состояние\n/mcp tools им
          'Конфигурация: приватный каталог CLI/mcp.json; процессы не запускаются при чтении.')
 
 
+def prompt_secret(label, *, input, output):
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.history import DummyHistory
+    # Share the chat's input, including keys already queued after command Enter.
+    secret = PromptSession(input=input, output=output, history=DummyHistory())
+    try:
+        return secret.prompt(label, is_password=True)
+    finally:
+        secret.default_buffer.reset()
+
+
 def command(text, manager, *, console, read_secret):
     try:
         parts = shlex.split(text)

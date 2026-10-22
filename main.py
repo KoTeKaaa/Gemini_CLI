@@ -713,7 +713,13 @@ def main(backend: Backend | None = None):
         return mcp_managers[identity]
     def active_changes():
         return file_changes.get((backend_identity(api_client), chat_id, os.path.realpath(current_dir)))
+    def mcp_choices():
+        try:
+            return tuple(active_mcp().connections)
+        except (ValueError, OSError):
+            return ()
     completer = InputCompleter(lambda: current_dir, mode=lambda: api_client.mode,
+                              mcp_choices=mcp_choices,
                               change_choices=lambda: list(active_changes().active_files()) if active_changes() else (),
                               attachment_choices=lambda: [
         (number, draft_input.describe(number, item)) for number, item in draft.items()])
@@ -915,10 +921,10 @@ def main(backend: Backend | None = None):
                 continue
 
             if first_line.strip().split(" ", 1)[0] == "/mcp":
-                from gemini_cli.client.mcp_commands import command
-                from getpass import getpass
+                from gemini_cli.client.mcp_commands import command, prompt_secret
                 try:
-                    command(first_line, active_mcp(), console=console, read_secret=getpass)
+                    command(first_line, active_mcp(), console=console,
+                            read_secret=lambda label: prompt_secret(label, input=session.input, output=session.output))
                 except ValueError:
                     console.print(result_panel("MCP: неверный приватный mcp.json", title="MCP", error=True))
                 continue

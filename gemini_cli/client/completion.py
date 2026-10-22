@@ -6,6 +6,7 @@ from ..tools.local.workspace import resolve_safe_path, is_sensitive_read_path, p
 
 COMMANDS = ('/help', '/model', '/chat', '/settings', '/term', '/paste',
             '/attachments', '/show', '/edit', '/remove', '/cd', '/delete', '/clear', '/compact', '/fork', '/limits', '/diff', '/undo', '/mcp')
+MCP_ACTIONS = ('check', 'tools', 'enable', 'disable', 'login', 'logout')
 SKIP = {'node_modules', 'build', 'dist', 'venv', '__pycache__'}
 
 
@@ -22,16 +23,34 @@ def allowed_path(root: str, relative: str) -> str | None:
 
 
 class InputCompleter(Completer):
-    def __init__(self, root, attachment_choices=lambda: (), mode=lambda: "remote", change_choices=lambda: ()):
+    def __init__(self, root, attachment_choices=lambda: (), mode=lambda: "remote", change_choices=lambda: (), mcp_choices=lambda: ()):
         self.root = root
         self.attachment_choices = attachment_choices
         self.mode = mode
         self.change_choices = change_choices
+        self.mcp_choices = mcp_choices
         self.snapshots = {}
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         action, separator, fragment = text.partition(' ')
+        if action == '/mcp' and separator:
+            if '\n' in text:
+                return
+            words = text.split()
+            if text[-1].isspace():
+                words.append('')
+            choices = ()
+            if len(words) == 2:
+                choices = MCP_ACTIONS
+            elif len(words) == 3 and words[1] in MCP_ACTIONS:
+                choices = sorted(self.mcp_choices())
+            elif len(words) == 4 and words[1] == 'login' and words[2] in self.mcp_choices():
+                choices = ('memory', 'keyring')
+            for choice in choices:
+                if choice.casefold().startswith(words[-1].casefold()):
+                    yield Completion(choice, start_position=-len(words[-1]), display_meta='MCP')
+            return
         if action in {'/diff', '/undo'} and separator:
             for path in self.change_choices():
                 relative = os.path.relpath(path, os.path.realpath(self.root()))
