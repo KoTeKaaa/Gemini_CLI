@@ -247,14 +247,11 @@ class RemoteBackend:
         return self._history_request("/chat/context", payload)
 
     def limits(self, model, *, refresh=False):
-        from urllib.parse import urlencode
-        from ..protocol.quotas import unavailable
         try:
-            query = urlencode({"model": model, "refresh": str(refresh).lower()})
-            return self._history_request("/limits?" + query)
+            return self._history_request("/limits?refresh=" + str(refresh).lower())
         except (requests.RequestException, ValueError, LookupError):
-            return {"quotas": [unavailable(provider, "remote", "server_unavailable", model=model)
-                               for provider in ("gemini", "tavily")]}
+            return {"kind": "subscription", "unavailable": True,
+                    "reason": "Сервер недоступен или не поддерживает /limits"}
 
     def compact_chat(self, payload, cancelled=lambda: False):
         if cancelled():
