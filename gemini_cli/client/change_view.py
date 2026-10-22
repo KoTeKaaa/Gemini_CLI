@@ -2,13 +2,13 @@
 
 import os
 
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.filters import is_searching
 from prompt_toolkit.search import start_search
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout
-from prompt_toolkit.widgets import Label, SearchToolbar, TextArea
-from prompt_toolkit.shortcuts import checkboxlist_dialog, yes_no_dialog
+from prompt_toolkit.widgets import Button, CheckboxList, Dialog, Label, SearchToolbar, TextArea
+from prompt_toolkit.shortcuts import checkboxlist_dialog, radiolist_dialog
 
 from ..tools.local.changes import Change
 from ..tools.local.hunks import hunks, selected_version
@@ -94,26 +94,84 @@ def select_changes(changes, items, *, interactive=True):
         for item in items:
             item.status = "skipped"
         return
-    pages = [(os.path.relpath(i.before.path, changes.root), i.diff(proposed=True) or "Создание пустого файла")
-             for i in items]
-    diff_application(pages).run()
-    selected = checkboxlist_dialog(title="Выберите файлы и фрагменты",
-        text="Пробел — выбор; Tab — кнопки. Пустой выбор ничего не записывает.",
-        values=choices, default_values=[key for key, _ in choices], ok_text="Далее", cancel_text="Отмена").run()
-    selected = set(selected or [])
-    chosen = []
-    for index, item in enumerate(items):
-        edits = [h for number, h in enumerate(groups[index]) if (index, number) in selected]
-        if not edits and (index, -1) not in selected:
-            item.status = "skipped"
-            continue
-        item.selected = selected_version(item.before.data or b"", edits)
-        chosen.append(item)
-    if chosen:
-        diff_application([(safe_label(os.path.relpath(i.before.path, changes.root)),
-                           Change(i.before, i.target).diff(proposed=True) or "Создание пустого файла")
-                          for i in chosen]).run()
-        if not yes_no_dialog(title="Применение набора", text="Записать выбранные изменения? "
-                             "При частичном сбое результат будет показан по каждому файлу.").run():
+    selected = [key for key, _ in choices]
+    while True:
+        selected = checkboxlist_dialog(title="Выберите файлы и фрагменты",
+            text="Пробел — выбор; Tab — кнопки. Diff можно открыть на следующем экране. "
+                 "Пустой выбор ничего не записывает.",
+            values=choices, default_values=selected, ok_text="Далее", cancel_text="Отмена").run()
+        selected = set(selected or [])
+        chosen = []
+        for index, item in enumerate(items):
+            edits = [h for number, h in enumerate(groups[index]) if (index, number) in selected]
+            if not edits and (index, -1) not in selected:
+                item.status = "skipped"
+                continue
+            item.status = "proposed"
+            item.selected = selected_version(item.before.data or b"", edits)
+            chosen.append(item)
+        if not chosen:
+            return
+        summary = "\n".join(
+            f"{safe_label(os.path.relpath(i.before.path, changes.root))} · "
+            f"{'создать' if i.before.data is None else 'изменить'}" for i in chosen)
+        while True:
+            action = radiolist_dialog(title="Применение изменений",
+                text=summary + "\nЗапись выполняется после вашего подтверждения. "
+                     "При частичном сбое результат будет показан по каждому файлу.",
+                values=[("write", "Записать выбранное"), ("diff", "Посмотреть diff"),
+                        ("select", "Изменить выбор"), ("cancel", "Отмена")],
+                ok_text="Выбрать", cancel_text="Отмена").run()
+            if action == "write":
+                return
+            if action == "diff":
+                diff_application([(safe_label(os.path.relpath(i.before.path, changes.root)),
+                                   Change(i.before, i.target).diff(proposed=True) or "Создание пустого файла")
+                                  for i in chosen]).run()
+                continue
+            if action == "select":
+                break
             for item in chosen:
                 item.status = "skipped"
+            return
+
+
+def select_undo_files(changes, *, interactive=True) -> list[str]:
+    """Выбор путей для отката; весь набор требует явной отметки."""
+    if not interactive:
+        return []
+    files = {}
+    for item in changes.entries:
+        if item.status == "applied":
+            files.setdefault(item.before.path, item)
+    if not files:
+        return []
+    choices = []
+    for path, item in files.items():
+        operation = "удалить созданный файл" if item.before.data is None else "восстановить файл"
+        choices.append((path, f"{safe_label(os.path.relpath(path, changes.root))} · {operation}"))
+    file_list = CheckboxList(values=choices, default_values=[])
+    keys = KeyBindings()
+
+    @keys.add("tab")
+    def next_control(event):
+        event.app.layout.focus_next()
+
+    @keys.add("s-tab")
+    def previous_control(event):
+        event.app.layout.focus_previous()
+
+    @keys.add("escape")
+    @keys.add("c-c")
+    def cancel(event):
+        event.app.exit(result=[])
+
+    dialog = Dialog(title="Выберите файлы для отката",
+        body=HSplit([Label("Пробел — выбор; Tab — кнопки; Esc — отмена. "
+                          "После выбора потребуется подтверждение.", dont_extend_height=True), file_list], padding=1),
+        buttons=[Button(text="Далее", handler=lambda: get_app().exit(result=list(file_list.current_values))),
+                 Button(text="Все файлы", handler=lambda: get_app().exit(result=list(files))),
+                 Button(text="Отмена", handler=lambda: get_app().exit(result=[]))],
+        with_background=True)
+    selected = Application(layout=Layout(dialog), key_bindings=keys, full_screen=True).run()
+    return [path for path in files if path in (selected or [])]

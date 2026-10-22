@@ -8,7 +8,7 @@ from gemini_cli.client.chat_buffers import ChatBuffers, filter_chats
 from gemini_cli.client.shell import launch_shell
 from gemini_cli.client.work_input import WorkInput
 from gemini_cli.client.work_view import WorkView
-from gemini_cli.client.change_view import browse_changes, select_changes
+from gemini_cli.client.change_view import browse_changes, select_changes, select_undo_files
 from gemini_cli.client.quota_view import PromptStatus, status_line, limits_text, value
 from prompt_toolkit.layout import ConditionalContainer, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
@@ -831,7 +831,7 @@ def main(backend: Backend | None = None):
                 table.add_row("/remove", "Показать номера для выбора; без номера ничего не удаляет")
                 table.add_row("/help", "Показать эту справку")
                 table.add_row("/diff [proposed]", "Правки последнего хода; пример: /diff proposed — предложения")
-                table.add_row("/undo", "Откат файловых правок последнего хода с проверкой конфликтов; пример: /undo")
+                table.add_row("/undo", "Выбрать файлы последнего хода для отката; пример: /undo")
                 table.add_row("/model", "Сменить ИИ модель")
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")
                 table.add_row("/chat", "Сменить или создать комнату диалога")
@@ -858,12 +858,18 @@ def main(backend: Backend | None = None):
                     continue
                 console.print(result_panel(changes.summary() + "\nКоманды shell и внешние действия не откатываются.", title="Откат"))
                 try:
-                    results = undo(changes, approve=lambda: yes_no_dialog(title="Откат файлов",
-                        text="Восстановить файлы последнего хода? Ручные изменения будут защищены проверкой конфликта.").run())
+                    selected_paths = select_undo_files(changes, interactive=console.is_terminal)
+                    selected_labels = "\n".join(safe_label(os.path.relpath(path, current_dir)) for path in selected_paths)
+                    results = undo(changes, selected_paths=selected_paths,
+                        approve=lambda: yes_no_dialog(title="Откат выбранных файлов",
+                            text="Восстановить выбранные файлы?\n" + selected_labels +
+                                 "\nСозданные агентом файлы будут удалены. Ручные правки защищены проверкой конфликта.").run())
                     console.print(result_panel("\n".join(f"{os.path.relpath(r['filepath'], current_dir) if r['filepath'] else ''}: {r['status']}"
                                                         for r in results), title="Результат отката"))
                 except (EOFError, KeyboardInterrupt):
                     console.print(result_panel("Откат отменён.", title="Откат"))
+                except ValueError as error:
+                    console.print(result_panel(str(error), title="Откат", error=True))
                 continue
 
             if first_line.split()[0] == "/diff":
@@ -1169,7 +1175,7 @@ def main(backend: Backend | None = None):
                 if event.get("turn_id") == state.turn_id:
                     event["status"] = state.status
             if state.changes.entries:
-                console.print(result_panel(state.changes.summary() + "\n/diff — просмотр · /undo — откат файлов", title="Файловые правки"))
+                console.print(result_panel(state.changes.summary() + "\n/diff — просмотр · /undo — выбрать файлы для отката", title="Файловые правки"))
             remember()
 
         except KeyboardInterrupt:
