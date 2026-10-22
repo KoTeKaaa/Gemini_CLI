@@ -27,6 +27,8 @@ jobs:
         run: |
           ./client/build.sh
           python client/check_executable.py dist/gemini-cli
+      - name: Check subscription status UI
+        run: python -B -m unittest tests.test_quota_view tests.test_status_pty -q
       - uses: actions/upload-artifact@v7
         with:
           name: gemini-cli-linux-x64-preview
@@ -62,6 +64,7 @@ jobs:
         shell: pwsh
         run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_context_selection tests.test_context_info tests.test_compaction tests.test_chat_buffers tests.test_local_chats tests.test_local_chats_v2 tests.test_local_chat_state tests.test_local_fork tests.test_local_summary_cancel tests.test_local_recovery_backend tests.test_local_history_apis tests.test_ui_context tests.test_stream_display tests.test_profiles -q
       - name: Check executable
+        # Real Windows rendering remains a separate interactive check.
         shell: pwsh
         run: |
           $exe = 'dist/gemini-cli.exe'
@@ -74,6 +77,9 @@ jobs:
           } finally {
             $stream.Dispose()
           }
+      - name: Check subscription status UI
+        shell: pwsh
+        run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_quota_view tests.test_status_pty -q
       - name: Check standalone executable startup
         shell: pwsh
         run: python client/check_executable.py dist/gemini-cli.exe

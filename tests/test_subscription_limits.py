@@ -51,6 +51,9 @@ class SubscriptionLimitsTests(unittest.TestCase):
                 subscription_limits(self.user(status=status), counter=counter)
             self.assertEqual(denied.exception.status_code, 403)
         self.assertEqual(counter.call_count, 2)
+        with self.assertRaises(HTTPException):
+            subscription_limits(self.user(expires_at="2000-01-01T00:00:00Z"), counter=counter)
+        self.assertEqual(subscription_limits(self.user(request_limit=1), counter=lambda *args: 2)["remaining"], 0)
 
     def test_admin_count_is_scoped_and_not_sent_to_client(self):
         db = Mock()
