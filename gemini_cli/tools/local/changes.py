@@ -75,6 +75,8 @@ class ChangeSet:
         if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_BYTES or "\x00" in text:
             raise ValueError("Нужен текст допустимого размера")
         change = Change(snapshot(self.root, path), text.encode("utf-8"))
+        if len(self.entries) >= 64 or sum(len(e.proposed) + len(e.before.data or b"") for e in self.entries) + len(change.proposed) + len(change.before.data or b"") > 16 * MAX_BYTES:
+            raise ValueError("Достигнут предел журнала правок за ход")
         self.entries.append(change)
         return change
 
@@ -89,6 +91,15 @@ class ChangeSet:
             raise ValueError("Записанная версия изменилась; требуется проверка")
         change.actual = actual
         change.status = "applied"
+
+    def write(self, change: Change) -> None:
+        from .files import atomic_write_text
+        self.validate(change)
+        if self.store is not None:
+            change.checkpoint = self.store.save(change, self.root)
+        atomic_write_text(change.before.path, change.proposed.decode("utf-8"), newline="",
+                          validate=lambda: self.validate(change))
+        self.applied(change)
 
     def summary(self) -> str:
         if not self.entries:
