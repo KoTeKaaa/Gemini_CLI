@@ -86,3 +86,17 @@ def validate_arguments(value, schema):
             raise ValueError('MCP: слишком длинный массив аргументов')
         for item in value:
             validate_arguments(item, schema['items'])
+
+
+def validate_tool_payload(payload):
+    from ..tools.definitions import TOOLS
+    declarations = payload.get('mcp_tools', [])
+    dynamic = validate_declarations(declarations)
+    names = payload.get('supported_tools')
+    if names is not None:
+        if (not isinstance(names, list) or len(names) > 32 or any(not isinstance(v, str) for v in names) or
+                len(set(names)) != len(names) or set(names) - set(TOOLS) != dynamic):
+            raise ValueError('MCP: объявления должны соответствовать выбранным инструментам')
+    elif dynamic:
+        raise ValueError('MCP: требуется явный supported_tools')
+    return declarations
