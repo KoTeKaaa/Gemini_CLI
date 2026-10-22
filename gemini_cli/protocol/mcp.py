@@ -52,7 +52,11 @@ def validate_schema(schema, *, depth=0, root=True):
 def validate_declarations(values):
     if not isinstance(values, list) or len(values) > MAX_MCP_TOOLS:
         raise ValueError('MCP: не более 16 инструментов')
-    if len(json.dumps(values, allow_nan=False).encode()) > 32768:
+    try:
+        size = len(json.dumps(values, allow_nan=False).encode())
+    except (TypeError, ValueError, RecursionError):
+        raise ValueError('MCP: некорректный JSON объявления') from None
+    if size > 32768:
         raise ValueError('MCP: превышен размер объявлений')
     names = set()
     for value in values:

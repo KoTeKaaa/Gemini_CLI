@@ -3,7 +3,9 @@
 from ...protocol.mcp import tool_name, validate_declarations
 
 
-def canonical_schema(schema):
+def canonical_schema(schema, depth=0):
+    if depth > 5:
+        raise ValueError("MCP: слишком глубокая schema")
     if not isinstance(schema, dict):
         return schema
     result = dict(schema)
@@ -13,9 +15,9 @@ def canonical_schema(schema):
     for annotation in ('title', 'default', 'x-mcp-header'):
         result.pop(annotation, None)
     if isinstance(result.get('properties'), dict):
-        result['properties'] = {name: canonical_schema(value) for name, value in result['properties'].items()}
+        result['properties'] = {name: canonical_schema(value, depth + 1) for name, value in result['properties'].items()}
     if 'items' in result:
-        result['items'] = canonical_schema(result['items'])
+        result['items'] = canonical_schema(result['items'], depth + 1)
     return result
 
 
@@ -39,4 +41,8 @@ def catalog(server, tools, selected=()):
             continue
         accepted.append(declaration)
         routes[qualified] = name
+    discovered = {tool.get('name') for tool in tools if isinstance(tool.get('name'), str)}
+    for name in selected:
+        if name not in discovered:
+            rejected[name] = 'Сервер больше не объявляет выбранный инструмент'
     return accepted, routes, rejected

@@ -80,3 +80,35 @@ class MCPHTTPTest(unittest.TestCase):
         finally:
             process.terminate()
             process.wait(timeout=5)
+
+    def test_real_http_refusals_do_not_follow_redirect_or_leak_credentials(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import threading
+        from gemini_cli.integrations.mcp.transport import Session, MCPUnavailable
+        for status in (401, 429, 302):
+            seen = []
+            class Handler(BaseHTTPRequestHandler):
+                def log_message(self, *args):
+                    pass
+                def do_POST(self):
+                    seen.append(self.path)
+                    self.rfile.read(int(self.headers.get('Content-Length', '0')))
+                    self.send_response(status)
+                    if status == 302:
+                        self.send_header('Location', '/must-not-follow')
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+            server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with self.assertRaises(MCPUnavailable):
+                    Session(Connection('denied', 'http',
+                        url=f'http://127.0.0.1:{server.server_port}/mcp', allow_private=True, timeout=1),
+                        secrets={'bearer': 'fixture-only'})
+                self.assertTrue(seen)
+                self.assertNotIn('/must-not-follow', seen)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()

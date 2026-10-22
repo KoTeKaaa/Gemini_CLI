@@ -30,6 +30,11 @@ class MCPSchemaTest(unittest.TestCase):
         self.assertNotIn('title', str(accepted))
         self.assertEqual(rejected, {})
 
+    def test_disappeared_tool_has_reason(self):
+        accepted, routes, rejected = catalog('demo', [], ('removed',))
+        self.assertEqual(accepted, [])
+        self.assertIn('removed', rejected)
+
     def test_arguments_validate_before_call(self):
         schema = {'type': 'object', 'properties': {'x': {'type': 'integer'}}, 'required': ['x']}
         validate_arguments({'x': 3}, schema)
