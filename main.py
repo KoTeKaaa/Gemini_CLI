@@ -746,6 +746,7 @@ def main(backend: Backend | None = None):
             draft_input.take_notice()
             try:
                 status_payload = context_payload(temporary_history, chat_id, current_model, summary)
+                status_payload["supported_tools"] = list(CLIENT_NAMES)
                 from hashlib import sha256
                 status_key = (backend_identity(api_client), current_model, chat_id,
                               sha256(json.dumps(status_payload, sort_keys=True).encode()).digest())

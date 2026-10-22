@@ -70,11 +70,16 @@ class QuotaViewTests(unittest.TestCase):
         with unittest.mock.patch.object(main, "PromptSession") as prompt, \
              unittest.mock.patch.object(main, "show_chat_menu", return_value=(None, True)), \
              unittest.mock.patch.object(main, "print_banner"), \
-             unittest.mock.patch.object(main.PromptStatus, "update"), \
+             unittest.mock.patch.object(main.PromptStatus, "update") as update, \
              unittest.mock.patch.object(main.console, "print") as printed:
             prompt.return_value.prompt.side_effect = ["/limits bad", "/limits refresh", "exit"]
             main.main(client)
         client.limits.assert_called_once_with("gemini-3.5-flash-lite", refresh=True)
         client.stream_chat.assert_not_called()
+        payload = update.call_args.args[3]
+        sent = main.build_stream_payload([{"role": "user", "content": "confirmed"}], None,
+                                         "gemini-3.5-flash-lite", True)
+        self.assertEqual(payload["supported_tools"], sent["supported_tools"])
+        self.assertNotIn("message", payload)
         self.assertTrue(any("Использование: /limits" in str(getattr(call.args[0], "renderable", call.args[0]))
                             for call in printed.call_args_list))
