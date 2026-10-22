@@ -8,6 +8,10 @@ from prompt_toolkit.search import start_search
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout
 from prompt_toolkit.widgets import Label, SearchToolbar, TextArea
+from prompt_toolkit.shortcuts import checkboxlist_dialog, yes_no_dialog
+
+from ..tools.local.changes import Change
+from ..tools.local.hunks import hunks, selected_version
 
 from .input import safe_label
 
@@ -68,3 +72,42 @@ def browse_changes(changes, *, proposed=False):
     pages = change_pages(changes, proposed=proposed)
     if pages:
         diff_application(pages).run()
+
+
+def select_changes(changes, items, *, interactive=True):
+    if not interactive:
+        for item in items:
+            item.status = "skipped"
+        return
+    choices, groups = [], {}
+    for index, item in enumerate(items):
+        groups[index] = hunks(item.before.data or b"", item.proposed)
+        path = safe_label(os.path.relpath(item.before.path, changes.root))
+        for number, hunk in enumerate(groups[index]):
+            choices.append(((index, number), f"{path} · фрагмент {number + 1} · строки {hunk.start + 1}–{hunk.end}"))
+        # Creating an empty file is a meaningful operation despite no text diff.
+        if not groups[index] and item.before.data is None:
+            choices.append(((index, -1), f"{path} · создать пустой файл"))
+    pages = [(os.path.relpath(i.before.path, changes.root), i.diff(proposed=True) or "Создание пустого файла")
+             for i in items]
+    diff_application(pages).run()
+    selected = checkboxlist_dialog(title="Выберите файлы и фрагменты",
+        text="Пробел — выбор; Tab — кнопки. Пустой выбор ничего не записывает.",
+        values=choices, default_values=[key for key, _ in choices], ok_text="Далее", cancel_text="Отмена").run()
+    selected = set(selected or [])
+    chosen = []
+    for index, item in enumerate(items):
+        edits = [h for number, h in enumerate(groups[index]) if (index, number) in selected]
+        if not edits and (index, -1) not in selected:
+            item.status = "skipped"
+            continue
+        item.selected = selected_version(item.before.data or b"", edits)
+        chosen.append(item)
+    if chosen:
+        diff_application([(safe_label(os.path.relpath(i.before.path, changes.root)),
+                           Change(i.before, i.target).diff(proposed=True) or "Создание пустого файла")
+                          for i in chosen]).run()
+        if not yes_no_dialog(title="Применение набора", text="Записать выбранные изменения? "
+                             "При частичном сбое результат будет показан по каждому файлу.").run():
+            for item in chosen:
+                item.status = "skipped"

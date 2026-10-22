@@ -4,7 +4,7 @@ from .changes import ChangeSet
 
 
 def write_set(files: list, changes: ChangeSet, *, approve, confirm_diff=None,
-              notify=lambda _: None, cancelled=lambda: False) -> list[dict] | dict:
+              notify=lambda _: None, cancelled=lambda: False, select=None) -> list[dict] | dict:
     if not isinstance(files, list) or not files or len(files) > 64:
         return {"error": "Нужен набор от 1 до 64 файлов"}
     plans, results, seen = [], [], set()
@@ -26,6 +26,8 @@ def write_set(files: list, changes: ChangeSet, *, approve, confirm_diff=None,
     try:
         if not plans:
             return results
+        if select is not None:
+            select(changes, [p for p, _ in plans])
         if not approve([{"filepath": p.before.path, "content": p.proposed.decode("utf-8")} for p, _ in plans]):
             for item, _ in plans:
                 item.status = "denied"
@@ -41,9 +43,9 @@ def write_set(files: list, changes: ChangeSet, *, approve, confirm_diff=None,
     for item, result in plans:
         path = item.before.path
         try:
-            if cancelled():
+            if cancelled() or item.status == "skipped":
                 item.status = "skipped"
-                status = "Пропущено: ход отменён"
+                status = "Пропущено: отмена или нет выбранных фрагментов"
             else:
                 changes.write(item)
                 status = "Успешно записан"

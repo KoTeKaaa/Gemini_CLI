@@ -55,3 +55,18 @@ class WriteSetTest(unittest.TestCase):
         self.write(cancelled=lambda: True)
         self.assertEqual(self.changes.entries[-1].status, "skipped")
         self.assertEqual(self.path.read_bytes(), b"manual\r\n")
+
+    def test_selected_fragments_are_written_and_original_proposal_retained(self):
+        from gemini_cli.tools.local.hunks import hunks, selected_version
+        before = "".join(f"line{i}\r\n" for i in range(30)).encode()
+        self.path.write_bytes(before)
+        proposed = before.replace(b"line1\r\n", b"first\r\n").replace(b"line25\r\n", b"last\r\n")
+        def select(changes, items):
+            item = items[0]
+            item.selected = selected_version(item.before.data, hunks(item.before.data, item.proposed)[:1])
+        write_set([{"filepath": "file.txt", "content": proposed.decode()}], self.changes,
+                  approve=lambda _: True, select=select)
+        item = self.changes.entries[0]
+        self.assertEqual(item.proposed, proposed)
+        self.assertEqual(item.actual.data, before.replace(b"line1\r\n", b"first\r\n"))
+        self.assertEqual(self.changes.store.load(item), before)

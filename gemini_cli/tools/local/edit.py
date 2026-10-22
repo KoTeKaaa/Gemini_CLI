@@ -52,7 +52,7 @@ def apply_replacement(plan: Replacement) -> None:
 
 
 def replace_in_file(args: dict, current_dir: str, *, approve, confirm_diff, changes=None,
-                    cancelled=lambda: False) -> dict:
+                    cancelled=lambda: False, select=None) -> dict:
     item = None
     try:
         plan = prepare_replacement(args, current_dir, approve=approve)
@@ -61,7 +61,11 @@ def replace_in_file(args: dict, current_dir: str, *, approve, confirm_diff, chan
         item = changes.propose(plan.filepath, plan.updated)
         if item.before.data != plan.original.encode("utf-8") or item.before.identity != plan.expected[1]:
             raise ValueError("Файл изменился после предпросмотра")
-        if not confirm_diff(plan.diff):
+        if select is not None:
+            select(changes, [item])
+            if item.status == "skipped":
+                return failure("denied", "Замена не выбрана пользователем")
+        elif not confirm_diff(plan.diff):
             item.status = "denied"
             return failure("denied", "Замена отклонена пользователем")
         if cancelled():

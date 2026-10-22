@@ -54,6 +54,11 @@ class Change:
     actual: Snapshot | None = None
     status: str = "proposed"
     checkpoint: str | None = None
+    selected: bytes | None = None
+
+    @property
+    def target(self) -> bytes:
+        return self.proposed if self.selected is None else self.selected
 
     def diff(self, *, proposed=False) -> str:
         after = self.proposed if proposed else (self.actual.data if self.actual else self.before.data)
@@ -86,7 +91,7 @@ class ChangeSet:
 
     def applied(self, change: Change) -> None:
         actual = snapshot(self.root, change.before.path)
-        if actual.data != change.proposed:
+        if actual.data != change.target:
             change.status = "conflict"
             raise ValueError("Записанная версия изменилась; требуется проверка")
         change.actual = actual
@@ -97,7 +102,7 @@ class ChangeSet:
         self.validate(change)
         if self.store is not None:
             change.checkpoint = self.store.save(change, self.root)
-        atomic_write_text(change.before.path, change.proposed.decode("utf-8"), newline="",
+        atomic_write_text(change.before.path, change.target.decode("utf-8"), newline="",
                           validate=lambda: self.validate(change))
         self.applied(change)
 

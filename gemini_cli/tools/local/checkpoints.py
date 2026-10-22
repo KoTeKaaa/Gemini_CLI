@@ -45,7 +45,7 @@ class CheckpointStore:
         payload = {"path": before.path, "mode": before.mode,
                    "data": None if before.data is None else base64.b64encode(before.data).decode("ascii"),
                    "fingerprint": before.fingerprint,
-                   "proposed": hashlib.sha256(change.proposed).hexdigest()}
+                   "proposed": hashlib.sha256(change.target).hexdigest()}
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         envelope = json.dumps({"payload": payload, "sha256": hashlib.sha256(raw).hexdigest()},
                               ensure_ascii=False).encode("utf-8")
@@ -81,7 +81,7 @@ class CheckpointStore:
             if (hashlib.sha256(raw).hexdigest() != envelope["sha256"]
                     or payload["path"] != change.before.path or payload["mode"] != change.before.mode
                     or payload["fingerprint"] != change.before.fingerprint or data != change.before.data
-                    or payload["proposed"] != hashlib.sha256(change.proposed).hexdigest()):
+                    or payload["proposed"] != hashlib.sha256(change.target).hexdigest()):
                 raise ValueError("Контрольная точка повреждена")
             return data
         except (KeyError, TypeError, UnicodeError, ValueError) as error:

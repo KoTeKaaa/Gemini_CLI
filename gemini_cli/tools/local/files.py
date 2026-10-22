@@ -97,7 +97,7 @@ def write_files(
     approve: Callable[[list[dict]], bool],
     notify: Callable[[str], None],
     logger: logging.Logger,
-    changes=None, confirm_diff=None, cancelled=lambda: False,
+    changes=None, confirm_diff=None, cancelled=lambda: False, select=None,
 ) -> str:
     files = args.get("files", [])
     if not files:
@@ -105,7 +105,8 @@ def write_files(
     from .changes import ChangeSet
     from .write_set import write_set
     return json.dumps(write_set(files, changes or ChangeSet(current_dir), approve=approve,
-                               confirm_diff=confirm_diff, notify=notify, cancelled=cancelled), ensure_ascii=False)
+                               confirm_diff=confirm_diff, notify=notify, cancelled=cancelled,
+                               select=select), ensure_ascii=False)
 
 
 def read_file_lines(args: dict, current_dir: str, *, approve,

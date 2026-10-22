@@ -8,7 +8,7 @@ from gemini_cli.client.chat_buffers import ChatBuffers, filter_chats
 from gemini_cli.client.shell import launch_shell
 from gemini_cli.client.work_input import WorkInput
 from gemini_cli.client.work_view import WorkView
-from gemini_cli.client.change_view import browse_changes
+from gemini_cli.client.change_view import browse_changes, select_changes
 from gemini_cli.client.quota_view import PromptStatus, status_line, limits_text, value
 from prompt_toolkit.layout import ConditionalContainer, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
@@ -247,10 +247,11 @@ def confirm_file_write(files: list[dict]) -> bool:
     return True
 
 
-def handle_write_files(args: dict, current_dir: str, *, changes=None, cancelled=lambda: False) -> str:
-    return write_files(args, current_dir, approve=confirm_file_write,
+def handle_write_files(args: dict, current_dir: str, *, changes=None, cancelled=lambda: False, select=None) -> str:
+    return write_files(args, current_dir, approve=confirm_file_write if select is None else lambda _: True,
                        notify=console.print, logger=logger, changes=changes,
-                       confirm_diff=confirm_replacement, cancelled=cancelled)
+                       confirm_diff=confirm_replacement if select is None else None,
+                       cancelled=cancelled, select=select)
 
 
 def confirm_command(command: str) -> bool:
@@ -552,15 +553,17 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
         if state is not None:
             state.changes = changes
     cancelled = state.cancelled.is_set if state else lambda: False
+    select = lambda journal, items: select_changes(journal, items, interactive=console.is_terminal)
     handlers = {
         "read_local_files": handle_read_files,
-        "write_local_files": lambda args, cwd: handle_write_files(args, cwd, changes=changes, cancelled=cancelled),
+        "write_local_files": lambda args, cwd: handle_write_files(args, cwd, changes=changes,
+                                                                 cancelled=cancelled, select=select),
         "execute_command": (handle_execute_command if state is None else
                             lambda args, cwd: handle_execute_command(args, cwd, state=state)),
         "find_files": lambda args, cwd: json.dumps(find_files(args, cwd), ensure_ascii=False),
         "replace_in_file": lambda args, cwd: json.dumps(replace_in_file(
             args, cwd, approve=confirm_content_scope, confirm_diff=confirm_replacement,
-            changes=changes, cancelled=cancelled), ensure_ascii=False),
+            changes=changes, cancelled=cancelled, select=select), ensure_ascii=False),
         "read_file_lines": lambda args, cwd: json.dumps(read_file_lines(args, cwd, approve=confirm_content_scope),
                                                          ensure_ascii=False),
         "search_text": lambda args, cwd: json.dumps(search_text(args, cwd, approve=confirm_content_scope),

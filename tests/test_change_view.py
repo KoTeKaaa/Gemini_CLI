@@ -2,14 +2,28 @@ import asyncio
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
-from gemini_cli.client.change_view import change_pages, diff_application
+from gemini_cli.client.change_view import change_pages, diff_application, select_changes
 from gemini_cli.tools.local.changes import ChangeSet
 
 
 class ChangeViewTest(unittest.TestCase):
+    def test_zero_selection_and_final_refusal_do_not_apply(self):
+        with tempfile.TemporaryDirectory() as root:
+            changes = ChangeSet(root)
+            item = changes.propose("one", "new")
+            for selected in ([], [(0, 0)]):
+                item.status = "proposed"
+                with patch("gemini_cli.client.change_view.diff_application", return_value=Mock()), \
+                     patch("gemini_cli.client.change_view.checkboxlist_dialog", return_value=Mock(run=lambda: selected)), \
+                     patch("gemini_cli.client.change_view.yes_no_dialog", return_value=Mock(run=lambda: False)):
+                    select_changes(changes, [item])
+                self.assertEqual(item.status, "skipped")
+                self.assertFalse(Path(root, "one").exists())
+
     def test_empty_proposal_actual_and_long_unicode_lines(self):
         with tempfile.TemporaryDirectory() as root:
             changes = ChangeSet(root)
