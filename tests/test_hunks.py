@@ -22,6 +22,7 @@ class HunkTest(unittest.TestCase):
     def test_overlapping_wrong_context_and_duplicate_rejected(self):
         first = Hunk(0, 2, ("a\n", "b\n"), ("x\n",))
         for edits in ([first, first], [Hunk(1, 2, ("wrong",), ())],
-                      [first, Hunk(1, 2, ("b\n",), ())]):
+                      [first, Hunk(1, 2, ("b\n",), ())],
+                      [Hunk(0, 0, (), ("x",)), Hunk(0, 0, (), ("y",))]):
             with self.subTest(edits=edits), self.assertRaises(ValueError):
                 selected_version(b"a\nb\n", edits)

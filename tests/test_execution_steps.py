@@ -6,6 +6,14 @@ from gemini_cli.client.tool_runner import execute_tool_calls
 
 
 class StepTests(unittest.TestCase):
+    def test_partial_file_write_is_failed_not_completed(self):
+        state = TurnState()
+        execute_tool_calls([{"name": "write_local_files"}], [], ".",
+            handlers={"write_local_files": lambda *args: json.dumps([
+                {"outcome": "applied"}, {"outcome": "failed"}])},
+            logger=logging.getLogger(__name__), state=state)
+        self.assertEqual(state.steps()[0]["status"], "failed")
+
     def test_failed_cancelled_skipped_are_not_success(self):
         state = TurnState()
         state.request({})

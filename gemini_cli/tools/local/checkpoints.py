@@ -19,7 +19,11 @@ class CheckpointStore:
 
     def _prepare(self, root: str) -> None:
         full = os.path.realpath(self.directory)
-        if os.path.commonpath((os.path.realpath(root), full)) == os.path.realpath(root):
+        try:
+            inside = os.path.commonpath((os.path.realpath(root), full)) == os.path.realpath(root)
+        except ValueError:  # Workspace and profile may be on different Windows drives.
+            inside = False
+        if inside:
             raise ValueError("Контрольные точки должны храниться вне workspace")
         if os.path.abspath(self.directory) != full:
             raise ValueError("Ссылки в хранилище контрольных точек запрещены")
@@ -71,7 +75,9 @@ class CheckpointStore:
         if not isinstance(key, str) or len(key) != 32 or any(c not in "0123456789abcdef" for c in key):
             raise ValueError("Контрольная точка отсутствует")
         path = self.directory / (key + ".json")
-        if path.is_symlink() or path.stat().st_size > 2 * MAX_BYTES:
+        if (os.path.abspath(self.directory) != os.path.realpath(self.directory) or path.is_symlink()
+                or path.stat().st_size > 2 * MAX_BYTES
+                or time.time() - path.stat().st_mtime > self.max_age):
             raise ValueError("Контрольная точка повреждена")
         try:
             envelope = json.loads(path.read_bytes())

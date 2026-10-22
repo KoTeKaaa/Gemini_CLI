@@ -56,3 +56,10 @@ class ChangesTest(unittest.TestCase):
             (self.root / "alias").symlink_to(self.path)
             with self.assertRaises(ValueError):
                 snapshot(str(self.root), "alias")
+
+    def test_no_final_newline_diff_is_unambiguous(self):
+        self.path.write_bytes(b"old")
+        item = self.changes.propose("file.txt", "new")
+        diff = item.diff(proposed=True)
+        self.assertIn("-old\n\\ No newline", diff)
+        self.assertIn("+new\n\\ No newline", diff)

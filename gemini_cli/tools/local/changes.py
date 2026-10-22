@@ -6,7 +6,7 @@ import hashlib
 import os
 import stat
 
-from .workspace import file_identity, is_sensitive_read_path, read_binary_snapshot, plan_text_file, resolve_safe_path
+from .workspace import is_sensitive_read_path, read_binary_snapshot, plan_text_file, resolve_safe_path
 
 MAX_BYTES = 2 * 1024 * 1024
 
@@ -42,7 +42,7 @@ def snapshot(root: str, path: str) -> Snapshot:
         raise ValueError("Бинарный файл пропущен")
     data.decode("utf-8")
     info = os.stat(full)
-    if file_identity(info) != expected[1]:
+    if plan_text_file(root, path) != expected:
         raise ValueError("Файл изменился во время чтения")
     return Snapshot(full, data, stat.S_IMODE(info.st_mode), expected[1])
 
@@ -62,11 +62,12 @@ class Change:
 
     def diff(self, *, proposed=False) -> str:
         after = self.proposed if proposed else (self.actual.data if self.actual else self.before.data)
-        return "".join(difflib.unified_diff(
+        name = "".join(c if c.isprintable() else "?" for c in os.path.basename(self.before.path))
+        lines = difflib.unified_diff(
             (self.before.data or b"").decode("utf-8").splitlines(keepends=True),
             (after or b"").decode("utf-8").splitlines(keepends=True),
-            fromfile="a/" + os.path.basename(self.before.path),
-            tofile="b/" + os.path.basename(self.before.path)))
+            fromfile="a/" + name, tofile="b/" + name)
+        return "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n" for line in lines)
 
 
 class ChangeSet:
@@ -80,7 +81,8 @@ class ChangeSet:
         if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_BYTES or "\x00" in text:
             raise ValueError("Нужен текст допустимого размера")
         change = Change(snapshot(self.root, path), text.encode("utf-8"))
-        if len(self.entries) >= 64 or sum(len(e.proposed) + len(e.before.data or b"") for e in self.entries) + len(change.proposed) + len(change.before.data or b"") > 16 * MAX_BYTES:
+        total = sum(len(e.proposed) + len(e.before.data or b"") for e in self.entries)
+        if len(self.entries) >= 64 or total + len(change.proposed) + len(change.before.data or b"") > 16 * MAX_BYTES:
             raise ValueError("Достигнут предел журнала правок за ход")
         self.entries.append(change)
         return change
@@ -97,16 +99,20 @@ class ChangeSet:
         change.actual = actual
         change.status = "applied"
 
-    def write(self, change: Change) -> None:
+    def write(self, change: Change, *, cancelled=lambda: False) -> None:
         from .files import atomic_write_text
-        self.validate(change)
+        def validate():
+            if cancelled():
+                raise InterruptedError("Ход отменён до записи файла")
+            self.validate(change)
+        validate()
         if self.store is not None:
             if change.checkpoint is None:
                 change.checkpoint = self.store.save(change, self.root)
             else:
                 self.store.load(change)
         atomic_write_text(change.before.path, change.target.decode("utf-8"), newline="",
-                          validate=lambda: self.validate(change))
+                          validate=validate)
         self.applied(change)
 
     def summary(self) -> str:
@@ -114,6 +120,8 @@ class ChangeSet:
             return "В последнем ходе нет файловых правок."
         labels = {"proposed": "предложено", "applied": "применено", "denied": "отклонено",
                   "failed": "ошибка", "conflict": "конфликт", "undone": "отменено", "skipped": "пропущено"}
-        return "\n".join(f"{index}. {os.path.relpath(item.before.path, self.root)}: "
+        def label(path):
+            return "".join(c if c.isprintable() else "?" for c in os.path.relpath(path, self.root))
+        return "\n".join(f"{index}. {label(item.before.path)}: "
                          f"{labels.get(item.status, item.status)}"
                          for index, item in enumerate(self.entries, 1))

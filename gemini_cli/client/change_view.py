@@ -20,6 +20,8 @@ def change_pages(changes, *, proposed=False) -> list[tuple[str, str]]:
     pages = []
     for index, item in enumerate(changes.entries, 1):
         diff = item.diff(proposed=proposed)
+        if not diff and item.before.data is None and (proposed or item.actual is not None):
+            diff = "Создание пустого файла\n"
         if not diff:
             continue
         path = safe_label(os.path.relpath(item.before.path, changes.root))
@@ -88,6 +90,10 @@ def select_changes(changes, items, *, interactive=True):
         # Creating an empty file is a meaningful operation despite no text diff.
         if not groups[index] and item.before.data is None:
             choices.append(((index, -1), f"{path} · создать пустой файл"))
+    if not choices:
+        for item in items:
+            item.status = "skipped"
+        return
     pages = [(os.path.relpath(i.before.path, changes.root), i.diff(proposed=True) or "Создание пустого файла")
              for i in items]
     diff_application(pages).run()

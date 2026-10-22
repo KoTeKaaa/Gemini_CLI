@@ -6,6 +6,7 @@ import os
 import stat
 import tempfile
 from typing import Callable
+from contextlib import nullcontext
 
 from .workspace import file_identity, is_sensitive_read_path, resolve_safe_path, plan_text_file, read_text_snapshot
 from ..results import failure, success
@@ -97,7 +98,7 @@ def write_files(
     approve: Callable[[list[dict]], bool],
     notify: Callable[[str], None],
     logger: logging.Logger,
-    changes=None, confirm_diff=None, cancelled=lambda: False, select=None,
+    changes=None, confirm_diff=None, cancelled=lambda: False, select=None, monitor=nullcontext,
 ) -> str:
     files = args.get("files", [])
     if not files:
@@ -106,7 +107,7 @@ def write_files(
     from .write_set import write_set
     return json.dumps(write_set(files, changes or ChangeSet(current_dir), approve=approve,
                                confirm_diff=confirm_diff, notify=notify, cancelled=cancelled,
-                               select=select), ensure_ascii=False)
+                               select=select, monitor=monitor), ensure_ascii=False)
 
 
 def read_file_lines(args: dict, current_dir: str, *, approve,

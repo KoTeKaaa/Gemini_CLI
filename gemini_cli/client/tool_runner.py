@@ -51,6 +51,10 @@ def execute_tool_calls(
                 status = result.get("status", "completed")
                 if result.get("error") or result.get("exit_code", 0) not in (None, 0):
                     status = "failed"
+            elif tool_name == "write_local_files" and isinstance(result, list):
+                outcomes = {row.get("outcome", "failed") for row in result if isinstance(row, dict)}
+                status = ("failed" if outcomes & {"failed", "conflict"} else
+                          "completed" if "applied" in outcomes else "skipped")
         except (ValueError, TypeError):
             if str(tool_result).startswith("Ошибка"):
                 status = "failed"

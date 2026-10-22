@@ -20,6 +20,7 @@ import sys
 import json
 import ipaddress
 import tempfile
+from contextlib import nullcontext
 from uuid import uuid4
 from pathlib import Path
 from typing import Optional, Dict, List, Any
@@ -248,11 +249,12 @@ def confirm_file_write(files: list[dict]) -> bool:
     return True
 
 
-def handle_write_files(args: dict, current_dir: str, *, changes=None, cancelled=lambda: False, select=None) -> str:
+def handle_write_files(args: dict, current_dir: str, *, changes=None, cancelled=lambda: False,
+                       select=None, monitor=nullcontext) -> str:
     return write_files(args, current_dir, approve=confirm_file_write if select is None else lambda _: True,
-                       notify=console.print, logger=logger, changes=changes,
+                       notify=lambda text: console.print(Text(safe_label(text))), logger=logger, changes=changes,
                        confirm_diff=confirm_replacement if select is None else None,
-                       cancelled=cancelled, select=select)
+                       cancelled=cancelled, select=select, monitor=monitor)
 
 
 def confirm_command(command: str) -> bool:
@@ -555,16 +557,17 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
             state.changes = changes
     cancelled = state.cancelled.is_set if state else lambda: False
     select = lambda journal, items: select_changes(journal, items, interactive=console.is_terminal)
+    monitor = (lambda: WorkInput(state)) if state else nullcontext
     handlers = {
         "read_local_files": handle_read_files,
         "write_local_files": lambda args, cwd: handle_write_files(args, cwd, changes=changes,
-                                                                 cancelled=cancelled, select=select),
+                                                                 cancelled=cancelled, select=select, monitor=monitor),
         "execute_command": (handle_execute_command if state is None else
                             lambda args, cwd: handle_execute_command(args, cwd, state=state)),
         "find_files": lambda args, cwd: json.dumps(find_files(args, cwd), ensure_ascii=False),
         "replace_in_file": lambda args, cwd: json.dumps(replace_in_file(
             args, cwd, approve=confirm_content_scope, confirm_diff=confirm_replacement,
-            changes=changes, cancelled=cancelled, select=select), ensure_ascii=False),
+            changes=changes, cancelled=cancelled, select=select, monitor=monitor), ensure_ascii=False),
         "read_file_lines": lambda args, cwd: json.dumps(read_file_lines(args, cwd, approve=confirm_content_scope),
                                                          ensure_ascii=False),
         "search_text": lambda args, cwd: json.dumps(search_text(args, cwd, approve=confirm_content_scope),
@@ -1084,7 +1087,11 @@ def main(backend: Backend | None = None):
             row.update(id=str(uuid4()), turn_id=state.turn_id, status="running")
             state.changes = ChangeSet(current_dir, state.turn_id,
                                       store=CheckpointStore(Path(CONFIG_DIR) / "checkpoints"))
-            file_changes[(backend_identity(api_client), chat_id, os.path.realpath(current_dir))] = state.changes
+            changes_key = (backend_identity(api_client), chat_id, os.path.realpath(current_dir))
+            file_changes.pop(changes_key, None)
+            file_changes[changes_key] = state.changes
+            while len(file_changes) > 8:
+                file_changes.pop(next(iter(file_changes)))
             console.print("\n[bold cyan]Gemini:[/bold cyan]")
             temporary_history.append(row)
             bound_image_history(temporary_history)
@@ -1161,6 +1168,8 @@ def main(backend: Backend | None = None):
             for event in temporary_history:
                 if event.get("turn_id") == state.turn_id:
                     event["status"] = state.status
+            if state.changes.entries:
+                console.print(result_panel(state.changes.summary() + "\n/diff — просмотр · /undo — откат файлов", title="Файловые правки"))
             remember()
 
         except KeyboardInterrupt:

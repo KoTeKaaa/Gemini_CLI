@@ -13,8 +13,8 @@ from tests import test_tool_continuation as fixtures
 
 class MixedToolsTest(unittest.TestCase):
     def test_search_read_edit_chain_survives_one_tool_failure(self):
-        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {
-            "HOME": root, "API_KEY": "test-key", "SUPABASE_URL": "https://example.supabase.co",
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {
+            "HOME": home, "API_KEY": "test-key", "SUPABASE_URL": "https://example.supabase.co",
             "SUPABASE_ANON_KEY": "test-anon-key", "TAVILY_API_KEY": "fixture",
         }):
             main, server = importlib.import_module("main"), importlib.import_module("server")
@@ -54,6 +54,8 @@ class MixedToolsTest(unittest.TestCase):
             with (patch.object(server, "client", model),
                   patch.object(server, "StreamingResponse", side_effect=lambda generator, **_: SimpleNamespace(body_iterator=generator)),
                   patch.object(main.console, "print"), patch("builtins.input", return_value="y"),
+                  patch.object(main, "CONFIG_DIR", home),
+                  patch.object(main, "select_changes", side_effect=lambda *a, **kw: None),
                   patch.object(main, "handle_execute_command", side_effect=OSError("PRIVATE-ERROR")),
                   patch.object(main.requests, "post", side_effect=post)):
                 for _ in range(3):
