@@ -87,9 +87,10 @@ def register_history_routes(app, *, get_user, provider, payload_model, authorize
             contents = to_gemini(selected(payload, user))
             client = provider()
             from ..backends.genai import provider_tools
-            if payload.mcp_tools:
+            dynamic = getattr(payload, "mcp_tools", [])
+            if dynamic:
                 authorize(user, model=payload.model_name, features={MCP_FEATURE})
-            tools = provider_tools(payload.supported_tools, set(rights["features"]), payload.mcp_tools)
+            tools = provider_tools(payload.supported_tools, set(rights["features"]), dynamic)
             info = model_info(client, payload.model_name, ("server", id(client), user.user_id),
                               refresh=payload.refresh)
             usage = count_context(client, payload.model_name, contents, AGENT_INSTRUCTION, tools) if payload.refresh else None

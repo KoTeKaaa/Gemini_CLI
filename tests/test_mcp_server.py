@@ -2,15 +2,15 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch, Mock
 from fastapi import HTTPException
-from tests.test_tool_continuation import ToolContinuationTest, FakeDb
+from tests import test_tool_continuation as fixtures
 from gemini_cli.protocol.mcp import tool_name
 
 
 class MCPServerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        ToolContinuationTest.setUpClass()
-        cls.server = ToolContinuationTest.server
+        fixtures.ToolContinuationTest.setUpClass()
+        cls.server = fixtures.ToolContinuationTest.server
 
     def payload(self):
         name = tool_name('x', 'echo')
@@ -25,7 +25,7 @@ class MCPServerTest(unittest.TestCase):
         with patch.object(self.server, 'require_subscription', side_effect=guard), \
                 patch.object(self.server, 'stream_events') as provider:
             with self.assertRaises(HTTPException) as caught:
-                self.server.stream_chat(self.payload(), self.server.UserContext('u', FakeDb()))
+                self.server.stream_chat(self.payload(), self.server.UserContext('u', fixtures.FakeDb()))
             self.assertEqual(caught.exception.status_code, 403)
             provider.assert_not_called()
 
@@ -39,7 +39,7 @@ class MCPServerTest(unittest.TestCase):
         with patch.object(self.server, 'require_subscription', side_effect=guard), \
                 patch.object(self.server, 'StreamingResponse', side_effect=lambda body, **_: body), \
                 patch.object(self.server, 'stream_events') as provider:
-            list(self.server.stream_chat(self.payload(), self.server.UserContext('u', FakeDb())))
+            list(self.server.stream_chat(self.payload(), self.server.UserContext('u', fixtures.FakeDb())))
             self.assertEqual(calls[-1], {'mcp'})
             provider.assert_not_called()
 
