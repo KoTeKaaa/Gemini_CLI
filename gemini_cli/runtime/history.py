@@ -26,6 +26,8 @@ def bounded_tool_result(content: str, max_bytes=MAX_TOOL_RESULT_WIRE_BYTES) -> s
 
 def persistent_tool_message(role: str, name: str | None, content: str,
                             args: dict | None) -> tuple[str, dict | None]:
+    if isinstance(name, str) and name.startswith("mcp_") and role in {"model", "tool"}:
+        return '{"status":"redacted","message":"Содержимое MCP не сохраняется"}', {} if args is not None else None
     if name in PRIVATE_TOOLS and role in {"model", "tool"}:
         args = {key: value for key, value in (args or {}).items()
                 if key in SAFE_ARGUMENTS and isinstance(value, (str, int))}

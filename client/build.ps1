@@ -18,7 +18,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Client dependencies are inconsistent.' }
 
 & $venvPython -m PyInstaller --noconfirm --clean --onefile `
     --name gemini-cli `
-    --hidden-import PIL.PngImagePlugin --hidden-import PIL.JpegImagePlugin --hidden-import PIL.WebPImagePlugin --hidden-import PIL.BmpImagePlugin --collect-all google.genai --collect-all trafilatura --collect-submodules keyring.backends `
+    --hidden-import PIL.PngImagePlugin --hidden-import PIL.JpegImagePlugin --hidden-import PIL.WebPImagePlugin --hidden-import PIL.BmpImagePlugin --collect-all google.genai --collect-all trafilatura --collect-submodules keyring.backends --collect-data mcp --copy-metadata mcp --collect-all mcp_types --collect-all httpx2 `
     --distpath (Join-Path $projectDir 'dist') `
     --workpath (Join-Path $projectDir 'build') `
     --specpath (Join-Path $projectDir 'build') `

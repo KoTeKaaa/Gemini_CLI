@@ -32,6 +32,25 @@ class CompletionTest(unittest.TestCase):
                 undo(journal, selected_paths=[item.before.path], approve=lambda: True)
                 self.assertEqual(list(completer.get_completions(Document('/undo '), None)), [])
 
+    def test_mcp_actions_names_and_storage(self):
+        names = ['playwright', 'github']
+        completer = InputCompleter(lambda: '.', mcp_choices=lambda: names)
+        def choices(text):
+            return list(completer.get_completions(Document(text), None))
+        self.assertEqual([c.text for c in choices('/mcp ')],
+                         ['check', 'tools', 'enable', 'disable', 'login', 'logout'])
+        self.assertEqual([c.text for c in choices('/mcp lo')], ['login', 'logout'])
+        for action in ('check', 'tools', 'enable', 'disable', 'login', 'logout'):
+            items = choices(f'/mcp {action} gi')
+            self.assertEqual([c.text for c in items], ['github'])
+            self.assertEqual(items[0].start_position, -2)
+        self.assertEqual([c.text for c in choices('/mcp login github ')], ['memory', 'keyring'])
+        self.assertEqual([c.text for c in choices('/mcp login github k')], ['keyring'])
+        names[:] = ['other']
+        self.assertEqual([c.text for c in choices('/mcp enable ')], ['other'])
+        for text in ('/mcp bogus ', '/mcp login missing ', '/mcp check other extra ', '/mcp \n'):
+            self.assertEqual(choices(text), [])
+
     def test_commands(self):
         completions = list(InputCompleter(lambda: '.').get_completions(Document('/pa'), None))
         self.assertIn('/paste', [item.text for item in completions])

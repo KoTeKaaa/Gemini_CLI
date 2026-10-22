@@ -52,18 +52,32 @@ def create_provider(api_key: str):
         timeout=45000, retry_options=types.HttpRetryOptions(attempts=1)))
 
 
+def provider_tools(supported, permitted, mcp_tools=None):
+    from google.genai import types
+    from ..protocol.mcp import validate_declarations
+    dynamic = mcp_tools or []
+    validate_declarations(dynamic)
+    functions = available_tools(supported, permitted)
+    declarations = [types.FunctionDeclaration.from_callable_with_api_option(
+        callable=function, api_option="GEMINI_API") for function in functions]
+    declarations.extend(types.FunctionDeclaration(name=row["name"], description=row["description"],
+                        parameters_json_schema=row["parameters"]) for row in dynamic)
+    return [types.Tool(function_declarations=declarations)] if declarations else []
+
+
 def stream_events(client, *, model: str, contents, supported_tools=None,
-                  permitted_tools=None, cancelled=lambda: False):
+                  permitted_tools=None, cancelled=lambda: False, mcp_tools=None):
     from google.genai import types
     permitted = set(TOOLS) if permitted_tools is None else set(permitted_tools)
     declared = permitted & set(LEGACY_NAMES if supported_tools is None else supported_tools)
+    declared |= {row["name"] for row in (mcp_tools or [])}
     response = None
     calls, text_size = [], 0
     try:
         if cancelled():
             return
         config = types.GenerateContentConfig(
-            tools=available_tools(supported_tools, permitted), max_output_tokens=8192,
+            tools=provider_tools(supported_tools, permitted, mcp_tools), max_output_tokens=8192,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             system_instruction=AGENT_INSTRUCTION)
         response = client.models.generate_content_stream(model=model, contents=contents, config=config)

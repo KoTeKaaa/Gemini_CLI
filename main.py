@@ -381,13 +381,15 @@ def context_payload(history, chat_id, model, summary=None):
     return payload
 
 
-def status_context_payload(history, chat_id, model, summary=None):
+def status_context_payload(history, chat_id, model, summary=None, *, mcp=None):
     payload = context_payload(history, chat_id, model, summary)
     # Use the actual next-turn policy, including history/wire thresholds,
     # without transmitting a hypothetical message or the unsent draft.
     preview = build_stream_payload([*history, {"role": "user", "content": ""}],
-                                   chat_id, model, chat_id is None, summary=summary)
+                                   chat_id, model, chat_id is None, summary=summary, mcp=mcp)
     payload["supported_tools"] = preview["supported_tools"]
+    if preview.get("mcp_tools"):
+        payload["mcp_tools"] = preview["mcp_tools"]
     return payload
 
 
@@ -500,7 +502,7 @@ def show_model_selection_menu(current_model: str) -> str:
 
 def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
                          model_name: str, is_temporary: bool, turn: ToolTurn | None = None,
-                         *, end_tool_turn: bool = False, summary=None) -> Dict[str, Any]:
+                         *, end_tool_turn: bool = False, summary=None, mcp=None) -> Dict[str, Any]:
     history = context_wire_history(history, summary, strict=is_temporary)
     if not is_temporary and len(history) > 1000:
         if history[-1].get("role") == "tool":
@@ -537,11 +539,16 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
                                    for row in text_payload["history"]]
     if len(history) > TOOLS_HISTORY_THRESHOLD or len(json.dumps(text_payload).encode()) > TOOLS_WIRE_THRESHOLD:
         payload["supported_tools"] = []
+    if mcp is not None and payload["supported_tools"]:
+        declarations = mcp.declarations()
+        if declarations:
+            payload["mcp_tools"] = declarations
+            payload["supported_tools"].extend(row["name"] for row in declarations)
     return payload
 
 
 def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
-                       current_dir: str, *, turn: ToolTurn | None = None, api_client: Backend | None = None, state=None) -> None:
+                       current_dir: str, *, turn: ToolTurn | None = None, api_client: Backend | None = None, state=None, mcp=None) -> None:
     changes = getattr(state, "changes", None)
     if changes is None:
         changes = ChangeSet(current_dir, getattr(state, "turn_id", ""),
@@ -582,6 +589,18 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
             return result
         handlers["web_search"] = lambda args, _cwd: web_handler("search", args)
         handlers["read_url"] = lambda args, _cwd: web_handler("read", args)
+    if mcp is not None:
+        from gemini_cli.client.mcp_commands import approve_call
+        def mcp_handler(name, args):
+            def approve(server, original, values):
+                return approve_call(console, server, original, values)
+            def invoke(operation):
+                with (state.view.monitor() if state is not None and hasattr(state, "view") else monitor()):
+                    return operation()
+            return mcp.call(name, args, approve=approve, cancelled=cancelled, invoke=invoke)
+        for declaration in mcp.declarations():
+            name = declaration["name"]
+            handlers[name] = lambda args, _cwd, name=name: mcp_handler(name, args)
     run_tool_calls(tool_calls, history, current_dir, handlers=handlers, logger=logger, state=state)
 
 
@@ -685,9 +704,22 @@ def main(backend: Backend | None = None):
     draft = Draft()
     draft_input = DraftInput(draft)
     file_changes = {}
+    mcp_managers = {}
+    def active_mcp():
+        from gemini_cli.integrations.mcp.manager import Manager
+        identity = backend_identity(api_client)
+        if identity not in mcp_managers:
+            mcp_managers[identity] = Manager(Path(CONFIG_DIR), identity)
+        return mcp_managers[identity]
     def active_changes():
         return file_changes.get((backend_identity(api_client), chat_id, os.path.realpath(current_dir)))
+    def mcp_choices():
+        try:
+            return tuple(active_mcp().connections)
+        except (ValueError, OSError):
+            return ()
     completer = InputCompleter(lambda: current_dir, mode=lambda: api_client.mode,
+                              mcp_choices=mcp_choices,
                               change_choices=lambda: list(active_changes().active_files()) if active_changes() else (),
                               attachment_choices=lambda: [
         (number, draft_input.describe(number, item)) for number, item in draft.items()])
@@ -776,7 +808,7 @@ def main(backend: Backend | None = None):
                     break
             draft_input.take_notice()
             try:
-                status_payload = status_context_payload(temporary_history, chat_id, current_model, summary)
+                status_payload = status_context_payload(temporary_history, chat_id, current_model, summary, mcp=active_mcp())
                 from hashlib import sha256
                 status_key = (backend_identity(api_client), current_model, chat_id,
                               sha256(json.dumps(status_payload, sort_keys=True).encode()).digest())
@@ -837,6 +869,7 @@ def main(backend: Backend | None = None):
                 table.add_row("/diff [путь]", "Список правок чата или diff файла; пример: /diff src/file.py")
                 table.add_row("/undo [путь]", "Список правок или откат файла; пример: /undo src/file.py")
                 table.add_row("/model", "Сменить ИИ модель")
+                table.add_row("/mcp", "Подключения MCP; /mcp check github → /mcp enable github")
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")
                 table.add_row("/chat", "Сменить или создать комнату диалога")
                 table.add_row("/clear", "Очистить временный чат и его черновик; постоянный чат сохраняется")
@@ -887,6 +920,14 @@ def main(backend: Backend | None = None):
                     state.finish()
                 continue
 
+            if first_line.strip().split(" ", 1)[0] == "/mcp":
+                from gemini_cli.client.mcp_commands import command, prompt_secret
+                try:
+                    command(first_line, active_mcp(), console=console,
+                            read_secret=lambda label: prompt_secret(label, input=session.input, output=session.output))
+                except ValueError:
+                    console.print(result_panel("MCP: неверный приватный mcp.json", title="MCP", error=True))
+                continue
             if first_line.strip() == "/settings":
                 if settings is None:
                     console.print("Настройки недоступны для внедрённого backend")
@@ -1031,7 +1072,7 @@ def main(backend: Backend | None = None):
                 console.print(Text(str(error)))
                 continue
             try:
-                preview = build_stream_payload(temporary_history + [row], chat_id, current_model, is_temporary, summary=summary)
+                preview = build_stream_payload(temporary_history + [row], chat_id, current_model, is_temporary, summary=summary, mcp=active_mcp())
             except ValueError as error:
                 console.print(result_panel(str(error), title="Контекст", error=True))
                 continue
@@ -1082,7 +1123,7 @@ def main(backend: Backend | None = None):
                 ending = tool_rounds > 12
                 try:
                     payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary, turn,
-                                                   end_tool_turn=ending, summary=summary)
+                                                   end_tool_turn=ending, summary=summary, mcp=active_mcp())
                 except ValueError as error:
                     console.print(result_panel(str(error), title="Контекст", error=True))
                     break
@@ -1116,7 +1157,7 @@ def main(backend: Backend | None = None):
                             temporary_history.append({"role": "model", "content": full_response, "id": str(uuid4()),
                                                   "turn_id": state.turn_id, "status": "running"})
                         execute_tool_calls(tool_calls_received, temporary_history, current_dir,
-                                           turn=turn, api_client=api_client, state=state)
+                                           turn=turn, api_client=api_client, state=state, mcp=active_mcp())
                         if state.cancelled.is_set():
                             break
                         console.print("[dim]Передаю результаты выполнения обратно на сервер...[/dim]")
@@ -1169,6 +1210,8 @@ def main(backend: Backend | None = None):
             break
 
 
+    for manager in mcp_managers.values():
+        manager.close()
     preview_warning = draft_input.close()
     if preview_warning:
         console.print(Text(preview_warning))

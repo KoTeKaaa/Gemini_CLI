@@ -6,6 +6,7 @@ from uuid import uuid4
 from typing import Callable, Mapping
 
 from ..tools.definitions import TOOLS
+from ..protocol.mcp import MCP_NAME
 from ..tools.results import failure
 from ..runtime.history import bounded_tool_result
 
@@ -30,13 +31,13 @@ def execute_tool_calls(
         def record(status):
             if state is not None:
                 state.record({"type": "step", "step_id": step_id,
-                              "name": tool_name if tool_name in TOOLS else "unknown",
+                              "name": tool_name if tool_name in TOOLS or MCP_NAME.fullmatch(tool_name or "") else "unknown",
                               "call_id": call.get("call_id"), "status": status})
         record("queued")
         tool_args = call.get("args", {})
         if state is not None and state.cancelled.is_set():
             tool_result = json.dumps(failure("cancelled", "Ход отменён; инструмент не запущен"), ensure_ascii=False)
-        elif tool_name in TOOLS and tool_name in handlers:
+        elif tool_name in handlers and (tool_name in TOOLS or MCP_NAME.fullmatch(tool_name or "")):
             record("running")
             try:
                 tool_result = handlers[tool_name](tool_args, current_dir)
@@ -70,5 +71,5 @@ def execute_tool_calls(
             "call_id": call.get("call_id"), "id": str(uuid4()),
             "turn_id": getattr(state, "turn_id", None), "status": "running"
         })
-        logged_name = tool_name if tool_name in TOOLS else "unknown"
+        logged_name = tool_name if tool_name in TOOLS else "mcp" if MCP_NAME.fullmatch(tool_name or "") else "unknown"
         logger.info("Tool вызов: %s", logged_name)
