@@ -1,4 +1,4 @@
-"""Снимки и журнал файловых операций одного хода; не использует Git."""
+"""Снимки файлов и ограниченный журнал ходов чата; не использует Git."""
 
 from dataclasses import dataclass
 import difflib
@@ -56,12 +56,15 @@ class Change:
     status: str = "proposed"
     checkpoint: str | None = None
     selected: bytes | None = None
+    turn_id: str = ""
 
     @property
     def target(self) -> bytes:
         return self.proposed if self.selected is None else self.selected
 
     def diff(self, *, proposed=False) -> str:
+        if self.status == "undone":
+            return ""
         after = self.proposed if proposed else (self.actual.data if self.actual else self.before.data)
         name = "".join(c if c.isprintable() else "?" for c in os.path.basename(self.before.path))
         lines = difflib.unified_diff(
@@ -75,13 +78,17 @@ class ChangeSet:
     def __init__(self, root: str, turn_id: str = "", *, store=None):
         self.root = os.path.realpath(root)
         self.turn_id = turn_id
-        self.entries: list[Change] = []
+        self._entries: list[Change] = []
         self.store = store
+
+    @property
+    def entries(self) -> list[Change]:
+        return self._entries
 
     def propose(self, path: str, text: str) -> Change:
         if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_BYTES or "\x00" in text:
             raise ValueError("Нужен текст допустимого размера")
-        change = Change(snapshot(self.root, path), text.encode("utf-8"))
+        change = Change(snapshot(self.root, path), text.encode("utf-8"), turn_id=self.turn_id)
         total = sum(len(e.proposed) + len(e.before.data or b"") for e in self.entries)
         if len(self.entries) >= 64 or total + len(change.proposed) + len(change.before.data or b"") > 16 * MAX_BYTES:
             raise ValueError("Достигнут предел журнала правок за ход")
@@ -116,6 +123,53 @@ class ChangeSet:
                           validate=validate)
         self.applied(change)
 
+    def active_files(self) -> dict[str, list[Change]]:
+        groups = {}
+        for item in self.entries:
+            if item.status == "applied" and item.actual is not None:
+                groups.setdefault(item.before.path, []).append(item)
+        return {path: items for path, items in groups.items() if
+                any(items[i].before != items[i - 1].actual for i in range(1, len(items)))
+                or (items[0].before.data, items[0].before.mode) != (items[-1].actual.data, items[-1].actual.mode)}
+
+    def resolve_path(self, path: str) -> str:
+        full = resolve_safe_path(self.root, path)
+        if full not in self.active_files():
+            raise ValueError("Файл отсутствует в активных правках этого чата и рабочей папки")
+        return full
+
+    def file_diff(self, path: str) -> str:
+        items = self.active_files().get(path)
+        if not items:
+            raise ValueError("Нет активных изменений этого файла")
+        chains = [[items[0]]]
+        for item in items[1:]:
+            if item.before != chains[-1][-1].actual:
+                chains.append([])
+            chains[-1].append(item)
+        pages = []
+        for chain in chains:
+            combined = Change(chain[0].before, chain[-1].actual.data, actual=chain[-1].actual, status="applied")
+            diff = combined.diff()
+            if not diff and chain[0].before.data is None:
+                diff = "Создание пустого файла\n"
+            if diff:
+                pages.append(diff)
+        separator = "\nРучное изменение между записями: отдельная цепочка правок агента\n\n"
+        return separator.join(pages)
+
+    def listing(self) -> str:
+        groups = self.active_files()
+        if not groups:
+            return "Активных файловых правок нет."
+        rows = []
+        for index, (path, items) in enumerate(groups.items(), 1):
+            label = "".join(c if c.isprintable() else "?" for c in os.path.relpath(path, self.root))
+            operation = "создан" if items[0].before.data is None else "изменён"
+            turns = len({item.turn_id for item in items})
+            rows.append(f"#{index} — {label} · {operation} · ходов: {turns}")
+        return "\n".join(rows) + "\n/diff путь — посмотреть · /undo путь — откатить файл"
+
     def summary(self) -> str:
         if not self.entries:
             return "В последнем ходе нет файловых правок."
@@ -126,3 +180,32 @@ class ChangeSet:
         return "\n".join(f"{index}. {label(item.before.path)}: "
                          f"{labels.get(item.status, item.status)}"
                          for index, item in enumerate(self.entries, 1))
+
+
+class ChangeHistory(ChangeSet):
+    """Изолированный журнал чата: до 32 ходов с правками и 64 МиБ снимков."""
+    def __init__(self, root: str, *, store=None):
+        super().__init__(root, store=store)
+        self.turns: list[ChangeSet] = []
+
+    @property
+    def entries(self) -> list[Change]:
+        return [item for turn in self.turns for item in turn.entries]
+
+    def begin_turn(self, turn_id: str) -> ChangeSet:
+        turn = ChangeSet(self.root, turn_id, store=self.store)
+        self.turns.append(turn)
+        return turn
+
+    def trim(self) -> int:
+        for turn in self.turns:
+            turn._entries[:] = [item for item in turn.entries if item.status == "applied"]
+        self.turns = [turn for turn in self.turns if any(item.status == "applied" for item in turn.entries)]
+        dropped = 0
+        def size():
+            return sum(len(item.before.data or b"") + len(item.proposed) +
+                       len(item.actual.data or b"") for item in self.entries if item.actual is not None)
+        while len(self.turns) > 32 or size() > 64 * 1024 * 1024:
+            self.turns.pop(0)
+            dropped += 1
+        return dropped
