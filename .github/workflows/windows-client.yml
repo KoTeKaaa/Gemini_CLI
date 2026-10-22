@@ -29,6 +29,8 @@ jobs:
           python client/check_executable.py dist/gemini-cli
       - name: Check subscription status UI
         run: python -B -m unittest tests.test_quota_view tests.test_status_pty -q
+      - name: Check file changes and undo
+        run: python -B -m unittest tests.test_changes tests.test_checkpoints tests.test_write_set tests.test_hunks tests.test_change_view tests.test_undo tests.test_changes_pty -q
       - uses: actions/upload-artifact@v7
         with:
           name: gemini-cli-linux-x64-preview
@@ -80,6 +82,9 @@ jobs:
       - name: Check subscription status UI
         shell: pwsh
         run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_quota_view tests.test_status_pty -q
+      - name: Check file changes and undo
+        shell: pwsh
+        run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_changes tests.test_checkpoints tests.test_write_set tests.test_hunks tests.test_change_view tests.test_undo tests.test_changes_pty -q
       - name: Check standalone executable startup
         shell: pwsh
         run: python client/check_executable.py dist/gemini-cli.exe
