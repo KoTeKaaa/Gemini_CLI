@@ -97,31 +97,15 @@ def write_files(
     approve: Callable[[list[dict]], bool],
     notify: Callable[[str], None],
     logger: logging.Logger,
+    changes=None, confirm_diff=None, cancelled=lambda: False,
 ) -> str:
     files = args.get("files", [])
     if not files:
         return json.dumps({"error": "Список файлов для записи пуст"}, ensure_ascii=False)
-    if not approve(files):
-        return json.dumps({"error": "Операция отклонена пользователем из соображений безопасности."},
-                          ensure_ascii=False)
-
-    results = []
-    for file in files:
-        rel_path = file.get("filepath", "")
-        content = file.get("content", "")
-        full_path = resolve_safe_path(current_dir, rel_path)
-        if full_path is None:
-            status = "Заблокировано песочницей"
-        else:
-            try:
-                atomic_write_text(full_path, content)
-                status = "Успешно записан"
-            except Exception as e:
-                status = f"Ошибка: {str(e)}"
-                logger.exception(f"Необработанное исключение: {e}")
-        results.append({"filepath": rel_path, "status": status})
-        notify(f"{rel_path}: {status}")
-    return json.dumps(results, ensure_ascii=False)
+    from .changes import ChangeSet
+    from .write_set import write_set
+    return json.dumps(write_set(files, changes or ChangeSet(current_dir), approve=approve,
+                               confirm_diff=confirm_diff, notify=notify, cancelled=cancelled), ensure_ascii=False)
 
 
 def read_file_lines(args: dict, current_dir: str, *, approve,

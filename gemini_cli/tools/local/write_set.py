@@ -10,6 +10,8 @@ def write_set(files: list, changes: ChangeSet, *, approve, confirm_diff=None,
     plans, results, seen = [], [], set()
     for file in files:
         path = file.get("filepath", "") if isinstance(file, dict) else ""
+        result = {"filepath": path, "status": "Ошибка: недоступный, секретный или неверный файл"}
+        results.append(result)
         try:
             if not isinstance(path, str) or not path or not isinstance(file.get("content"), str):
                 raise ValueError("Нужны путь и текст")
@@ -18,25 +20,25 @@ def write_set(files: list, changes: ChangeSet, *, approve, confirm_diff=None,
                 item.status = "failed"
                 raise ValueError("Повторный путь в наборе")
             seen.add(item.before.path)
-            plans.append(item)
+            plans.append((item, result))
         except (OSError, ValueError, UnicodeError):
-            results.append({"filepath": path, "status": "Ошибка: недоступный, секретный или неверный файл"})
+            pass
     try:
         if not plans:
             return results
-        if not approve([{"filepath": p.before.path, "content": p.proposed.decode("utf-8")} for p in plans]):
-            for item in plans:
+        if not approve([{"filepath": p.before.path, "content": p.proposed.decode("utf-8")} for p, _ in plans]):
+            for item, _ in plans:
                 item.status = "denied"
             return {"error": "Операция отклонена пользователем"}
-        if confirm_diff is not None and not confirm_diff("\n".join(p.diff(proposed=True) for p in plans)):
-            for item in plans:
+        if confirm_diff is not None and not confirm_diff("\n".join(p.diff(proposed=True) for p, _ in plans)):
+            for item, _ in plans:
                 item.status = "denied"
             return {"error": "Операция отклонена пользователем"}
     except (EOFError, KeyboardInterrupt):
-        for item in plans:
+        for item, _ in plans:
             item.status = "denied"
         return {"error": "Операция отклонена пользователем"}
-    for item in plans:
+    for item, result in plans:
         path = item.before.path
         try:
             if cancelled():
@@ -48,6 +50,6 @@ def write_set(files: list, changes: ChangeSet, *, approve, confirm_diff=None,
         except (ValueError, OSError, UnicodeError) as error:
             item.status = "failed"
             status = "Ошибка: " + str(error)
-        results.append({"filepath": path, "status": status})
+        result["status"] = status
         notify(f"{path}: {status}")
     return results

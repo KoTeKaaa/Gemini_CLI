@@ -52,6 +52,8 @@ from gemini_cli.tools.local.command import execute_command
 from gemini_cli.tools.local.files import read_files, write_files, read_file_lines
 from gemini_cli.tools.local.search import find_files, search_text
 from gemini_cli.tools.local.edit import replace_in_file
+from gemini_cli.tools.local.changes import ChangeSet
+from gemini_cli.tools.local.checkpoints import CheckpointStore
 from gemini_cli.tools.definitions import CLIENT_NAMES
 from gemini_cli.client.web_tools import ToolTurn
 from gemini_cli.client.terminal import configure_output
@@ -244,9 +246,10 @@ def confirm_file_write(files: list[dict]) -> bool:
     return True
 
 
-def handle_write_files(args: dict, current_dir: str) -> str:
+def handle_write_files(args: dict, current_dir: str, *, changes=None, cancelled=lambda: False) -> str:
     return write_files(args, current_dir, approve=confirm_file_write,
-                       notify=console.print, logger=logger)
+                       notify=console.print, logger=logger, changes=changes,
+                       confirm_diff=confirm_replacement, cancelled=cancelled)
 
 
 def confirm_command(command: str) -> bool:
@@ -541,14 +544,22 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
 
 def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
                        current_dir: str, *, turn: ToolTurn | None = None, api_client: Backend | None = None, state=None) -> None:
+    changes = getattr(state, "changes", None)
+    if changes is None:
+        changes = ChangeSet(current_dir, getattr(state, "turn_id", ""),
+                            store=CheckpointStore(Path(CONFIG_DIR) / "checkpoints"))
+        if state is not None:
+            state.changes = changes
+    cancelled = state.cancelled.is_set if state else lambda: False
     handlers = {
         "read_local_files": handle_read_files,
-        "write_local_files": handle_write_files,
+        "write_local_files": lambda args, cwd: handle_write_files(args, cwd, changes=changes, cancelled=cancelled),
         "execute_command": (handle_execute_command if state is None else
                             lambda args, cwd: handle_execute_command(args, cwd, state=state)),
         "find_files": lambda args, cwd: json.dumps(find_files(args, cwd), ensure_ascii=False),
         "replace_in_file": lambda args, cwd: json.dumps(replace_in_file(
-            args, cwd, approve=confirm_content_scope, confirm_diff=confirm_replacement), ensure_ascii=False),
+            args, cwd, approve=confirm_content_scope, confirm_diff=confirm_replacement,
+            changes=changes, cancelled=cancelled), ensure_ascii=False),
         "read_file_lines": lambda args, cwd: json.dumps(read_file_lines(args, cwd, approve=confirm_content_scope),
                                                          ensure_ascii=False),
         "search_text": lambda args, cwd: json.dumps(search_text(args, cwd, approve=confirm_content_scope),
@@ -681,6 +692,7 @@ def main(backend: Backend | None = None):
     temporary_history: List[Dict[str, str]] = []
     buffers, states, summary = ChatBuffers(), {}, None
     auto_attempts = {}
+    file_changes = {}
     prompt_status = PromptStatus()
     def input_status():
         info = prompt_status.context
@@ -1032,6 +1044,9 @@ def main(backend: Backend | None = None):
                     pass  # Unavailable provider metadata must not invent model limits.
             state = TurnState()
             row.update(id=str(uuid4()), turn_id=state.turn_id, status="running")
+            state.changes = ChangeSet(current_dir, state.turn_id,
+                                      store=CheckpointStore(Path(CONFIG_DIR) / "checkpoints"))
+            file_changes[(backend_identity(api_client), chat_id, os.path.realpath(current_dir))] = state.changes
             console.print("\n[bold cyan]Gemini:[/bold cyan]")
             temporary_history.append(row)
             bound_image_history(temporary_history)
