@@ -8,6 +8,7 @@ from gemini_cli.client.chat_buffers import ChatBuffers, filter_chats
 from gemini_cli.client.shell import launch_shell
 from gemini_cli.client.work_input import WorkInput
 from gemini_cli.client.work_view import WorkView
+from gemini_cli.client.change_view import browse_changes
 from gemini_cli.client.quota_view import PromptStatus, status_line, limits_text, value
 from prompt_toolkit.layout import ConditionalContainer, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
@@ -822,6 +823,7 @@ def main(backend: Backend | None = None):
                 table.add_row("/show, /edit", "Без номера: выбрать единственное вложение или показать список")
                 table.add_row("/remove", "Показать номера для выбора; без номера ничего не удаляет")
                 table.add_row("/help", "Показать эту справку")
+                table.add_row("/diff [proposed]", "Правки последнего хода; пример: /diff proposed — предложения")
                 table.add_row("/model", "Сменить ИИ модель")
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")
                 table.add_row("/chat", "Сменить или создать комнату диалога")
@@ -835,6 +837,18 @@ def main(backend: Backend | None = None):
                 table.add_row("exit, quit, q", "Выход из приложения")
 
                 console.print(Panel(table, title="[bold green]Справка[/bold green]", expand=False))
+                continue
+
+            if first_line.split()[0] == "/diff":
+                if user_input.strip() not in {"/diff", "/diff proposed"}:
+                    console.print(result_panel("Использование: /diff или /diff proposed. Пример: /diff.",
+                                               title="Правки", error=True))
+                    continue
+                changes = file_changes.get((backend_identity(api_client), chat_id, os.path.realpath(current_dir)))
+                console.print(result_panel(changes.summary() if changes else "В последнем ходе нет файловых правок.",
+                                           title="Правки последнего хода"))
+                if changes and console.is_terminal:
+                    browse_changes(changes, proposed=user_input.strip().endswith(" proposed"))
                 continue
 
             if first_line.split()[0] == "/term":
