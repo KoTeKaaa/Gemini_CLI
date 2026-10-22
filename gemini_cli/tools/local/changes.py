@@ -198,8 +198,10 @@ class ChangeHistory(ChangeSet):
         return turn
 
     def trim(self) -> int:
+        active = set(self.active_files())
         for turn in self.turns:
-            turn._entries[:] = [item for item in turn.entries if item.status == "applied"]
+            turn._entries[:] = [item for item in turn.entries
+                                if item.status == "applied" and item.before.path in active]
         self.turns = [turn for turn in self.turns if any(item.status == "applied" for item in turn.entries)]
         dropped = 0
         def size():

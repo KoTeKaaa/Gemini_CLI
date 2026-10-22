@@ -71,3 +71,6 @@ class ChangeHistoryTest(unittest.TestCase):
         self.write("first", "agent\n")
         self.write("second", "original\n")
         self.assertEqual(self.history.active_files(), {})
+        self.assertEqual(self.history.turns, [])
+        self.write("third", "new change\n")
+        self.assertIn("ходов: 1", self.history.listing())
