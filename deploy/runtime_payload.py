@@ -40,7 +40,7 @@ def install_runtime(source: Path, destination: Path) -> None:
                 name for name in subdirs
                 if name.isidentifier() and name not in {"tests", "__pycache__"}
                 and not (current / name).is_symlink()
-                and not (relative == Path(".") and name == "client")
+                and not (relative == Path(".") and name in {"client", "integrations"})
                 and not (relative == Path("tools") and name == "local")
             ]
             output = staged_package / relative

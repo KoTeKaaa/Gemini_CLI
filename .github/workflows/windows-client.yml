@@ -27,6 +27,8 @@ jobs:
         run: |
           ./client/build.sh
           python client/check_executable.py dist/gemini-cli
+      - name: Check MCP transports and toolsets
+        run: python -B -m unittest tests.test_mcp_config tests.test_mcp_schema tests.test_mcp_transport tests.test_mcp_http tests.test_mcp_auth tests.test_mcp_runner tests.test_mcp_commands tests.test_mcp_backend tests.test_mcp_pty -q
       - name: Check subscription status UI
         run: python -B -m unittest tests.test_quota_view tests.test_status_pty -q
       - name: Check file changes and undo
@@ -79,6 +81,9 @@ jobs:
           } finally {
             $stream.Dispose()
           }
+      - name: Check MCP transports and toolsets
+        shell: pwsh
+        run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_mcp_config tests.test_mcp_schema tests.test_mcp_transport tests.test_mcp_http tests.test_mcp_auth tests.test_mcp_runner tests.test_mcp_commands tests.test_mcp_backend tests.test_mcp_pty -q
       - name: Check subscription status UI
         shell: pwsh
         run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_quota_view tests.test_status_pty -q
