@@ -83,6 +83,9 @@ logger = logging.getLogger("gemini_cli")
 
 my_style = Style.from_dict({
     "": "ansibrightgreen",
+    "status-line": "noinherit fg:#9ca3af bg:default",
+    "status-rule": "noinherit fg:#4b5563 bg:default",
+    "prompt": "noinherit fg:#60a5fa bg:default",
 })
 
 bindings = KeyBindings()
@@ -698,7 +701,8 @@ def main(backend: Backend | None = None):
         title = "Временный" if is_temporary else (titles.get(chat_id, "Чат") if isinstance(titles, dict) else "Чат")
         width = session.app.output.get_size().columns
         line = status_line(current_dir, current_model, api_client.mode, title, context, prompt_status.data, width)
-        return [("class:bottom-toolbar", "─" * max(0, width) + "\n" + line)]
+        return [("class:status-rule", "─" * max(0, width) + "\n"),
+                ("class:status-line", line)]
     session.layout.container.children.insert(0, ConditionalContainer(
         Window(FormattedTextControl(input_status), height=2), filter=~is_done))
     buffers.visit(backend_identity(api_client), chat_id)
@@ -762,12 +766,7 @@ def main(backend: Backend | None = None):
                 prompt_status.update(api_client, status_key, current_model, status_payload, session.app.invalidate)
             except ValueError:
                 prompt_status.context = {}
-            dir_name = os.path.basename(current_dir) or current_dir
-            prompt_text = f" {dir_name} › "
-            user_input = session.prompt(HTML(
-                f"<ansiblue>[{api_client.mode} · {current_model}]</ansiblue>"
-                f"<ansigray>{prompt_text}</ansigray>"
-            ), default=draft.text)
+            user_input = session.prompt(HTML('<style class="prompt"> › </style>'), default=draft.text)
 
             if not user_input.strip():
                 continue
