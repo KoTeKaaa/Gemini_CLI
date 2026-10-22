@@ -15,7 +15,7 @@ class ChangeHistoryTest(unittest.TestCase):
         self.root = base / "workspace"
         self.root.mkdir()
         self.file = self.root / "file.py"
-        self.file.write_text("original\n")
+        self.file.write_bytes(b"original\n")
         self.history = ChangeHistory(str(self.root), store=CheckpointStore(base / "private"))
 
     def write(self, turn, text):
