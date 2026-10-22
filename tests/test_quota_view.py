@@ -81,5 +81,10 @@ class QuotaViewTests(unittest.TestCase):
                                          "gemini-3.5-flash-lite", True)
         self.assertEqual(payload["supported_tools"], sent["supported_tools"])
         self.assertNotIn("message", payload)
+        for history in ([{"role": "model", "content": "answer"}] * main.TOOLS_HISTORY_THRESHOLD,
+                        [{"role": "model", "content": "x" * main.TOOLS_WIRE_THRESHOLD}]):
+            status = main.status_context_payload(history, None, "gemini-3.5-flash-lite")
+            self.assertEqual(status["supported_tools"], [])
+            self.assertNotIn("message", status)
         self.assertTrue(any("Использование: /limits" in str(getattr(call.args[0], "renderable", call.args[0]))
                             for call in printed.call_args_list))

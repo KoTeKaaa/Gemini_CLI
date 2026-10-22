@@ -377,6 +377,16 @@ def context_payload(history, chat_id, model, summary=None):
     return payload
 
 
+def status_context_payload(history, chat_id, model, summary=None):
+    payload = context_payload(history, chat_id, model, summary)
+    # Use the actual next-turn policy, including history/wire thresholds,
+    # without transmitting a hypothetical message or the unsent draft.
+    preview = build_stream_payload([*history, {"role": "user", "content": ""}],
+                                   chat_id, model, chat_id is None, summary=summary)
+    payload["supported_tools"] = preview["supported_tools"]
+    return payload
+
+
 def compact_context(client, history, chat_id, model, summary=None, *, blocked_fingerprint=None):
     """The worker returns a candidate; cancellation rejects late UI results."""
     state = TurnState()
@@ -745,8 +755,7 @@ def main(backend: Backend | None = None):
                     break
             draft_input.take_notice()
             try:
-                status_payload = context_payload(temporary_history, chat_id, current_model, summary)
-                status_payload["supported_tools"] = list(CLIENT_NAMES)
+                status_payload = status_context_payload(temporary_history, chat_id, current_model, summary)
                 from hashlib import sha256
                 status_key = (backend_identity(api_client), current_model, chat_id,
                               sha256(json.dumps(status_payload, sort_keys=True).encode()).digest())
