@@ -19,6 +19,32 @@ AGENT_INSTRUCTION = (
 )
 
 
+class StreamProtocolError(ValueError):
+    """Нарушение локального контракта ответа с безопасным статическим текстом."""
+
+
+def provider_error_message(error: Exception) -> str:
+    if isinstance(error, StreamProtocolError):
+        return str(error)
+    code = getattr(error, "code", None)
+    if not isinstance(code, int):
+        code = getattr(getattr(error, "response", None), "status_code", None)
+    if code == 429 or getattr(error, "status", None) == "RESOURCE_EXHAUSTED":
+        return "Лимит Gemini исчерпан (HTTP 429). Повторите позже или выберите другую модель через /model."
+    if code in (401, 403):
+        return f"Gemini отказал в доступе (HTTP {code}). Проверьте ключ и права выбранной модели в /settings."
+    if code == 404:
+        return "Модель или ресурс Gemini недоступны (HTTP 404). Проверьте выбранную модель через /model."
+    if code == 400:
+        return "Gemini отклонил запрос (HTTP 400): проверьте совместимость модели, истории и инструментов."
+    if isinstance(code, int) and 500 <= code <= 599:
+        return f"Временная ошибка сервиса Gemini (HTTP {code}). Повторите позже; выполненные действия не повторяются автоматически."
+    if code == 408 or isinstance(error, (TimeoutError, ConnectionError)) or type(error).__name__ in {
+            "TimeoutException", "ReadTimeout", "ConnectTimeout", "ConnectError"}:
+        return "Соединение с Gemini прервано или истекло время ожидания. Ответ не получен; проверьте сеть."
+    return "Не удалось получить ответ Gemini: код причины не передан (ошибка SDK или неизвестный ответ провайдера)."
+
+
 def create_provider(api_key: str):
     from google import genai
     from google.genai import types
@@ -55,7 +81,7 @@ def stream_events(client, *, model: str, contents, supported_tools=None,
                                 "signature": base64.b64encode(signature).decode() if signature else None}).encode())
                              for call, signature in new_calls)
             if len(calls) > MAX_TOOL_CALLS or text_size > MAX_PROVIDER_WIRE_BYTES:
-                raise ValueError("Too many calls")
+                raise StreamProtocolError("Ответ Gemini превысил предел количества или размера вызовов инструментов.")
             texts = [part.text for part in parts if getattr(part, "text", None)
                      and not getattr(part, "thought", False)]
             if not parts and getattr(chunk, "text", None):
@@ -63,7 +89,7 @@ def stream_events(client, *, model: str, contents, supported_tools=None,
             for text in texts:
                 text_size += len(json.dumps({"type": "text", "content": text}).encode())
                 if text_size > MAX_PROVIDER_WIRE_BYTES:
-                    raise ValueError("Response too large")
+                    raise StreamProtocolError("Ответ Gemini превысил допустимый размер.")
                 yield {"type": "text", "content": text}
             usage = getattr(chunk, "usage_metadata", None)
             if usage:
@@ -73,15 +99,12 @@ def stream_events(client, *, model: str, contents, supported_tools=None,
             if cancelled():
                 return
             if call.name not in declared:
-                raise ValueError("Undeclared call")
+                raise StreamProtocolError("Gemini запросил инструмент, который не был разрешён в этом запросе.")
             yield {"type": "tool_call", "name": call.name, "args": call.args or {},
                    "call_id": getattr(call, "id", None),
                    "thought_signature": base64.b64encode(signature).decode("ascii") if signature else None}
     except Exception as error:
-        message = ("Лимит провайдера исчерпан. Попробуйте другую разрешённую модель."
-                   if "429" in str(error) or "ResourceExhausted" in str(error)
-                   else "Провайдер временно не смог обработать запрос")
-        yield {"type": "error", "content": message}
+        yield {"type": "error", "content": provider_error_message(error)}
     finally:
         close = getattr(response, "close", None)
         if close:
