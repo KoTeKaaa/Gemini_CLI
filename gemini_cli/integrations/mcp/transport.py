@@ -34,6 +34,11 @@ class Session:
             raise MCPUnavailable("MCP: не удалось подключиться; проверьте runtime и /mcp check") from None
 
     def _run(self):
+        import logging
+        for name in ('mcp', 'httpx2', 'httpcore2'):
+            log = logging.getLogger(name)
+            log.addHandler(logging.NullHandler())
+            log.propagate = False
         try:
             asyncio.run(self._serve())
         except BaseException:

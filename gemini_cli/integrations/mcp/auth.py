@@ -33,8 +33,8 @@ class Credentials:
         except Exception:
             raise KeyStorageUnavailable('MCP: credential не сохранён') from None
 
-    def clear(self):
-        for key in ('bearer', 'tokens', 'client'):
+    def clear(self, extra=()):
+        for key in set(('bearer', 'tokens', 'client', *extra, *self.memory)):
             try:
                 if self.backend and self.backend.get_password(self.service, key) is not None:
                     self.backend.delete_password(self.service, key)
@@ -59,7 +59,19 @@ class Credentials:
         self.set('client', client_info.model_dump_json())
 
 
-def oauth_provider(connection, storage, redirect_uri='http://127.0.0.1:1/callback', *,
+def stored_redirect(storage):
+    raw = storage.get('client')
+    uris = json.loads(raw).get('redirect_uris') if raw else None
+    if not uris:
+        return None
+    uri = str(uris[0])
+    parsed = urlsplit(uri)
+    if parsed.scheme != 'http' or parsed.hostname != '127.0.0.1' or parsed.path != '/callback' or not parsed.port:
+        raise ValueError('MCP: неверный сохранённый OAuth callback')
+    return uri
+
+
+def oauth_provider(connection, storage, redirect_uri=None, *,
                    redirect_handler=None, callback_handler=None):
     from mcp.client.auth import OAuthClientProvider
     from mcp.shared.auth import OAuthClientMetadata
@@ -68,7 +80,7 @@ def oauth_provider(connection, storage, redirect_uri='http://127.0.0.1:1/callbac
         raise ValueError('MCP: выполните /mcp login')
 
     return OAuthClientProvider(connection.url, OAuthClientMetadata(
-        client_name='Gemini CLI', redirect_uris=[redirect_uri],
+        client_name='Gemini CLI', redirect_uris=[redirect_uri or stored_redirect(storage) or 'http://127.0.0.1:1/callback'],
         grant_types=['authorization_code', 'refresh_token'], response_types=['code'],
         token_endpoint_auth_method='none'), storage,
         redirect_handler=redirect_handler or no_interactive,
@@ -83,7 +95,9 @@ class BrowserLogin:
 
     async def __aenter__(self):
         self.callback = asyncio.get_running_loop().create_future()
-        self.server = await asyncio.start_server(self._receive, '127.0.0.1', 0, limit=8192)
+        previous = stored_redirect(self.storage)
+        port = urlsplit(previous).port if previous else 0
+        self.server = await asyncio.start_server(self._receive, '127.0.0.1', port, limit=8192)
         port = self.server.sockets[0].getsockname()[1]
         return oauth_provider(self.connection, self.storage,
             f'http://127.0.0.1:{port}/callback', redirect_handler=self._redirect,

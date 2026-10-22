@@ -4,6 +4,7 @@ import json
 
 from ...protocol.mcp import validate_arguments, validate_declarations
 from ...tools.results import failure
+from ...client.profiles import private_json, read_json
 from .auth import Credentials, oauth_provider
 from .catalog import catalog
 from .config import load_connections
@@ -17,11 +18,20 @@ class Manager:
         self.sessions, self.credentials, self.catalogs = {}, {}, {}
         self.enabled = set()
 
-    def storage(self, name, *, persistent=False):
+    def storage(self, name, *, persistent=None):
         if name not in self.connections:
             raise ValueError('MCP: подключение отсутствует в приватном mcp.json')
-        if name not in self.credentials or persistent and not self.credentials[name].backend:
+        candidate = Credentials(self.binding, self.connections[name])
+        preferences = read_json(self.root / 'mcp-storage.json')
+        explicit = persistent is not None
+        if persistent is None:
+            persistent = preferences.get(candidate.service) == 'keyring'
+        if (name not in self.credentials or explicit and
+                bool(self.credentials[name].backend) != persistent):
             self.credentials[name] = Credentials(self.binding, self.connections[name], persistent=persistent)
+        if explicit:
+            preferences[candidate.service] = 'keyring' if persistent else 'memory'
+            private_json(self.root / 'mcp-storage.json', preferences)
         return self.credentials[name]
 
     def connect(self, name, *, login=False):
@@ -64,7 +74,7 @@ class Manager:
                 if server in self.sessions and not self.sessions[server].closed
                 for row in self.catalogs[server][0]]
 
-    def call(self, name, args, *, approve, cancelled=lambda: False):
+    def call(self, name, args, *, approve, cancelled=lambda: False, invoke=lambda operation: operation()):
         for server in sorted(self.enabled):
             declarations, routes, _ = self.catalogs[server]
             if name not in routes:
@@ -80,7 +90,7 @@ class Manager:
                     return json.dumps(failure('declined', 'MCP: пользователь отказал в вызове'))
                 if cancelled():
                     return json.dumps(failure('cancelled', 'MCP: ход отменён'))
-                return self.sessions[server].request('call', routes[name], args, cancelled=cancelled)
+                return invoke(lambda: self.sessions[server].request('call', routes[name], args, cancelled=cancelled))
             except (ValueError, MCPUnavailable):
                 return json.dumps(failure('mcp_unavailable', 'MCP: вызов отклонён или сервис недоступен'))
         return json.dumps(failure('mcp_disabled', 'MCP: набор отключён или инструмент отсутствует'))
