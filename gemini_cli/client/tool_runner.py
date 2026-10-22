@@ -6,6 +6,7 @@ from uuid import uuid4
 from typing import Callable, Mapping
 
 from ..tools.definitions import TOOLS
+from ..protocol.mcp import MCP_NAME
 from ..tools.results import failure
 from ..runtime.history import bounded_tool_result
 
@@ -36,7 +37,7 @@ def execute_tool_calls(
         tool_args = call.get("args", {})
         if state is not None and state.cancelled.is_set():
             tool_result = json.dumps(failure("cancelled", "Ход отменён; инструмент не запущен"), ensure_ascii=False)
-        elif tool_name in TOOLS and tool_name in handlers:
+        elif tool_name in handlers and (tool_name in TOOLS or MCP_NAME.fullmatch(tool_name or "")):
             record("running")
             try:
                 tool_result = handlers[tool_name](tool_args, current_dir)

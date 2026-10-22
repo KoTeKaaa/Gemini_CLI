@@ -19,9 +19,10 @@ class MCPUnavailable(RuntimeError):
 
 
 class Session:
-    def __init__(self, connection, *, secrets=None, http_factory=None, oauth=None):
+    def __init__(self, connection, *, secrets=None, http_factory=None, oauth=None, login=False, storage=None):
         self.connection, self.secrets = connection, secrets or {}
         self.http_factory, self.oauth = http_factory, oauth
+        self.login, self.storage = login, storage
         self.queue, self.ready = Queue(), Future()
         self.closed = False
         self.thread = threading.Thread(target=self._run, name="mcp-session", daemon=True)
@@ -60,6 +61,9 @@ class Session:
         from mcp.client.streamable_http import streamable_http_client
         from .http import http_client
         c = self.connection
+        if self.login:
+            from .auth import BrowserLogin
+            self.oauth = await stack.enter_async_context(BrowserLogin(c, self.storage))
         factory = self.http_factory or http_client
         client = await stack.enter_async_context(factory(c,
             bearer=self.secrets.get("bearer"), oauth=self.oauth))
