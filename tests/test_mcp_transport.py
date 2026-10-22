@@ -56,6 +56,26 @@ class MCPTransportTest(unittest.TestCase):
         self.assertNotIn('PRIVATE-BASE64', result)
         self.assertTrue(json.loads(result)['unsupported_media'])
 
+    def test_unterminated_stdout_is_rejected_before_json_parse(self):
+        import time
+        started = time.monotonic()
+        with self.assertRaises(MCPUnavailable):
+            Session(Connection('oversize', 'stdio', command=sys.executable,
+                args=('-c', 'import sys,time; sys.stdout.write("x"*300000); sys.stdout.flush(); time.sleep(30)'),
+                timeout=3))
+        self.assertLess(time.monotonic() - started, 9)
+
+    def test_decoder_bounds_split_lines_and_preserves_unicode(self):
+        from gemini_cli.integrations.mcp.encoding import BoundedUTF8Decoder, MAX_LINE_BYTES
+        decoder = BoundedUTF8Decoder()
+        self.assertEqual(decoder.decode('привет\n'.encode(), final=True), 'привет\n')
+        decoder.reset()
+        decoder.decode(b'x' * MAX_LINE_BYTES)
+        with self.assertRaises(UnicodeError):
+            decoder.decode(b'x')
+        decoder.reset()
+        self.assertEqual(decoder.decode(b'ok\nok', final=True), 'ok\nok')
+
     def test_missing_runtime_safe_error(self):
         with self.assertRaisesRegex(MCPUnavailable, 'runtime'):
             Session(Connection('missing', 'stdio', command='/missing/mcp-runtime', timeout=1))

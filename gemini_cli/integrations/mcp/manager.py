@@ -28,6 +28,13 @@ class Manager:
             persistent = preferences.get(candidate.service) == 'keyring'
         if (name not in self.credentials or explicit and
                 bool(self.credentials[name].backend) != persistent):
+            previous = self.credentials.get(name)
+            if not persistent and preferences.get(candidate.service) == 'keyring':
+                previous = previous if previous is not None and previous.backend else Credentials(
+                    self.binding, self.connections[name], persistent=True)
+                previous.clear(extra=self.connections[name].env_keys)
+            elif previous is not None and previous.backend and not persistent:
+                previous.clear(extra=self.connections[name].env_keys)
             self.credentials[name] = Credentials(self.binding, self.connections[name], persistent=persistent)
         if explicit:
             preferences[candidate.service] = 'keyring' if persistent else 'memory'
@@ -58,6 +65,8 @@ class Manager:
     def enable(self, name):
         if name not in self.sessions or self.sessions[name].closed:
             self.connect(name)
+        if not self.catalogs[name][0]:
+            raise ValueError('MCP: нет поддерживаемых выбранных инструментов; /mcp tools имя')
         values = [row for server in self.enabled | {name} for row in self.catalogs[server][0]]
         validate_declarations(values)
         self.enabled.add(name)
@@ -81,7 +90,7 @@ class Manager:
                 continue
             try:
                 declaration = next(row for row in declarations if row['name'] == name)
-                if not isinstance(args, dict) or len(json.dumps(args).encode()) > 8192:
+                if not isinstance(args, dict) or len(json.dumps(args, allow_nan=False).encode()) > 8192:
                     raise ValueError('MCP: слишком большие аргументы')
                 validate_arguments(args, declaration['parameters'])
                 if cancelled():

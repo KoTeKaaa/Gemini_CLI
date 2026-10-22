@@ -73,12 +73,13 @@ class Session:
 
     async def _transport(self, stack):
         from mcp.client.stdio import stdio_client, StdioServerParameters
+        from .encoding import ENCODING
         c = self.connection
         if c.transport == "stdio":
             stderr = stack.enter_context(open(os.devnull, "w"))
             env = {key: self.secrets[key] for key in c.env_keys if key in self.secrets}
             return await stack.enter_async_context(stdio_client(StdioServerParameters(
-                command=c.command, args=list(c.args), env=env,
+                command=c.command, args=list(c.args), env=env, encoding=ENCODING,
                 cwd=str(Path.home())), errlog=stderr))
         return await self._http_transport(stack)
 
