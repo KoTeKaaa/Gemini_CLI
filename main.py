@@ -786,9 +786,16 @@ def main(backend: Backend | None = None):
             user_input = session.prompt(HTML('<style class="prompt"> › </style>'), default=draft.text)
 
             if not user_input.strip():
+                draft.text = ""
+                draft.retry_pending = False
                 continue
 
             first_line = user_input.strip().split("\n")[0]
+            if draft.retry_pending and (first_line.startswith("/") or user_input.startswith("@")):
+                # The user replaced the composer with a local action. Do not
+                # restore the old failed request after the action completes.
+                draft.text = ""
+                draft.retry_pending = False
             if first_line.lower() in ["выход", "exit", "quit", "q", "й"]:
                 console.print("[bold red]Рад был помочь![/bold red]")
                 break
@@ -1089,10 +1096,15 @@ def main(backend: Backend | None = None):
                 except InterruptedError:
                     break
                 except Exception:
-                    console.print(Text("Соединение прервано. Черновик сохранён; повторите отправку."))
+                    notice = ("Черновик сохранён; повторите отправку." if draft.text or draft.items()
+                              else "Запрос остаётся в истории; уже выполненные действия не повторяются автоматически.")
+                    console.print(Text("Соединение прервано. " + notice))
                     break
 
                 if response.status_code == 200:
+                    # Once the backend accepts the turn, it is sent history,
+                    # not an unsent draft (even if a later tool continuation fails).
+                    draft.clear()
                     full_response, tool_calls_received = display_stream_response(
                         response, has_pending_tool, state)
 
@@ -1114,7 +1126,6 @@ def main(backend: Backend | None = None):
                         console.rule(style="dim #4285F4")
                         temporary_history.append({"role": "model", "content": full_response, "id": str(uuid4()),
                                                   "turn_id": state.turn_id, "status": "running"})
-                        draft.clear()
                         state.finish()
                         break
 
@@ -1133,9 +1144,13 @@ def main(backend: Backend | None = None):
 
             if state.cancelled.is_set():
                 row["status"] = "cancelled"
-                console.print(Text("Ход отменён. Выполненные действия и расход квоты не откатываются. Черновик сохранён."))
+                notice = ("Черновик сохранён." if draft.text or draft.items()
+                          else "Отправленный запрос остаётся в истории.")
+                console.print(Text("Ход отменён. Выполненные действия и расход квоты не откатываются. " + notice))
             else:
                 state.finish("failed")
+            if state.status != "completed" and draft.text:
+                draft.retry_pending = True
             for event in temporary_history:
                 if event.get("turn_id") == state.turn_id:
                     event["status"] = state.status
