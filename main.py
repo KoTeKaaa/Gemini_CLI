@@ -8,6 +8,7 @@ from gemini_cli.client.chat_buffers import ChatBuffers, filter_chats
 from gemini_cli.client.shell import launch_shell
 from gemini_cli.client.work_input import WorkInput
 from gemini_cli.client.work_view import WorkView
+from gemini_cli.client.change_view import handle_change_command
 from gemini_cli.client.quota_view import PromptStatus, status_line, limits_text, value
 from prompt_toolkit.layout import ConditionalContainer, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
@@ -19,6 +20,7 @@ import sys
 import json
 import ipaddress
 import tempfile
+from contextlib import nullcontext
 from uuid import uuid4
 from pathlib import Path
 from typing import Optional, Dict, List, Any
@@ -52,6 +54,8 @@ from gemini_cli.tools.local.command import execute_command
 from gemini_cli.tools.local.files import read_files, write_files, read_file_lines
 from gemini_cli.tools.local.search import find_files, search_text
 from gemini_cli.tools.local.edit import replace_in_file
+from gemini_cli.tools.local.changes import ChangeSet, ChangeHistory
+from gemini_cli.tools.local.checkpoints import CheckpointStore
 from gemini_cli.tools.definitions import CLIENT_NAMES
 from gemini_cli.client.web_tools import ToolTurn
 from gemini_cli.client.terminal import configure_output
@@ -207,10 +211,10 @@ def confirm_file_read(readable: list[tuple[str, str]]) -> bool:
         return False
 
 
-def confirm_replacement(diff: str) -> bool:
-    console.print(Text(diff))
+def confirm_replacement(path: str) -> bool:
+    console.print(result_panel(f"Изменить файл: {safe_label(path)}", title="Запись файла"))
     try:
-        return input("Применить показанный diff? (y/n): ").strip().lower() == "y"
+        return input("Применить замену? (y/n): ").strip().lower() == "y"
     except (EOFError, KeyboardInterrupt):
         return False
 
@@ -225,14 +229,9 @@ def confirm_file_write(files: list[dict]) -> bool:
     table.add_column("Размер (символов)", style="magenta")
 
     for f in files:
-        table.add_row(f.get("filepath", "unknown"), str(len(f.get("content", ""))))
+        table.add_row(Text(safe_label(f.get("filepath", "unknown"))), str(len(f.get("content", ""))))
 
     console.print(table)
-
-    for f in files:
-        filepath = f.get("filepath", "unknown")
-        content = f.get("content", "")
-        console.print(Panel(content, title=f"📝 Предпросмотр: {filepath}", border_style="blue", expand=True))
 
     console.print("")
     confirm = input("Разрешить создание/модификацию этих файлов? (y/n): ").strip().lower()
@@ -244,9 +243,11 @@ def confirm_file_write(files: list[dict]) -> bool:
     return True
 
 
-def handle_write_files(args: dict, current_dir: str) -> str:
+def handle_write_files(args: dict, current_dir: str, *, changes=None, cancelled=lambda: False,
+                       monitor=nullcontext) -> str:
     return write_files(args, current_dir, approve=confirm_file_write,
-                       notify=console.print, logger=logger)
+                       notify=lambda text: console.print(Text(safe_label(text))), logger=logger, changes=changes,
+                       cancelled=cancelled, monitor=monitor)
 
 
 def confirm_command(command: str) -> bool:
@@ -541,14 +542,25 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
 
 def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
                        current_dir: str, *, turn: ToolTurn | None = None, api_client: Backend | None = None, state=None) -> None:
+    changes = getattr(state, "changes", None)
+    if changes is None:
+        changes = ChangeSet(current_dir, getattr(state, "turn_id", ""),
+                            store=CheckpointStore(Path(CONFIG_DIR) / "checkpoints"))
+        if state is not None:
+            state.changes = changes
+    cancelled = state.cancelled.is_set if state else lambda: False
+    monitor = (lambda: WorkInput(state)) if state else nullcontext
     handlers = {
         "read_local_files": handle_read_files,
-        "write_local_files": handle_write_files,
+        "write_local_files": lambda args, cwd: handle_write_files(args, cwd, changes=changes,
+                                                                 cancelled=cancelled, monitor=monitor),
         "execute_command": (handle_execute_command if state is None else
                             lambda args, cwd: handle_execute_command(args, cwd, state=state)),
         "find_files": lambda args, cwd: json.dumps(find_files(args, cwd), ensure_ascii=False),
         "replace_in_file": lambda args, cwd: json.dumps(replace_in_file(
-            args, cwd, approve=confirm_content_scope, confirm_diff=confirm_replacement), ensure_ascii=False),
+            args, cwd, approve=confirm_content_scope,
+            confirm_diff=lambda _: confirm_replacement(args.get("filepath", "")),
+            changes=changes, cancelled=cancelled, monitor=monitor), ensure_ascii=False),
         "read_file_lines": lambda args, cwd: json.dumps(read_file_lines(args, cwd, approve=confirm_content_scope),
                                                          ensure_ascii=False),
         "search_text": lambda args, cwd: json.dumps(search_text(args, cwd, approve=confirm_content_scope),
@@ -672,7 +684,12 @@ def main(backend: Backend | None = None):
 
     draft = Draft()
     draft_input = DraftInput(draft)
-    completer = InputCompleter(lambda: current_dir, mode=lambda: api_client.mode, attachment_choices=lambda: [
+    file_changes = {}
+    def active_changes():
+        return file_changes.get((backend_identity(api_client), chat_id, os.path.realpath(current_dir)))
+    completer = InputCompleter(lambda: current_dir, mode=lambda: api_client.mode,
+                              change_choices=lambda: list(active_changes().active_files()) if active_changes() else (),
+                              attachment_choices=lambda: [
         (number, draft_input.describe(number, item)) for number, item in draft.items()])
     session = PromptSession(completer=completer, complete_while_typing=True,
                             key_bindings=merge_key_bindings([bindings, draft_input.bindings]),
@@ -769,9 +786,16 @@ def main(backend: Backend | None = None):
             user_input = session.prompt(HTML('<style class="prompt"> › </style>'), default=draft.text)
 
             if not user_input.strip():
+                draft.text = ""
+                draft.retry_pending = False
                 continue
 
             first_line = user_input.strip().split("\n")[0]
+            if draft.retry_pending and (first_line.startswith("/") or user_input.startswith("@")):
+                # The user replaced the composer with a local action. Do not
+                # restore the old failed request after the action completes.
+                draft.text = ""
+                draft.retry_pending = False
             if first_line.lower() in ["выход", "exit", "quit", "q", "й"]:
                 console.print("[bold red]Рад был помочь![/bold red]")
                 break
@@ -810,6 +834,8 @@ def main(backend: Backend | None = None):
                 table.add_row("/show, /edit", "Без номера: выбрать единственное вложение или показать список")
                 table.add_row("/remove", "Показать номера для выбора; без номера ничего не удаляет")
                 table.add_row("/help", "Показать эту справку")
+                table.add_row("/diff [путь]", "Список правок чата или diff файла; пример: /diff src/file.py")
+                table.add_row("/undo [путь]", "Список правок или откат файла; пример: /undo src/file.py")
                 table.add_row("/model", "Сменить ИИ модель")
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")
                 table.add_row("/chat", "Сменить или создать комнату диалога")
@@ -823,6 +849,9 @@ def main(backend: Backend | None = None):
                 table.add_row("exit, quit, q", "Выход из приложения")
 
                 console.print(Panel(table, title="[bold green]Справка[/bold green]", expand=False))
+                continue
+
+            if handle_change_command(user_input, active_changes(), console):
                 continue
 
             if first_line.split()[0] == "/term":
@@ -1032,6 +1061,15 @@ def main(backend: Backend | None = None):
                     pass  # Unavailable provider metadata must not invent model limits.
             state = TurnState()
             row.update(id=str(uuid4()), turn_id=state.turn_id, status="running")
+            changes_key = (backend_identity(api_client), chat_id, os.path.realpath(current_dir))
+            if changes_key not in file_changes:
+                if len(file_changes) >= 8:
+                    console.print(result_panel("Журнал хранит до 8 чатов/папок; самый старый журнал освобождён.", title="Файловые правки"))
+                    file_changes.pop(next(iter(file_changes)))
+                file_changes[changes_key] = ChangeHistory(current_dir,
+                    store=CheckpointStore(Path(CONFIG_DIR) / "checkpoints"))
+            journal = file_changes[changes_key]
+            state.changes = journal.begin_turn(state.turn_id)
             console.print("\n[bold cyan]Gemini:[/bold cyan]")
             temporary_history.append(row)
             bound_image_history(temporary_history)
@@ -1058,10 +1096,15 @@ def main(backend: Backend | None = None):
                 except InterruptedError:
                     break
                 except Exception:
-                    console.print(Text("Соединение прервано. Черновик сохранён; повторите отправку."))
+                    notice = ("Черновик сохранён; повторите отправку." if draft.text or draft.items()
+                              else "Запрос остаётся в истории; уже выполненные действия не повторяются автоматически.")
+                    console.print(Text("Соединение прервано. " + notice))
                     break
 
                 if response.status_code == 200:
+                    # Once the backend accepts the turn, it is sent history,
+                    # not an unsent draft (even if a later tool continuation fails).
+                    draft.clear()
                     full_response, tool_calls_received = display_stream_response(
                         response, has_pending_tool, state)
 
@@ -1083,7 +1126,6 @@ def main(backend: Backend | None = None):
                         console.rule(style="dim #4285F4")
                         temporary_history.append({"role": "model", "content": full_response, "id": str(uuid4()),
                                                   "turn_id": state.turn_id, "status": "running"})
-                        draft.clear()
                         state.finish()
                         break
 
@@ -1102,12 +1144,20 @@ def main(backend: Backend | None = None):
 
             if state.cancelled.is_set():
                 row["status"] = "cancelled"
-                console.print(Text("Ход отменён. Выполненные действия и расход квоты не откатываются. Черновик сохранён."))
+                notice = ("Черновик сохранён." if draft.text or draft.items()
+                          else "Отправленный запрос остаётся в истории.")
+                console.print(Text("Ход отменён. Выполненные действия и расход квоты не откатываются. " + notice))
             else:
                 state.finish("failed")
+            if state.status != "completed" and draft.text:
+                draft.retry_pending = True
             for event in temporary_history:
                 if event.get("turn_id") == state.turn_id:
                     event["status"] = state.status
+            if state.changes.entries:
+                console.print(result_panel(state.changes.summary() + "\n/diff — список · /diff путь — просмотр · /undo путь — откат файла", title="Файловые правки"))
+            if journal.trim():
+                console.print(result_panel("Старые ходы освобождены: журнал ограничен 32 ходами с правками и 64 МиБ.", title="Файловые правки"))
             remember()
 
         except KeyboardInterrupt:

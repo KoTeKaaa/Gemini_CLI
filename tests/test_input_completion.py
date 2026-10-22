@@ -7,6 +7,31 @@ from gemini_cli.client.completion import InputCompleter
 
 
 class CompletionTest(unittest.TestCase):
+    def test_change_paths_are_scoped_and_removed_after_undo_without_scanning(self):
+        from unittest.mock import patch
+        from gemini_cli.tools.local.changes import ChangeHistory
+        from gemini_cli.tools.local.checkpoints import CheckpointStore
+        from gemini_cli.tools.local.undo import undo
+        with tempfile.TemporaryDirectory() as base:
+            root = Path(base) / "workspace"
+            root.mkdir()
+            journal = ChangeHistory(str(root), store=CheckpointStore(Path(base) / "private"))
+            turn = journal.begin_turn("first")
+            item = turn.propose("привет мир.py", "new\n")
+            turn.write(item)
+            journal.begin_turn("no edits")
+            active = [journal]
+            completer = InputCompleter(lambda: str(root), change_choices=lambda: list(active[0].active_files()))
+            with patch('gemini_cli.client.completion.os.scandir', side_effect=AssertionError("must not scan")):
+                for command in ('/diff ', '/undo при'):
+                    result = list(completer.get_completions(Document(command), None))
+                    self.assertEqual([c.text for c in result], ['привет мир.py'])
+                active[0] = ChangeHistory(str(root), store=journal.store)
+                self.assertEqual(list(completer.get_completions(Document('/diff '), None)), [])
+                active[0] = journal
+                undo(journal, selected_paths=[item.before.path], approve=lambda: True)
+                self.assertEqual(list(completer.get_completions(Document('/undo '), None)), [])
+
     def test_commands(self):
         completions = list(InputCompleter(lambda: '.').get_completions(Document('/pa'), None))
         self.assertIn('/paste', [item.text for item in completions])

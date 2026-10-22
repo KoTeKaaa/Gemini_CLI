@@ -5,7 +5,7 @@ from prompt_toolkit.completion import Completer, Completion
 from ..tools.local.workspace import resolve_safe_path, is_sensitive_read_path, plan_text_file
 
 COMMANDS = ('/help', '/model', '/chat', '/settings', '/term', '/paste',
-            '/attachments', '/show', '/edit', '/remove', '/cd', '/delete', '/clear', '/compact', '/fork', '/limits')
+            '/attachments', '/show', '/edit', '/remove', '/cd', '/delete', '/clear', '/compact', '/fork', '/limits', '/diff', '/undo')
 SKIP = {'node_modules', 'build', 'dist', 'venv', '__pycache__'}
 
 
@@ -22,15 +22,25 @@ def allowed_path(root: str, relative: str) -> str | None:
 
 
 class InputCompleter(Completer):
-    def __init__(self, root, attachment_choices=lambda: (), mode=lambda: "remote"):
+    def __init__(self, root, attachment_choices=lambda: (), mode=lambda: "remote", change_choices=lambda: ()):
         self.root = root
         self.attachment_choices = attachment_choices
         self.mode = mode
+        self.change_choices = change_choices
         self.snapshots = {}
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         action, separator, fragment = text.partition(' ')
+        if action in {'/diff', '/undo'} and separator:
+            for path in self.change_choices():
+                relative = os.path.relpath(path, os.path.realpath(self.root()))
+                candidate, prefix = relative, fragment
+                if os.name == "nt":
+                    candidate, prefix = candidate.replace('\\', '/'), prefix.replace('\\', '/')
+                if candidate.casefold().startswith(prefix.casefold()):
+                    yield Completion(relative, start_position=-len(fragment), display_meta='Правки текущего чата')
+            return
         if action in {'/remove', '/show', '/edit'} and separator:
             for number, description in self.attachment_choices():
                 if str(number).startswith(fragment.removeprefix('#')):

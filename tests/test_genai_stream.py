@@ -5,10 +5,34 @@ from unittest.mock import patch
 import importlib
 import os
 
-from gemini_cli.backends.genai import stream_events
+from gemini_cli.backends.genai import stream_events, provider_error_message
 
 
 class GenaiStreamTest(unittest.TestCase):
+    def test_provider_errors_report_safe_structured_codes_without_request_details(self):
+        class ProviderError(Exception):
+            def __init__(self, code):
+                super().__init__("private key, request body and URL?key=secret")
+                self.code = code
+        for code in (400, 401, 403, 404, 429, 503):
+            with self.subTest(code=code):
+                client = Mock()
+                client.models.generate_content_stream.side_effect = ProviderError(code)
+                events = list(stream_events(client, model="fixture", contents=[]))
+                self.assertIn(f"HTTP {code}", events[0]['content'])
+                self.assertNotIn('private', str(events))
+                self.assertNotIn('secret', str(events))
+        self.assertNotIn('429', provider_error_message(RuntimeError('private token 429')))
+        self.assertIn('время ожидания', provider_error_message(TimeoutError('private')))
+
+    def test_undeclared_call_reports_local_protocol_problem_not_service_outage(self):
+        client = Mock()
+        client.models.generate_content_stream.return_value = iter([Item(
+            function_calls=[Item(name="write_local_files", args={}, id="one")], text=None)])
+        events = list(stream_events(client, model="fixture", contents=[], supported_tools=[]))
+        self.assertEqual(events[-1]['type'], 'error')
+        self.assertIn('не был разрешён', events[-1]['content'])
+
     def test_long_provider_text_is_valid_history_for_the_next_remote_request(self):
         client = Mock()
         client.models.generate_content_stream.return_value = iter([Item(function_calls=None, text="a" * 40000)])

@@ -49,6 +49,73 @@ class InputRegressionTest(unittest.TestCase):
             self.assertEqual(session.return_value.prompt.call_args.kwargs['default'], 'hello')
             self.assertNotIn('sensitive request', str(printed.call_args_list))
 
+    def test_accepted_provider_error_does_not_restore_sent_message_after_commands(self):
+        from gemini_cli.backends.base import StreamResult
+        from gemini_cli.client.draft import Draft
+        for mode in ('local', 'remote'):
+            backend = Mock(mode=mode)
+            draft = Draft()
+            draft.add_text_file('note.txt', 'attachment')
+            with self.subTest(mode=mode), \
+                 patch.object(self.app, 'show_chat_menu', return_value=(None, True)), \
+                 patch.object(self.app, 'PromptSession') as session, \
+                 patch.object(self.app, 'Draft', return_value=draft), \
+                 patch.object(self.app, 'print_banner'), patch.object(self.app.console, 'print'), \
+                 patch.object(self.app, 'WorkView'), \
+                 patch.object(self.app, 'open_stream', return_value=StreamResult(events=[
+                     {'type': 'error', 'content': 'Provider error'}])) as stream:
+                session.return_value.prompt.side_effect = ['task', '/diff', '/undo', '/attachments', 'exit']
+                self.app.main(backend)
+                self.assertEqual([call.kwargs['default'] for call in session.return_value.prompt.call_args_list],
+                                 ['', '', '', '', ''])
+                self.assertEqual(draft.items(), [])
+                stream.assert_called_once()
+
+    def test_replacing_failed_draft_with_command_or_empty_input_clears_text(self):
+        for replacement in ('/diff', '/attachments', ''):
+            with self.subTest(replacement=replacement), \
+                 patch.object(self.app, 'show_chat_menu', return_value=(None, True)), \
+                 patch.object(self.app, 'PromptSession') as session, \
+                 patch.object(self.app, 'print_banner'), patch.object(self.app.console, 'print'), \
+                 patch.object(self.app, 'open_stream', side_effect=ConnectionError):
+                session.return_value.prompt.side_effect = ['task', replacement, 'exit']
+                self.app.main(Mock(mode='local'))
+                defaults = [call.kwargs['default'] for call in session.return_value.prompt.call_args_list]
+                self.assertEqual(defaults, ['', 'task', ''])
+
+    def test_failed_continuation_keeps_written_file_without_restoring_or_resending_task(self):
+        from gemini_cli.backends.base import StreamResult
+        for mode, ending in ((mode, ending) for mode in ('local', 'remote') for ending in ('provider', 'network')):
+            with self.subTest(mode=mode, ending=ending), tempfile.TemporaryDirectory() as base:
+                root = Path(base) / 'workspace'
+                root.mkdir()
+                file = root / 'hello.py'
+                commands = iter(['write hello', '/diff', '/undo hello.py', 'exit'])
+                def prompt(*args, **kwargs):
+                    command = next(commands)
+                    if command == '/diff':
+                        self.assertEqual(file.read_bytes(), b'print("hello")\n')
+                    return command
+                responses = [StreamResult(events=[{'type': 'tool_call', 'name': 'write_local_files',
+                    'call_id': 'write', 'args': {'files': [{'filepath': 'hello.py', 'content': 'print("hello")\n'}]}}]),
+                    (ConnectionError('private') if ending == 'network' else
+                     StreamResult(events=[{'type': 'error', 'content': 'Provider error'}]))]
+                with patch.object(self.app, 'show_chat_menu', return_value=(None, True)), \
+                     patch.object(self.app, 'PromptSession') as session, \
+                     patch.object(self.app.os, 'getcwd', return_value=str(root)), \
+                     patch.object(self.app, 'CONFIG_DIR', base), \
+                     patch.object(self.app, 'print_banner'), patch.object(self.app.console, 'print') as printed, \
+                     patch.object(self.app, 'WorkView'), patch('builtins.input', return_value='y'), \
+                     patch.object(self.app, 'open_stream', side_effect=responses) as stream:
+                    session.return_value.prompt.side_effect = prompt
+                    self.app.main(Mock(mode=mode))
+                    self.assertEqual(stream.call_count, 2)
+                    self.assertTrue(stream.call_args.args[1]['continue_after_tool'])
+                    self.assertTrue(all(call.kwargs['default'] == '' for call in session.return_value.prompt.call_args_list))
+                    self.assertNotIn('Черновик сохранён; повторите отправку', str(printed.call_args_list))
+                    self.assertNotIn('private', str(printed.call_args_list))
+                self.assertFalse(file.exists())
+
     def test_symlink_alias_does_not_expose_hidden_directory(self):
         with tempfile.TemporaryDirectory() as root:
             base = Path(root)
