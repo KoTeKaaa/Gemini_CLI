@@ -2,7 +2,22 @@
 
 import os
 import stat
+from pathlib import Path
 from typing import Optional
+
+
+def path_has_links(path: str) -> bool:
+    """Не путать Windows 8.3 aliases с symlink/junction в любом компоненте."""
+    target = Path(os.path.abspath(path))
+    for part in (target, *target.parents):
+        try:
+            info = os.lstat(part)
+        except FileNotFoundError:
+            continue
+        if (stat.S_ISLNK(info.st_mode)
+                or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+            return True
+    return False
 
 
 def resolve_safe_path(base_dir: str, path: str) -> Optional[str]:

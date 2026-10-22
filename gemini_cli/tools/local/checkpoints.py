@@ -10,6 +10,7 @@ import time
 from uuid import uuid4
 
 from .changes import Change, MAX_BYTES
+from .workspace import path_has_links
 
 
 class CheckpointStore:
@@ -25,7 +26,7 @@ class CheckpointStore:
             inside = False
         if inside:
             raise ValueError("Контрольные точки должны храниться вне workspace")
-        if os.path.abspath(self.directory) != full:
+        if path_has_links(str(self.directory)):
             raise ValueError("Ссылки в хранилище контрольных точек запрещены")
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         if os.name == "posix":
@@ -75,7 +76,7 @@ class CheckpointStore:
         if not isinstance(key, str) or len(key) != 32 or any(c not in "0123456789abcdef" for c in key):
             raise ValueError("Контрольная точка отсутствует")
         path = self.directory / (key + ".json")
-        if (os.path.abspath(self.directory) != os.path.realpath(self.directory) or path.is_symlink()
+        if (path_has_links(str(path))
                 or path.stat().st_size > 2 * MAX_BYTES
                 or time.time() - path.stat().st_mtime > self.max_age):
             raise ValueError("Контрольная точка повреждена")

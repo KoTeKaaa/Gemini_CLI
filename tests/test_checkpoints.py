@@ -68,3 +68,25 @@ class CheckpointTest(unittest.TestCase):
             self.save()
         with self.assertRaises(ValueError):
             self.changes.propose(".env", "secret")
+
+    @unittest.skipUnless(os.name == "posix", "POSIX symlink")
+    def test_symlinked_checkpoint_directory_is_rejected(self):
+        real = self.base / "real"
+        real.mkdir()
+        self.store.directory.symlink_to(real, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            self.save()
+
+    @unittest.skipUnless(os.name == "nt", "Windows 8.3 aliases")
+    def test_windows_short_profile_path_is_not_a_symlink(self):
+        import ctypes
+        buffer = ctypes.create_unicode_buffer(32768)
+        if not ctypes.windll.kernel32.GetShortPathNameW(str(self.base), buffer, len(buffer)):
+            self.skipTest("Short path unavailable")
+        short = Path(buffer.value)
+        store = CheckpointStore(short / "private")
+        changes = ChangeSet(str(short / "workspace"), store=store)
+        item = changes.propose("new.txt", "new")
+        changes.write(item)
+        self.assertEqual(item.actual.data, b"new")
+        self.assertIsNone(store.load(item))

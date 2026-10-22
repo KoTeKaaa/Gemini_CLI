@@ -6,7 +6,7 @@ import hashlib
 import os
 import stat
 
-from .workspace import is_sensitive_read_path, read_binary_snapshot, plan_text_file, resolve_safe_path
+from .workspace import is_sensitive_read_path, read_binary_snapshot, plan_text_file, resolve_safe_path, path_has_links
 
 MAX_BYTES = 2 * 1024 * 1024
 
@@ -24,12 +24,13 @@ class Snapshot:
 
 
 def snapshot(root: str, path: str) -> Snapshot:
+    root = os.path.realpath(root)
     full = resolve_safe_path(root, path)
     if (full is None or is_sensitive_read_path(full)
             or any(part in {".git", ".ssh", ".gnupg"} for part in os.path.relpath(full, root).split(os.sep))):
         raise ValueError("Доступ к файлу запрещён")
     # Reject aliases: a checkpoint must refer to the exact reviewed path.
-    if os.path.abspath(os.path.join(root, path)) != full:
+    if path_has_links(os.path.join(root, path)):
         raise ValueError("Ссылки в пути записи запрещены")
     try:
         expected = plan_text_file(root, path)
