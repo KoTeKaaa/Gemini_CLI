@@ -246,6 +246,13 @@ class RemoteBackend:
     def context_info(self, payload):
         return self._history_request("/chat/context", payload)
 
+    def limits(self, model, *, refresh=False):
+        try:
+            return self._history_request("/limits?refresh=" + str(refresh).lower())
+        except (requests.RequestException, ValueError, LookupError):
+            return {"kind": "subscription", "unavailable": True,
+                    "reason": "Сервер недоступен или не поддерживает /limits"}
+
     def compact_chat(self, payload, cancelled=lambda: False):
         if cancelled():
             return {"summary": None, "boundary_id": None, "reason": "cancelled"}

@@ -73,7 +73,8 @@ class UIContextTests(unittest.TestCase):
                 self.app.main(backend)
                 second = session.return_value.prompt.call_args_list[1]
                 self.assertEqual(second.kwargs["default"], expected)
-                self.assertIn("gemini-3.5-flash-lite", str(second.args[0]))
+                self.assertIn("›", str(second.args[0]))
+                self.assertNotIn("gemini-3.5-flash-lite", str(second.args[0]))
                 backend.stream_chat.assert_not_called()
                 backend.delete_chat.assert_not_called()
 

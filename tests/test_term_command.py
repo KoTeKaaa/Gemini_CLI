@@ -41,7 +41,7 @@ class TermCommandTest(unittest.TestCase):
                                             for call in session.return_value.prompt.call_args_list))
                         backend.stream_chat.assert_not_called()
                         backend.delete_chat.assert_not_called()
-                        self.assertTrue(all('gemini-3.5-flash-lite' in str(call.args[0])
+                        self.assertTrue(all('›' in str(call.args[0])
                                             for call in session.return_value.prompt.call_args_list))
 
 

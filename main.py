@@ -8,6 +8,10 @@ from gemini_cli.client.chat_buffers import ChatBuffers, filter_chats
 from gemini_cli.client.shell import launch_shell
 from gemini_cli.client.work_input import WorkInput
 from gemini_cli.client.work_view import WorkView
+from gemini_cli.client.quota_view import PromptStatus, status_line, limits_text, value
+from prompt_toolkit.layout import ConditionalContainer, Window
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.filters import is_done
 from gemini_cli.protocol.images import encode_images
 from gemini_cli.runtime.attachments import attachment_text, bound_image_history, restore_images, MARKER
 import os
@@ -79,6 +83,9 @@ logger = logging.getLogger("gemini_cli")
 
 my_style = Style.from_dict({
     "": "ansibrightgreen",
+    "status-line": "noinherit fg:#9ca3af bg:default",
+    "status-rule": "noinherit fg:#4b5563 bg:default",
+    "prompt": "noinherit fg:#60a5fa bg:default",
 })
 
 bindings = KeyBindings()
@@ -308,6 +315,7 @@ def show_chat_menu(client: Backend, current_id=None, recent_ids=(), query="") ->
     db_chats = client.get_chats()
     if db_chats is None:
         return None
+    client.chat_titles = {chat["id"]: chat["title"] for chat in db_chats}
     while True:
         values = [("temporary", "Войти во временный чат"),
                   ("new", "+ Создать новую комнату диалога"),
@@ -329,6 +337,7 @@ def show_chat_menu(client: Backend, current_id=None, recent_ids=(), query="") ->
             title = input("Введите название нового чата: ").strip() or "Новый диалог"
             new_chat = client.create_chat(title)
             if new_chat:
+                client.chat_titles[new_chat["id"]] = new_chat.get("title", title)
                 return new_chat["id"], False
             console.print(result_panel("Не удалось создать чат.", title="Чаты", error=True))
             return None
@@ -368,6 +377,16 @@ def context_payload(history, chat_id, model, summary=None):
     if summary:
         payload.update(summary=summary.get("summary"),
                        summary_boundary=summary.get("boundary_id"))
+    return payload
+
+
+def status_context_payload(history, chat_id, model, summary=None):
+    payload = context_payload(history, chat_id, model, summary)
+    # Use the actual next-turn policy, including history/wire thresholds,
+    # without transmitting a hypothetical message or the unsent draft.
+    preview = build_stream_payload([*history, {"role": "user", "content": ""}],
+                                   chat_id, model, chat_id is None, summary=summary)
+    payload["supported_tools"] = preview["supported_tools"]
     return payload
 
 
@@ -653,7 +672,7 @@ def main(backend: Backend | None = None):
 
     draft = Draft()
     draft_input = DraftInput(draft)
-    completer = InputCompleter(lambda: current_dir, attachment_choices=lambda: [
+    completer = InputCompleter(lambda: current_dir, mode=lambda: api_client.mode, attachment_choices=lambda: [
         (number, draft_input.describe(number, item)) for number, item in draft.items()])
     session = PromptSession(completer=completer, complete_while_typing=True,
                             key_bindings=merge_key_bindings([bindings, draft_input.bindings]),
@@ -662,6 +681,30 @@ def main(backend: Backend | None = None):
     temporary_history: List[Dict[str, str]] = []
     buffers, states, summary = ChatBuffers(), {}, None
     auto_attempts = {}
+    prompt_status = PromptStatus()
+    def input_status():
+        info = prompt_status.context
+        tokens, limit = info.get("input_tokens"), info.get("input_token_limit")
+        text = session.default_buffer.text
+        # Only a local estimate of the unsent draft; no clipboard bytes or
+        # unconfirmed text is transmitted by the status display.
+        if draft.images or tokens is None:
+            context = "—"
+        else:
+            try:
+                draft_text = draft.message(text)
+                tokens += (len(draft_text) + 3) // 4
+                context = "≈" + (f"{100 * tokens / limit:.0f}%" if limit else value(tokens) + "/—")
+            except ValueError:
+                context = "—"
+        titles = getattr(api_client, "chat_titles", {})
+        title = "Временный" if is_temporary else (titles.get(chat_id, "Чат") if isinstance(titles, dict) else "Чат")
+        width = session.app.output.get_size().columns
+        line = status_line(current_dir, current_model, api_client.mode, title, context, prompt_status.data, width)
+        return [("class:status-rule", "─" * max(0, width) + "\n"),
+                ("class:status-line", line)]
+    session.layout.container.children.insert(0, ConditionalContainer(
+        Window(FormattedTextControl(input_status), height=2), filter=~is_done))
     buffers.visit(backend_identity(api_client), chat_id)
     if not is_temporary:
         try:
@@ -715,12 +758,15 @@ def main(backend: Backend | None = None):
                 if not api_client.login():
                     break
             draft_input.take_notice()
-            dir_name = os.path.basename(current_dir) or current_dir
-            prompt_text = f" {dir_name} › "
-            user_input = session.prompt(HTML(
-                f"<ansiblue>[{api_client.mode} · {current_model}]</ansiblue>"
-                f"<ansigray>{prompt_text}</ansigray>"
-            ), default=draft.text)
+            try:
+                status_payload = status_context_payload(temporary_history, chat_id, current_model, summary)
+                from hashlib import sha256
+                status_key = (backend_identity(api_client), current_model, chat_id,
+                              sha256(json.dumps(status_payload, sort_keys=True).encode()).digest())
+                prompt_status.update(api_client, status_key, current_model, status_payload, session.app.invalidate)
+            except ValueError:
+                prompt_status.context = {}
+            user_input = session.prompt(HTML('<style class="prompt"> › </style>'), default=draft.text)
 
             if not user_input.strip():
                 continue
@@ -753,6 +799,8 @@ def main(backend: Backend | None = None):
                 table.add_column("Описание", style="white")
 
                 table.add_row("/show 1, /edit 1", "Просмотр вложения #1 (изображение — в приложении ОС); изменение текста")
+                if api_client.mode == "remote":
+                    table.add_row("/limits [refresh]", "Бюджет подписки сервиса; пример: /limits refresh")
                 table.add_row("Ctrl+V, /paste", "Прикрепить скриншот из буфера")
                 table.add_row("@file", "Добавить файл целиком в черновик; отправка отдельным сообщением")
                 table.add_row("@file:1-20", "Прикрепить строки с 1 по 20 включительно (без скобок)")
@@ -788,6 +836,26 @@ def main(backend: Backend | None = None):
                         console.print(result_panel(f"Текущая папка сменена на: {current_dir}", title="Терминал"))
                 except (ValueError, OSError) as exc:
                     console.print(result_panel(str(exc), title="Терминал", error=True))
+                continue
+
+            if first_line.split()[0] == "/limits" and api_client.mode == "remote":
+                if user_input.strip() not in {"/limits", "/limits refresh"}:
+                    console.print(result_panel("Использование: /limits или /limits refresh. Пример: /limits refresh.",
+                                               title="Подписка", error=True))
+                    continue
+                state = TurnState()
+                state.view = WorkView(console, state)
+                try:
+                    with state.view.monitor():
+                        data = run_cancellable(lambda: api_client.limits(current_model,
+                                               refresh=user_input.strip().endswith(" refresh")), state)
+                    prompt_status.data = data
+                    console.print(result_panel(limits_text(data), title="Подписка"))
+                except Exception:
+                    console.print(result_panel("Бюджет подписки недоступен. Пример: /limits refresh.",
+                                               title="Подписка", error=True))
+                finally:
+                    state.finish()
                 continue
 
             if first_line.strip() == "/settings":
