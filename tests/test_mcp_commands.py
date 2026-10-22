@@ -35,6 +35,18 @@ class MCPCommandsTest(unittest.TestCase):
             self.assertIn('/mcp check', str(console.print.call_args.args[0].renderable))
             manager.close()
 
+    def test_untrusted_tool_labels_cannot_emit_terminal_controls(self):
+        import io
+        from rich.console import Console
+        from unittest.mock import patch
+        from gemini_cli.client.mcp_commands import approve_call
+        output = io.StringIO()
+        with patch('builtins.input', return_value='n'):
+            self.assertFalse(approve_call(Console(file=output, color_system=None),
+                'demo', 'tool\x1b[2J', {'path': 'left\u202eright'}))
+        self.assertNotIn('\x1b', output.getvalue())
+        self.assertNotIn('\u202e', output.getvalue())
+
     def test_help_and_completion(self):
         from gemini_cli.client.completion import COMMANDS
         self.assertIn('/mcp', COMMANDS)

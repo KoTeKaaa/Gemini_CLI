@@ -3,7 +3,7 @@
 import json
 import shlex
 from rich.text import Text
-from .input import result_panel
+from .input import result_panel, safe_label
 
 USAGE = ('/mcp — подключения и состояние\n/mcp tools имя — каталог и причины отказа\n'
          '/mcp check имя — подключить и обновить каталог\n/mcp enable имя — включить набор\n'
@@ -54,8 +54,8 @@ def command(text, manager, *, console, read_secret):
             manager.connect(name)
         elif action == 'tools':
             declarations, routes, rejected = manager.catalogs.get(name, ([], {}, {}))
-            lines = [f'{routes[row["name"]]} → {row["name"]}' for row in declarations]
-            lines.extend(f'{original}: недоступен — {reason}' for original, reason in rejected.items())
+            lines = [f'{safe_label(routes[row["name"]])} → {row["name"]}' for row in declarations]
+            lines.extend(f'{safe_label(original)}: недоступен — {reason}' for original, reason in rejected.items())
             console.print(result_panel('\n'.join(lines or ['Каталог пуст. Выполните /mcp check имя.']), title='MCP tools'))
             return
         message = 'MCP: действие выполнено.'
@@ -69,7 +69,7 @@ def command(text, manager, *, console, read_secret):
 
 
 def approve_call(console, server, name, args):
-    console.print(Text(f'MCP {server}/{name}\nАргументы: {json.dumps(args, ensure_ascii=False)}\n'
+    console.print(Text(f'MCP {server}/{safe_label(name)}\nАргументы: {safe_label(json.dumps(args, ensure_ascii=False))}\n'
                        'Вызов может читать/изменять данные и обращаться к внешнему сервису. '
                        'Результат будет отправлен модели. Внешние действия не откатываются через /undo.'))
     try:
