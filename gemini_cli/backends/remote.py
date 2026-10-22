@@ -179,6 +179,17 @@ class RemoteBackend:
 
     def stream_chat(self, payload: dict) -> StreamResult:
         try:
+            from ..protocol.mcp import MCP_PROTOCOL, validate_tool_payload
+            validate_tool_payload(payload)
+            if payload.get("mcp_tools"):
+                capability = self._authorized_request(lambda: self.transport.get(
+                    f"{self.base_url}/capabilities", headers=self.headers,
+                    timeout=10, allow_redirects=False), interactive=False)
+                try:
+                    if capability.status_code != 200 or capability.json().get("mcp") != MCP_PROTOCOL:
+                        return StreamResult(400, detail="Сервер не поддерживает MCP; обновите сервер или отключите наборы")
+                finally:
+                    capability.close()
             if validate_payload_images(payload):
                 capability = self._authorized_request(lambda: self.transport.get(
                     f"{self.base_url}/capabilities", headers=self.headers,

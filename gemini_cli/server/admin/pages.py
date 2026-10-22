@@ -50,7 +50,7 @@ def page_router(sessions):
         rows = safe_admin_call(lambda db: db.table("account_subscriptions").select("*")
                                .order("created_at", desc=True).limit(1000).execute().data)
         return TEMPLATES.TemplateResponse(request, "subscriptions.html", {
-            "subscriptions": rows, "models": sorted(MODELS), "features": sorted(TOOLS)})
+            "subscriptions": rows, "models": sorted(MODELS), "features": sorted(set(TOOLS) | {"mcp"})})
 
     router.mount("/panel-static", StaticFiles(directory=ROOT / "static"), name="panel-static")
     return router

@@ -30,7 +30,7 @@ class SubscriptionInput(BaseModel):
     @field_validator("models", "features")
     @classmethod
     def known_ids(cls, value, info):
-        allowed = MODELS if info.field_name == "models" else set(TOOLS)
+        allowed = MODELS if info.field_name == "models" else set(TOOLS) | {"mcp"}
         if len(value) != len(set(value)) or not set(value) <= allowed:
             raise ValueError("Неизвестные или повторяющиеся идентификаторы прав")
         return value
