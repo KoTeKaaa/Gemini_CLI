@@ -18,6 +18,7 @@ class Connection:
     args: tuple[str, ...] = ()
     url: str = ""
     env_keys: tuple[str, ...] = ()
+    tools: tuple[str, ...] = ()
     auth: str = "none"
     enabled: bool = False
     timeout: int = 30
@@ -61,7 +62,7 @@ def load_connections(root: Path) -> dict[str, Connection]:
                 raise ValueError("MCP config: ожидается boolean")
         if type(row.get("timeout", 30)) is not int or not 1 <= row.get("timeout", 30) <= 120:
             raise ValueError("MCP config: timeout от 1 до 120 секунд")
-        for key in ("args", "env_keys"):
+        for key in ("args", "env_keys", "tools"):
             values = row.get(key, [])
             if (not isinstance(values, list) or len(values) > 32 or
                     any(not isinstance(v, str) or len(v) > 2048 or '\x00' in v for v in values)):
@@ -82,5 +83,5 @@ def load_connections(root: Path) -> dict[str, Connection]:
         else:
             raise ValueError("MCP config: transport stdio или http")
         result[name] = Connection(**{**row, "args": tuple(row.get("args", [])),
-                                     "env_keys": tuple(row.get("env_keys", []))})
+                                     "env_keys": tuple(row.get("env_keys", [])), "tools": tuple(row.get("tools", []))})
     return result

@@ -21,6 +21,15 @@ class MCPSchemaTest(unittest.TestCase):
             with self.subTest(values=values), self.assertRaises((ValueError, TypeError)):
                 validate_declarations(values)
 
+    def test_sdk_annotations_and_explicit_tool_subset(self):
+        tools = [{'name': 'echo', 'inputSchema': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
+                  'title': 'Echo', 'type': 'object', 'properties': {'text': {'type': 'string', 'title': 'Text', 'x-mcp-header': 'text'}}}},
+                 {'name': 'unused', 'inputSchema': {'type': 'object'}}]
+        accepted, routes, rejected = catalog('demo', tools, ('echo',))
+        self.assertEqual(len(accepted), 1)
+        self.assertNotIn('title', str(accepted))
+        self.assertEqual(rejected, {})
+
     def test_arguments_validate_before_call(self):
         schema = {'type': 'object', 'properties': {'x': {'type': 'integer'}}, 'required': ['x']}
         validate_arguments({'x': 3}, schema)

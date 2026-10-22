@@ -48,7 +48,7 @@ class Manager:
             oauth=oauth_provider(c, store) if c.auth == 'oauth' else None,
             login=login, storage=store) if c.auth == 'oauth' else self.session_factory(c, secrets=secrets)
         try:
-            self.catalogs[name] = catalog(name, session.request('list')['tools'])
+            self.catalogs[name] = catalog(name, session.request('list')['tools'], c.tools)
         except Exception:
             session.close()
             raise
