@@ -89,6 +89,11 @@ def get_current_user(authorization: Optional[str] = Header(None), request: Reque
 
 
 get_working_user = working_user_dependency(get_current_user)
+from gemini_cli.runtime.quotas import QuotaService
+from gemini_cli.server.quota_routes import create_quota_router
+
+app.include_router(create_quota_router(get_working_user,
+                   QuotaService("remote/project", os.getenv("TAVILY_API_KEY"))))
 app.include_router(create_web_router(get_working_user, api_key=os.getenv("TAVILY_API_KEY"),
                                     authorize=require_subscription, reserve=reserve_request))
 
