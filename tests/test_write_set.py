@@ -70,3 +70,39 @@ class WriteSetTest(unittest.TestCase):
         self.assertEqual(item.proposed, proposed)
         self.assertEqual(item.actual.data, before.replace(b"line1\r\n", b"first\r\n"))
         self.assertEqual(self.changes.store.load(item), before)
+
+    def test_second_file_changed_after_selection_blocks_all_writes(self):
+        other = self.root / "other.txt"
+        other.write_text("old other")
+        def changed(_):
+            other.write_text("manual other")
+            return True
+        result = write_set([{"filepath": "file.txt", "content": "agent"},
+                            {"filepath": "other.txt", "content": "agent other"}], self.changes,
+                           approve=changed)
+        self.assertTrue(all("Ошибка" in r["status"] for r in result))
+        self.assertEqual(self.path.read_bytes(), b"manual\r\n")
+        self.assertEqual(other.read_text(), "manual other")
+
+    def test_disk_error_and_cancellation_report_partial_result(self):
+        from gemini_cli.tools.local.files import atomic_write_text
+        files = [{"filepath": "file.txt", "content": "first"}, {"filepath": "second", "content": "second"}]
+        calls = []
+        def write(path, text, **kwargs):
+            calls.append(path)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            return atomic_write_text(path, text, **kwargs)
+        with patch("gemini_cli.tools.local.files.atomic_write_text", side_effect=write):
+            result = write_set(files, self.changes, approve=lambda _: True)
+        self.assertEqual(result[0]["status"], "Успешно записан")
+        self.assertIn("disk full", result[1]["status"])
+        self.assertEqual(self.changes.entries[0].status, "applied")
+        self.assertIsNone(self.changes.entries[1].actual)
+        self.assertFalse((self.root / "second").exists())
+        # Repeat with cancellation triggered by completion of the first file.
+        self.path.write_text("before")
+        result = write_set([{"filepath": "file.txt", "content": "changed"}, files[1]], self.changes,
+                           approve=lambda _: True, cancelled=lambda: self.path.read_bytes() == b"changed")
+        self.assertEqual(result[0]["status"], "Успешно записан")
+        self.assertIn("Пропущено", result[1]["status"])

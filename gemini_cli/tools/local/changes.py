@@ -101,7 +101,10 @@ class ChangeSet:
         from .files import atomic_write_text
         self.validate(change)
         if self.store is not None:
-            change.checkpoint = self.store.save(change, self.root)
+            if change.checkpoint is None:
+                change.checkpoint = self.store.save(change, self.root)
+            else:
+                self.store.load(change)
         atomic_write_text(change.before.path, change.target.decode("utf-8"), newline="",
                           validate=lambda: self.validate(change))
         self.applied(change)
