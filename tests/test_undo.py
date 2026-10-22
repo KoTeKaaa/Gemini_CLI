@@ -3,6 +3,7 @@ from pathlib import Path
 import stat
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 from gemini_cli.tools.local.changes import ChangeSet
 from gemini_cli.tools.local.checkpoints import CheckpointStore
@@ -67,6 +68,42 @@ class UndoTest(unittest.TestCase):
         self.write(text="second")
         self.assertIn("Конфликт", self.undo()[0]["status"])
         self.assertEqual(self.path.read_text(), "second")
+
+    def test_selected_file_restores_chain_and_remaining_file_can_be_undone_later(self):
+        first = self.write()
+        second = self.write(text="second")
+        remaining = self.write("new", "new")
+        results = undo(self.changes, selected_paths=[first.before.path], approve=lambda: True)
+        self.assertEqual([r["filepath"] for r in results], [first.before.path])
+        self.assertEqual(self.path.read_bytes(), b"manual\r\n")
+        self.assertEqual([first.status, second.status, remaining.status], ["undone", "undone", "applied"])
+        self.assertEqual((self.root / "new").read_bytes(), b"new")
+        undo(self.changes, selected_paths=[remaining.before.path], approve=lambda: True)
+        self.assertFalse((self.root / "new").exists())
+
+    def test_empty_unknown_and_refused_selection_preserve_every_file(self):
+        first = self.write()
+        other = self.write("new", "new")
+        approve = Mock(return_value=True)
+        undo(self.changes, selected_paths=[], approve=approve)
+        approve.assert_not_called()
+        with self.assertRaises(ValueError):
+            undo(self.changes, selected_paths=[str(self.root / "unknown")], approve=approve)
+        approve.assert_not_called()
+        undo(self.changes, selected_paths=[first.before.path], approve=lambda: False)
+        self.assertEqual(first.status, "applied")
+        self.assertEqual(other.status, "applied")
+        self.assertEqual(self.path.read_bytes(), b"agent\r\n")
+        self.assertEqual((self.root / "new").read_bytes(), b"new")
+
+    def test_unselected_conflict_does_not_block_selected_file(self):
+        self.write()
+        other = self.write("new", "new")
+        self.path.write_text("manual later")
+        results = undo(self.changes, selected_paths=[other.before.path], approve=lambda: True)
+        self.assertEqual(results[0]["status"], "Восстановлено")
+        self.assertEqual(self.path.read_text(), "manual later")
+        self.assertFalse((self.root / "new").exists())
 
     @unittest.skipUnless(os.name == "posix", "POSIX permissions")
     def test_mode_conflict_and_symlink_do_not_touch_target(self):

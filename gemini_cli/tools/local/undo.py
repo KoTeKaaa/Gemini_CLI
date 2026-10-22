@@ -6,13 +6,21 @@ from .changes import snapshot
 from .files import atomic_write_text
 
 
-def undo(changes, *, approve, cancelled=lambda: False) -> list[dict]:
+def undo(changes, *, approve, selected_paths: list[str] | None = None,
+         cancelled=lambda: False) -> list[dict]:
     groups = {}
     for item in changes.entries:
         if item.status == "applied":
             groups.setdefault(item.before.path, []).append(item)
     if not groups:
         return [{"filepath": "", "status": "Нет применённых файловых правок для отката"}]
+    if selected_paths is not None:
+        selected = set(selected_paths)
+        if selected - groups.keys():
+            raise ValueError("Выбранный файл отсутствует в применённых правках хода")
+        groups = {path: items for path, items in groups.items() if path in selected}
+        if not groups:
+            return [{"filepath": "", "status": "Не выбраны файлы для отката"}]
     if not approve():
         return [{"filepath": "", "status": "Откат отклонён пользователем"}]
     results = []
