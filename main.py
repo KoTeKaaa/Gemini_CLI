@@ -55,6 +55,7 @@ from gemini_cli.tools.local.search import find_files, search_text
 from gemini_cli.tools.local.edit import replace_in_file
 from gemini_cli.tools.local.changes import ChangeSet
 from gemini_cli.tools.local.checkpoints import CheckpointStore
+from gemini_cli.tools.local.undo import undo
 from gemini_cli.tools.definitions import CLIENT_NAMES
 from gemini_cli.client.web_tools import ToolTurn
 from gemini_cli.client.terminal import configure_output
@@ -827,6 +828,7 @@ def main(backend: Backend | None = None):
                 table.add_row("/remove", "Показать номера для выбора; без номера ничего не удаляет")
                 table.add_row("/help", "Показать эту справку")
                 table.add_row("/diff [proposed]", "Правки последнего хода; пример: /diff proposed — предложения")
+                table.add_row("/undo", "Откат файловых правок последнего хода с проверкой конфликтов; пример: /undo")
                 table.add_row("/model", "Сменить ИИ модель")
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")
                 table.add_row("/chat", "Сменить или создать комнату диалога")
@@ -840,6 +842,25 @@ def main(backend: Backend | None = None):
                 table.add_row("exit, quit, q", "Выход из приложения")
 
                 console.print(Panel(table, title="[bold green]Справка[/bold green]", expand=False))
+                continue
+
+            if first_line.split()[0] == "/undo":
+                if user_input.strip() != "/undo":
+                    console.print(result_panel("Использование: /undo (без аргументов). Пример: /undo.",
+                                               title="Откат", error=True))
+                    continue
+                changes = file_changes.get((backend_identity(api_client), chat_id, os.path.realpath(current_dir)))
+                if changes is None:
+                    console.print(result_panel("Нет файловых правок последнего хода для отката.", title="Откат"))
+                    continue
+                console.print(result_panel(changes.summary() + "\nКоманды shell и внешние действия не откатываются.", title="Откат"))
+                try:
+                    results = undo(changes, approve=lambda: yes_no_dialog(title="Откат файлов",
+                        text="Восстановить файлы последнего хода? Ручные изменения будут защищены проверкой конфликта.").run())
+                    console.print(result_panel("\n".join(f"{os.path.relpath(r['filepath'], current_dir) if r['filepath'] else ''}: {r['status']}"
+                                                        for r in results), title="Результат отката"))
+                except (EOFError, KeyboardInterrupt):
+                    console.print(result_panel("Откат отменён.", title="Откат"))
                 continue
 
             if first_line.split()[0] == "/diff":
