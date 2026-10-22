@@ -5,7 +5,7 @@ from prompt_toolkit.completion import Completer, Completion
 from ..tools.local.workspace import resolve_safe_path, is_sensitive_read_path, plan_text_file
 
 COMMANDS = ('/help', '/model', '/chat', '/settings', '/term', '/paste',
-            '/attachments', '/show', '/edit', '/remove', '/cd', '/delete', '/clear', '/compact', '/fork')
+            '/attachments', '/show', '/edit', '/remove', '/cd', '/delete', '/clear', '/compact', '/fork', '/limits')
 SKIP = {'node_modules', 'build', 'dist', 'venv', '__pycache__'}
 
 
@@ -22,9 +22,10 @@ def allowed_path(root: str, relative: str) -> str | None:
 
 
 class InputCompleter(Completer):
-    def __init__(self, root, attachment_choices=lambda: ()):
+    def __init__(self, root, attachment_choices=lambda: (), mode=lambda: "remote"):
         self.root = root
         self.attachment_choices = attachment_choices
+        self.mode = mode
         self.snapshots = {}
 
     def get_completions(self, document, complete_event):
@@ -37,6 +38,8 @@ class InputCompleter(Completer):
             return
         if text.startswith('/') and ' ' not in text:
             for command in COMMANDS:
+                if command == '/limits' and self.mode() != 'remote':
+                    continue
                 if command.startswith(text):
                     yield Completion(command, start_position=-len(text))
             return
