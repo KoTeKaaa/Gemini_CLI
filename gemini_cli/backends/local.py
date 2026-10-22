@@ -32,14 +32,6 @@ class LocalBackend:
     def get_chats(self):
         return self.chats.list()
 
-    def limits(self, model, *, refresh=False):
-        from ..runtime.quotas import QuotaService
-        identity = (self.profile, self.tavily_key)
-        if getattr(self, "_quota_identity", None) != identity:
-            self._quotas = QuotaService("local/" + self.profile, self.tavily_key)
-            self._quota_identity = identity
-        return self._quotas.get(model, refresh=refresh)
-
     def create_chat(self, title):
         return self.chats.create(title)
 
