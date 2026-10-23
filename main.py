@@ -381,15 +381,17 @@ def context_payload(history, chat_id, model, summary=None):
     return payload
 
 
-def status_context_payload(history, chat_id, model, summary=None, *, mcp=None):
+def status_context_payload(history, chat_id, model, summary=None, *, mcp=None, skill=None):
     payload = context_payload(history, chat_id, model, summary)
     # Use the actual next-turn policy, including history/wire thresholds,
     # without transmitting a hypothetical message or the unsent draft.
     preview = build_stream_payload([*history, {"role": "user", "content": ""}],
-                                   chat_id, model, chat_id is None, summary=summary, mcp=mcp)
+                                   chat_id, model, chat_id is None, summary=summary, mcp=mcp, skill=skill)
     payload["supported_tools"] = preview["supported_tools"]
     if preview.get("mcp_tools"):
         payload["mcp_tools"] = preview["mcp_tools"]
+    if preview.get('skill_context'):
+        payload['skill_context'] = preview['skill_context']
     return payload
 
 
@@ -502,7 +504,7 @@ def show_model_selection_menu(current_model: str) -> str:
 
 def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
                          model_name: str, is_temporary: bool, turn: ToolTurn | None = None,
-                         *, end_tool_turn: bool = False, summary=None, mcp=None) -> Dict[str, Any]:
+                         *, end_tool_turn: bool = False, summary=None, mcp=None, skill=None) -> Dict[str, Any]:
     history = context_wire_history(history, summary, strict=is_temporary)
     if not is_temporary and len(history) > 1000:
         if history[-1].get("role") == "tool":
@@ -533,6 +535,10 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
         payload["images"] = history[-1]["images"]
     if summary:
         payload.update(summary=summary.get("summary"), summary_boundary=summary.get("boundary_id"))
+    if skill is not None:
+        from gemini_cli.protocol.skills import validate_skill
+        validate_skill(skill)
+        payload['skill_context'] = dict(skill)
     text_payload = {key: value for key, value in payload.items() if key != "images"}
     if "history" in text_payload:
         text_payload["history"] = [{key: value for key, value in row.items() if key != "images"}
@@ -705,6 +711,11 @@ def main(backend: Backend | None = None):
     draft_input = DraftInput(draft)
     file_changes = {}
     mcp_managers = {}
+    from gemini_cli.client.skill_commands import Selection
+    from gemini_cli.client.skill_resources import choices as skill_resource_choices
+    skill_selection = Selection(Path(CONFIG_DIR) / 'skills.json')
+    def active_skill():
+        return skill_selection.bind((backend_identity(api_client), chat_id, os.path.realpath(current_dir)))
     def active_mcp():
         from gemini_cli.integrations.mcp.manager import Manager
         identity = backend_identity(api_client)
@@ -720,6 +731,8 @@ def main(backend: Backend | None = None):
             return ()
     completer = InputCompleter(lambda: current_dir, mode=lambda: api_client.mode,
                               mcp_choices=mcp_choices,
+                              skill_choices=lambda: active_skill().choices(),
+                              skill_resources=lambda action, fragment: skill_resource_choices(active_skill(), action, fragment),
                               change_choices=lambda: list(active_changes().active_files()) if active_changes() else (),
                               attachment_choices=lambda: [
         (number, draft_input.describe(number, item)) for number, item in draft.items()])
@@ -749,7 +762,10 @@ def main(backend: Backend | None = None):
         titles = getattr(api_client, "chat_titles", {})
         title = "Временный" if is_temporary else (titles.get(chat_id, "Чат") if isinstance(titles, dict) else "Чат")
         width = session.app.output.get_size().columns
-        line = status_line(current_dir, current_model, api_client.mode, title, context, prompt_status.data, width)
+        selected = active_skill().skill
+        skill_label = ('skill ' + selected.name[:max(1, min(24, width // 3))] + ' · ') if selected else ''
+        line = skill_label + status_line(current_dir, current_model, api_client.mode, title, context,
+                                        prompt_status.data, max(0, width - len(skill_label)))
         return [("class:status-rule", "─" * max(0, width) + "\n"),
                 ("class:status-line", line)]
     session.layout.container.children.insert(0, ConditionalContainer(
@@ -808,7 +824,8 @@ def main(backend: Backend | None = None):
                     break
             draft_input.take_notice()
             try:
-                status_payload = status_context_payload(temporary_history, chat_id, current_model, summary, mcp=active_mcp())
+                status_payload = status_context_payload(temporary_history, chat_id, current_model, summary,
+                                                        mcp=active_mcp(), skill=active_skill().payload())
                 from hashlib import sha256
                 status_key = (backend_identity(api_client), current_model, chat_id,
                               sha256(json.dumps(status_payload, sort_keys=True).encode()).digest())
@@ -869,7 +886,8 @@ def main(backend: Backend | None = None):
                 table.add_row("/diff [путь]", "Список правок чата или diff файла; пример: /diff src/file.py")
                 table.add_row("/undo [путь]", "Список правок или откат файла; пример: /undo src/file.py")
                 table.add_row("/model", "Сменить ИИ модель")
-                table.add_row("/mcp", "Подключения MCP; /mcp check github → /mcp enable github")
+                table.add_row("/mcp", "Подключения MCP; /mcp help — гайд для первого подключения")
+                table.add_row('/skill', 'Навыки; /skill help — гайд по созданию и использованию')
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")
                 table.add_row("/chat", "Сменить или создать комнату диалога")
                 table.add_row("/clear", "Очистить временный чат и его черновик; постоянный чат сохраняется")
@@ -920,10 +938,31 @@ def main(backend: Backend | None = None):
                     state.finish()
                 continue
 
+            if first_line.strip().split(" ", 1)[0] == '/skill':
+                from gemini_cli.client.skill_commands import command as skill_command
+                from gemini_cli.client.skill_resources import run as run_skill
+                from gemini_cli.client.paste import view_text
+                def run_selected_skill(selection, relative):
+                    state = TurnState()
+                    view = WorkView(console, state)
+                    view.spinner.text = 'Выполнение скрипта навыка...'
+                    def approve(label):
+                        console.print(Text(label + '\nВнешние действия скрипта не откатываются через /undo.'))
+                        try:
+                            return PromptSession(input=session.input, output=session.output).prompt(
+                                'Запустить просмотренный скрипт? (y/n): ').strip().lower() == 'y'
+                        except (EOFError, KeyboardInterrupt):
+                            return False
+                    return run_skill(selection, relative, current_dir, approve=approve,
+                                     cancelled=state.cancelled.is_set, on_process=view.set_process,
+                                     monitor=view.monitor, notify=lambda _: None)
+                skill_command(first_line, active_skill(), console=console, viewer=view_text,
+                              run_script=run_selected_skill)
+                continue
             if first_line.strip().split(" ", 1)[0] == "/mcp":
                 from gemini_cli.client.mcp_commands import command, prompt_secret
                 try:
-                    command(first_line, active_mcp(), console=console,
+                    command(first_line, manager_factory=active_mcp, console=console,
                             read_secret=lambda label: prompt_secret(label, input=session.input, output=session.output))
                 except ValueError:
                     console.print(result_panel("MCP: неверный приватный mcp.json", title="MCP", error=True))
@@ -1011,6 +1050,7 @@ def main(backend: Backend | None = None):
                     console.print(result_panel("/clear доступна без аргументов только во временном чате.", title="Контекст", error=True))
                 else:
                     apply_buffer(buffers.clear_temporary(backend_identity(api_client)))
+                    active_skill().clear()
                     console.print(result_panel("Временный контекст и черновик очищены.", title="Контекст"))
                 continue
 
@@ -1072,7 +1112,8 @@ def main(backend: Backend | None = None):
                 console.print(Text(str(error)))
                 continue
             try:
-                preview = build_stream_payload(temporary_history + [row], chat_id, current_model, is_temporary, summary=summary, mcp=active_mcp())
+                preview = build_stream_payload(temporary_history + [row], chat_id, current_model, is_temporary,
+                                               summary=summary, mcp=active_mcp(), skill=active_skill().payload())
             except ValueError as error:
                 console.print(result_panel(str(error), title="Контекст", error=True))
                 continue
@@ -1123,7 +1164,8 @@ def main(backend: Backend | None = None):
                 ending = tool_rounds > 12
                 try:
                     payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary, turn,
-                                                   end_tool_turn=ending, summary=summary, mcp=active_mcp())
+                                                   end_tool_turn=ending, summary=summary, mcp=active_mcp(),
+                                                   skill=active_skill().payload())
                 except ValueError as error:
                     console.print(result_panel(str(error), title="Контекст", error=True))
                     break

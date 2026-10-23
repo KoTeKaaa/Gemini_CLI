@@ -5,7 +5,8 @@ import shlex
 from rich.text import Text
 from .input import result_panel, safe_label
 
-USAGE = ('/mcp — подключения и состояние\n/mcp tools имя — каталог и причины отказа\n'
+USAGE = ('/mcp help — пошаговый гайд: настройка, вход и первое подключение\n'
+         '/mcp — подключения и состояние\n/mcp tools имя — каталог и причины отказа\n'
          '/mcp check имя — подключить и обновить каталог\n/mcp enable имя — включить набор\n'
          '/mcp disable имя — отключить и завершить процесс\n'
          '/mcp login имя memory|keyring — персональный вход\n/mcp logout имя — удалить локальные credentials\n'
@@ -24,9 +25,15 @@ def prompt_secret(label, *, input, output):
         secret.default_buffer.reset()
 
 
-def command(text, manager, *, console, read_secret):
+def command(text, manager=None, *, console, read_secret, manager_factory=None):
     try:
         parts = shlex.split(text)
+        if parts == ['/mcp', 'help']:
+            from .integration_help import show_guide
+            show_guide('mcp')
+            return
+        if manager_factory is not None:
+            manager = manager_factory()
         if parts == ['/mcp']:
             lines = [f'{name}: {"включён" if name in manager.enabled else "отключён"} · {c.transport}'
                      for name, c in manager.connections.items()]

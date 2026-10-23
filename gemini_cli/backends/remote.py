@@ -179,6 +179,7 @@ class RemoteBackend:
 
     def stream_chat(self, payload: dict) -> StreamResult:
         try:
+            self._check_skill(payload)
             from ..protocol.mcp import MCP_PROTOCOL, validate_tool_payload
             validate_tool_payload(payload)
             if payload.get("mcp_tools"):
@@ -202,7 +203,7 @@ class RemoteBackend:
                 finally:
                     capability.close()
         except (ValueError, TypeError, AttributeError):
-            return StreamResult(400, detail="Некорректные изображения или возможности сервера")
+            return StreamResult(400, detail="Некорректное вложение/навык или сервер не поддерживает выбранный навык; обновите сервер либо /skill off")
         request = {**payload, "request_id": payload.get("request_id") or str(uuid4())}
         response = self._authorized_request(lambda: self.transport.post(
             f"{self.base_url}/chat/stream", json=request, headers=self.headers,
@@ -255,7 +256,22 @@ class RemoteBackend:
         return self._history_request(f"/chats/{UUID(str(chat_id))}/history")
 
     def context_info(self, payload):
+        self._check_skill(payload)
         return self._history_request("/chat/context", payload)
+
+    def _check_skill(self, payload):
+        from ..protocol.skills import SKILL_PROTOCOL, validate_skill
+        validate_skill(payload.get('skill_context'))
+        if payload.get('skill_context') is None:
+            return
+        response = self._authorized_request(lambda: self.transport.get(
+            f'{self.base_url}/capabilities', headers=self.headers,
+            timeout=10, allow_redirects=False), interactive=False)
+        try:
+            if response.status_code != 200 or response.json().get('skills') != SKILL_PROTOCOL:
+                raise ValueError('Сервер не поддерживает навыки; обновите сервер либо /skill off')
+        finally:
+            response.close()
 
     def limits(self, model, *, refresh=False):
         try:

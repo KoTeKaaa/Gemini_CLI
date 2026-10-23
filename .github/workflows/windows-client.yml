@@ -31,6 +31,8 @@ jobs:
         run: python -B -m unittest tests.test_mcp_config tests.test_mcp_schema tests.test_mcp_transport tests.test_mcp_http tests.test_mcp_auth tests.test_mcp_runner tests.test_mcp_commands tests.test_mcp_secret tests.test_mcp_backend tests.test_mcp_pty -q
       - name: Check subscription status UI
         run: python -B -m unittest tests.test_quota_view tests.test_status_pty -q
+      - name: Check portable skills
+        run: python -B -m unittest tests.test_skills tests.test_skill_backend tests.test_skill_commands tests.test_skill_resources tests.test_skill_pty tests.test_integration_help -q
       - name: Check file changes and undo
         run: python -B -m unittest tests.test_changes tests.test_change_history tests.test_checkpoints tests.test_write_set tests.test_hunks tests.test_change_view tests.test_undo tests.test_changes_pty tests.test_input_completion -q
       - uses: actions/upload-artifact@v7
@@ -87,6 +89,9 @@ jobs:
       - name: Check subscription status UI
         shell: pwsh
         run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_quota_view tests.test_status_pty -q
+      - name: Check portable skills
+        shell: pwsh
+        run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_skills tests.test_skill_backend tests.test_skill_commands tests.test_skill_resources tests.test_skill_pty tests.test_integration_help -q
       - name: Check file changes and undo
         shell: pwsh
         run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_changes tests.test_change_history tests.test_checkpoints tests.test_write_set tests.test_hunks tests.test_change_view tests.test_undo tests.test_changes_pty tests.test_input_completion -q

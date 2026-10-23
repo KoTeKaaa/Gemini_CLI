@@ -11,6 +11,7 @@ def execute_command(
     args: dict, current_dir: str, *, approve: Callable[[str], bool],
     notify: Callable[[str], None], logger: logging.Logger,
     cancelled=lambda: False, on_process=None, monitor=nullcontext,
+    argv=None, preflight=lambda: None,
 ) -> str:
     command = args.get("command", "").strip()
     if not command:
@@ -23,7 +24,10 @@ def execute_command(
     notify("[green]Запуск процесса...[/green]")
     process = None
     try:
-        process = ManagedProcess(command, current_dir)
+        preflight()
+        if cancelled():
+            return json.dumps({"status": "cancelled"})
+        process = ManagedProcess(argv if argv is not None else command, current_dir)
         if on_process:
             on_process(process)
         with monitor():
@@ -31,6 +35,8 @@ def execute_command(
         return json.dumps({"status": status, "exit_code": process.poll(),
                            "stdout": process.stdout.read(), "stderr": process.stderr.read()},
                           ensure_ascii=False)
+    except ValueError:
+        return json.dumps({"status": "conflict", "error": "Файл изменился после просмотра; команда не запущена"}, ensure_ascii=False)
     except Exception:
         logger.exception("Ошибка запуска локальной команды")
         return json.dumps({"error": "Не удалось выполнить команду"})

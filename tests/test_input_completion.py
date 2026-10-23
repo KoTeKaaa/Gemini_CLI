@@ -38,7 +38,7 @@ class CompletionTest(unittest.TestCase):
         def choices(text):
             return list(completer.get_completions(Document(text), None))
         self.assertEqual([c.text for c in choices('/mcp ')],
-                         ['check', 'tools', 'enable', 'disable', 'login', 'logout'])
+                         ['check', 'tools', 'enable', 'disable', 'login', 'logout', 'help'])
         self.assertEqual([c.text for c in choices('/mcp lo')], ['login', 'logout'])
         for action in ('check', 'tools', 'enable', 'disable', 'login', 'logout'):
             items = choices(f'/mcp {action} gi')

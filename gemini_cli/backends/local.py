@@ -15,6 +15,7 @@ from ..runtime.compaction import run_compaction
 from ..client.local_chats import LocalChats
 from ..protocol.models import MODEL_IDS
 from ..protocol.images import validate_payload_images
+from ..protocol.skills import skill_instruction, validate_skill
 from ..runtime.context import select_context
 from ..tools.definitions import TOOLS, available_tools
 from ..tools.results import failure
@@ -54,6 +55,7 @@ class LocalBackend:
 
     def context_info(self, payload):
         validate_payload_images(payload)
+        instruction = skill_instruction(AGENT_INSTRUCTION, payload.get('skill_context'))
         validate_tool_payload(payload)
         model = payload.get("model_name", MODEL_IDS[0])
         if model not in MODEL_IDS:
@@ -75,8 +77,8 @@ class LocalBackend:
         from .genai import provider_tools
         tools = provider_tools(payload.get("supported_tools"), permitted, payload.get("mcp_tools"))
         info = model_info(self.provider, model, self._model_cache_scope, refresh=payload.get("refresh", False))
-        usage = count_context(self.provider, model, contents, AGENT_INSTRUCTION, tools) if payload.get("refresh") else None
-        return estimate_context(contents, info, AGENT_INSTRUCTION, tools, measured_usage=usage)
+        usage = count_context(self.provider, model, contents, instruction, tools) if payload.get("refresh") else None
+        return estimate_context(contents, info, instruction, tools, measured_usage=usage)
 
     def compact_chat(self, payload, cancelled=lambda: False):
         history = self._history_source(payload, max_rows=10000)
@@ -133,6 +135,7 @@ class LocalBackend:
     def stream_chat(self, payload: dict, *, cancelled=None) -> StreamResult:
         try:
             validate_payload_images(payload)
+            validate_skill(payload.get('skill_context'))
             message = payload.get("message", "")
             history = payload.get("history") or []
             continuing = payload.get("continue_after_tool", False)
@@ -230,6 +233,7 @@ class LocalBackend:
                                            contents=contents, supported_tools=payload.get("supported_tools"),
                                            cancelled=cancelled.is_set,
                                            mcp_tools=payload.get("mcp_tools"),
+                                           skill_context=payload.get('skill_context'),
                                            permitted_tools=set(TOOLS) - ({"web_search"} if not self.tavily_key else set())):
                     if cancelled.is_set():
                         break
