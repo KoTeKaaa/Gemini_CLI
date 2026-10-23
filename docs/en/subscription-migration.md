@@ -38,7 +38,7 @@ in the private server environment. Keep the session secret stable across restart
 unless deliberate session invalidation is intended. Do not commit these values.
 
 Run the deployment preflight with the host, private env and certificate arguments
-described in the Russian installation reference in [README](../../README.md).
+described in [Server setup](server-setup.md).
 The API and panel use separate HTTPS listeners. Owner identity, session, CSRF and
 exact Origin enforce authorization; a port number is not an access-control mechanism.
 
