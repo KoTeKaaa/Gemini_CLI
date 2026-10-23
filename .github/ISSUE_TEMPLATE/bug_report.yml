@@ -1,0 +1,46 @@
+name: Bug report / Ошибка
+description: Something did not work as expected / Что-то работает не так
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Russian or English is welcome. Use a small example; remove keys, private paths, server addresses and chat content.
+        Можно по-русски. Не прикладывайте .env, сессии или полные логи. Для уязвимостей см. SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Version / Версия
+      description: Output of gemini-cli --version
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: OS / ОС
+      options:
+        - Linux
+        - Windows
+        - Other / Другая
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode / Режим
+      options:
+        - Local
+        - Remote
+        - Not sure / Не знаю
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps and result / Шаги и результат
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Minimal error text / Короткий текст ошибки
+      description: Optional, sanitized text only. No complete logs or personal configuration.
