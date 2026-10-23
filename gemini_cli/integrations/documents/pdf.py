@@ -8,7 +8,10 @@ def parse(data: bytes, source: str, selection: dict) -> dict:
         raise DocumentError('invalid_selection', 'PDF: укажите pages=1-3 (до 10 страниц)')
     from pypdf import PdfReader, apply_configuration
     # Bound each decompressed stream; the process has a separate memory/time cap.
-    with apply_configuration(zlib_maximum_output_length=4 * 1024 * 1024):
+    with apply_configuration(zlib_maximum_output_length=4 * 1024 * 1024,
+                             lzw_maximum_output_length=4 * 1024 * 1024,
+                             run_length_maximum_output_length=4 * 1024 * 1024,
+                             jbig2dec_binary=None):
         return pages(PdfReader(io.BytesIO(data), strict=True), source, selection)
 
 
