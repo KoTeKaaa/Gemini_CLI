@@ -113,7 +113,7 @@ local, bounded and unencrypted; they do not provide rollback for external side e
 | Python, tests, Git and PR | [Development tools](docs/en/development-tools.md) |
 | PDF, DOCX, CSV and XLSX | [Document ranges](docs/en/documents.md) |
 | Changes and Remote budget | [File edits](docs/en/file-changes.md), [limits](docs/en/limits.md) |
-| Hosting Remote | [Deployment](docs/en/auto-deploy.md), [subscriptions](docs/en/subscription-migration.md), [history schema](docs/en/history-migration.md) |
+| Hosting Remote | [Server setup](docs/en/server-setup.md), [updates](docs/en/auto-deploy.md), [subscriptions](docs/en/subscription-migration.md), [history schema](docs/en/history-migration.md) |
 | Getting involved | [Contributing](CONTRIBUTING.md#english), [security](SECURITY.md#english) |
 
 ## Run or build from source
