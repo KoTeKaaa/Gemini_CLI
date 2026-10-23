@@ -41,7 +41,8 @@ def rename_files(edit: dict, root: str, docs: dict, *, versions=None) -> list[di
             raise ValueError('File operations не поддерживаются')
         document = entry['textDocument']
         path = uri_path(document['uri'], root)
-        version = 1 if versions is None else versions.get(document['uri'])
+        version = 1 if versions is None else next((number for uri, number in versions.items()
+                                                   if uri_path(uri, root) == path), None)
         if path in seen or path not in docs or document.get('version') not in (None, version):
             raise ValueError('Повторный, неизвестный или изменённый документ')
         seen.add(path)

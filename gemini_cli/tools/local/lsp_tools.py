@@ -19,11 +19,13 @@ def uri_path(uri: str, root: str) -> str:
     path = unquote(parsed.path)
     if os.name == "nt" and len(path) > 2 and path[0] == '/' and path[2] == ':':
         path = path[1:]
-    relative = os.path.relpath(path, root)
-    expected = plan_text_file(root, relative)
-    if path_has_links(path) or any(p.startswith('.') for p in Path(relative).parts):
+    if path_has_links(path):
         raise ValueError("Недопустимый путь LSP")
-    return os.path.relpath(expected[0], root).replace(os.sep, '/')
+    expected = plan_text_file(root, path)
+    relative = os.path.relpath(expected[0], root).replace(os.sep, '/')
+    if any(p.startswith('.') for p in Path(relative).parts):
+        raise ValueError("Недопустимый путь LSP")
+    return relative
 
 
 def documents(root: str) -> dict:
