@@ -131,3 +131,15 @@ def python_lsp(action: str, filepath: str, line: int = 1, character: int = 0,
 
 TOOLS["python_lsp"] = python_lsp
 CLIENT_NAMES = (*CLIENT_NAMES, "python_lsp")
+
+
+def run_tests(modules: List[str], timeout: int = 120) -> str:
+    """Run explicitly selected unittest modules after approval. Empty modules discovers tests/.
+
+    Return structured counts, process exit status and bounded logs; only completed exit 0 can pass.
+    """
+    return "Запуск unittest запрошен"
+
+
+TOOLS["run_tests"] = run_tests
+CLIENT_NAMES = (*CLIENT_NAMES, "run_tests")
