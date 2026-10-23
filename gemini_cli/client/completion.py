@@ -55,7 +55,7 @@ class InputCompleter(Completer):
                         yield Completion(shlex.quote(choice), start_position=-len(raw_path), display_meta='Skills')
                 return
             words = text.split() + ([''] if text[-1].isspace() else [])
-            choices = ('list', 'use', 'off', 'read', 'show', 'run', 'output') if len(words) == 2 else (
+            choices = ('list', 'use', 'off', 'read', 'show', 'run', 'output', 'help') if len(words) == 2 else (
                 sorted(self.skill_choices()) if len(words) == 3 and words[1] == 'use' else ())
             for choice in choices:
                 if choice.startswith(words[-1]):
@@ -69,7 +69,7 @@ class InputCompleter(Completer):
                 words.append('')
             choices = ()
             if len(words) == 2:
-                choices = MCP_ACTIONS
+                choices = (*MCP_ACTIONS, 'help')
             elif len(words) == 3 and words[1] in MCP_ACTIONS:
                 choices = sorted(self.mcp_choices())
             elif len(words) == 4 and words[1] == 'login' and words[2] in self.mcp_choices():

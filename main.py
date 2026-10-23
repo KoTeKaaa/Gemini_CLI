@@ -886,8 +886,8 @@ def main(backend: Backend | None = None):
                 table.add_row("/diff [путь]", "Список правок чата или diff файла; пример: /diff src/file.py")
                 table.add_row("/undo [путь]", "Список правок или откат файла; пример: /undo src/file.py")
                 table.add_row("/model", "Сменить ИИ модель")
-                table.add_row("/mcp", "Подключения MCP; /mcp check github → /mcp enable github")
-                table.add_row('/skill', 'Навыки: /skill use code-review; /skill off — отключить')
+                table.add_row("/mcp", "Подключения MCP; /mcp help — гайд для первого подключения")
+                table.add_row('/skill', 'Навыки; /skill help — гайд по созданию и использованию')
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")
                 table.add_row("/chat", "Сменить или создать комнату диалога")
                 table.add_row("/clear", "Очистить временный чат и его черновик; постоянный чат сохраняется")
@@ -962,7 +962,7 @@ def main(backend: Backend | None = None):
             if first_line.strip().split(" ", 1)[0] == "/mcp":
                 from gemini_cli.client.mcp_commands import command, prompt_secret
                 try:
-                    command(first_line, active_mcp(), console=console,
+                    command(first_line, manager_factory=active_mcp, console=console,
                             read_secret=lambda label: prompt_secret(label, input=session.input, output=session.output))
                 except ValueError:
                     console.print(result_panel("MCP: неверный приватный mcp.json", title="MCP", error=True))

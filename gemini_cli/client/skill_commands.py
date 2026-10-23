@@ -6,7 +6,8 @@ from .input import result_panel, safe_label
 from ..integrations.skills import catalog
 from ..protocol.skills import validate_skill
 
-USAGE = ('/skill — каталог и активный навык\n/skill use имя — выбрать навык\n'
+USAGE = ('/skill help — пошаговый гайд: создание SKILL.md, настройка и использование\n'
+         '/skill — каталог и активный навык\n/skill use имя — выбрать навык\n'
          '/skill off — отключить навык\n/skill read путь — добавить ресурс к контексту навыка\n'
          '/skill show путь — только просмотреть файл\n/skill run scripts/файл — запустить после просмотра и подтверждения\n'
          '/skill output — открыть последний вывод скрипта локально\n'
@@ -57,6 +58,10 @@ class Selection:
 def command(text, selection, *, console, viewer=None, run_script=None):
     try:
         parts = shlex.split(text)
+        if parts == ['/skill', 'help']:
+            from .integration_help import show_guide
+            show_guide('skill')
+            return
         if parts in (['/skill'], ['/skill', 'list']):
             found, errors = catalog(selection.config)
             lines = [f'{name}: {safe_label(skill.description)}' for name, skill in sorted(found.items())]

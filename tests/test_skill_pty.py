@@ -89,6 +89,11 @@ print('TTY_RESTORED', flush=True)
                     os.write(master, text.encode())
                 try:
                     until('›')
+                    for topic, marker in (('skill', 'SKILLS: С НУЛЯ'), ('mcp', 'MCP: С НУЛЯ')):
+                        send(f'/{topic} help\r')
+                        until(marker)
+                        send('\x1b')
+                        until('›')
                     for command, marker in (('/skill use review', 'Выбран навык'),
                                             ('/skill read reference.md', 'Ресурс добавлен')):
                         send(command + '\r')

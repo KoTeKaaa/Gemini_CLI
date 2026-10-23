@@ -56,7 +56,7 @@ class SkillCommandsTest(unittest.TestCase):
         def choices(text):
             return [c.text for c in completer.get_completions(Document(text), None)]
         self.assertEqual(choices('/ski'), ['/skill'])
-        self.assertEqual(choices('/skill '), ['list', 'use', 'off', 'read', 'show', 'run', 'output'])
+        self.assertEqual(choices('/skill '), ['list', 'use', 'off', 'read', 'show', 'run', 'output', 'help'])
         self.assertEqual(choices('/skill use re'), ['review'])
         self.assertEqual(choices('/skill unknown '), [])
 
