@@ -9,6 +9,7 @@ from ..results import failure, success
 
 
 def selected_paths(root: str, files: list) -> list[str]:
+    root = os.path.realpath(root)
     if not isinstance(files, list) or not 1 <= len(files) <= 64:
         raise ValueError('Нужен явный выбор 1–64 файлов')
     paths = []
@@ -32,7 +33,7 @@ class Git:
         self.root = os.path.realpath(root)
         self.cancelled, self.monitor = cancelled, monitor
         result = self.run(['rev-parse', '--show-toplevel'])
-        if result['truncated'] or str(Path(result['stdout'].strip()).resolve()) != self.root:
+        if result['truncated'] or Path(result['stdout'].strip()).resolve() != Path(self.root):
             raise ValueError('Workspace должен совпадать с корнем Git-репозитория')
 
     def run(self, args: list[str], *, env=None, timeout=120) -> dict:

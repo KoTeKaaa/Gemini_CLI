@@ -12,6 +12,7 @@ from ..results import failure, success
 
 
 def uri_path(uri: str, root: str) -> str:
+    root = os.path.realpath(root)
     parsed = urlsplit(uri)
     if parsed.scheme != "file" or parsed.netloc or parsed.query or parsed.fragment:
         raise ValueError("Нужен локальный file URI")

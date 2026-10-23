@@ -12,13 +12,13 @@ def reviewed_hooks(git, directory: str, tree: str) -> Path:
         for hook in original.iterdir():
             if hook.is_file() and not hook.name.endswith('.sample') and os.access(hook, os.X_OK):
                 wrapper = target / hook.name
-                wrapper.write_text('#!/bin/sh\nexec ' + shlex.quote(str(hook)) + ' "$@"\n', encoding='utf-8', newline='\n')
+                wrapper.write_text('#!/bin/sh\nexec ' + shlex.quote(hook.as_posix()) + ' "$@"\n', encoding='utf-8', newline='\n')
                 wrapper.chmod(0o755)
     reference = target / 'reference-transaction'
     previous = original / 'reference-transaction'
     delegate = ''
     if previous.is_file() and os.access(previous, os.X_OK):
-        delegate = ('printf "%s\\n" "$updates" | ' + shlex.quote(str(previous)) + ' "$@"\n'
+        delegate = ('printf "%s\\n" "$updates" | ' + shlex.quote(previous.as_posix()) + ' "$@"\n'
                     'result=$?\n[ "$result" = 0 ] || exit "$result"\n')
     # reference-transaction's prepared phase can reject a commit after pre-commit
     # and commit-msg, before HEAD changes. No installed hook is skipped.
