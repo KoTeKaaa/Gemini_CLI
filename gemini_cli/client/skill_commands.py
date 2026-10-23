@@ -15,6 +15,7 @@ class Selection:
         self.config = config
         self.scope = None
         self.skill = self.context = None
+        self.resources, self.viewed, self.base_content = {}, {}, ''
 
     def bind(self, scope):
         if scope != self.scope:
@@ -24,6 +25,7 @@ class Selection:
 
     def clear(self):
         self.skill = self.context = None
+        self.resources, self.viewed, self.base_content = {}, {}, ''
 
     def choices(self):
         try:
@@ -38,6 +40,8 @@ class Selection:
         skill = found[name]
         context = {'name': skill.name, 'content': skill.load()}
         validate_skill(context)
+        self.clear()
+        self.base_content = context['content']
         self.skill, self.context = skill, context
 
     def payload(self):
