@@ -1,6 +1,7 @@
 """Ресурсы по явному пути; скрипты — из просмотренного снимка через общий процесс."""
 from contextlib import nullcontext
 import logging
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -18,6 +19,34 @@ def snapshot(skill, relative):
     if checked_path(skill.root, relative) != path:
         raise ValueError('Файл изменился')
     return expected, text
+
+
+def choices(selection, action, fragment):
+    if selection.skill is None:
+        return ()
+    parent = fragment.replace('\\', '/').rpartition('/')[0]
+    if action == 'run' and not parent:
+        return ('scripts/',)
+    try:
+        directory = checked_path(selection.skill.root, parent) if parent else selection.skill.root
+        result = []
+        with os.scandir(directory) as entries:
+            for index, entry in enumerate(entries):
+                if index >= 256:
+                    break
+                relative = (parent + '/' if parent else '') + entry.name
+                try:
+                    checked_path(selection.skill.root, relative)
+                except ValueError:
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    result.append(relative + '/')
+                elif entry.is_file(follow_symlinks=False) and (action != 'run' or
+                        relative.startswith('scripts/') and Path(relative).suffix in {'.py', '.sh', '.ps1'}):
+                    result.append(relative)
+        return tuple(sorted(result))
+    except (OSError, ValueError):
+        return ()
 
 
 def show(selection, relative, viewer):

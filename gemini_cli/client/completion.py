@@ -23,13 +23,14 @@ def allowed_path(root: str, relative: str) -> str | None:
 
 
 class InputCompleter(Completer):
-    def __init__(self, root, attachment_choices=lambda: (), mode=lambda: "remote", change_choices=lambda: (), mcp_choices=lambda: (), skill_choices=lambda: ()):
+    def __init__(self, root, attachment_choices=lambda: (), mode=lambda: "remote", change_choices=lambda: (), mcp_choices=lambda: (), skill_choices=lambda: (), skill_resources=lambda _action, _fragment: ()):
         self.root = root
         self.attachment_choices = attachment_choices
         self.mode = mode
         self.change_choices = change_choices
         self.mcp_choices = mcp_choices
         self.skill_choices = skill_choices
+        self.skill_resources = skill_resources
         self.snapshots = {}
 
     def get_completions(self, document, complete_event):
@@ -39,8 +40,10 @@ class InputCompleter(Completer):
             if '\n' in text:
                 return
             words = text.split() + ([''] if text[-1].isspace() else [])
-            choices = ('list', 'use', 'off') if len(words) == 2 else (
+            choices = ('list', 'use', 'off', 'read', 'show', 'run', 'output') if len(words) == 2 else (
                 sorted(self.skill_choices()) if len(words) == 3 and words[1] == 'use' else ())
+            if len(words) == 3 and words[1] in {'read', 'show', 'run'}:
+                choices = self.skill_resources(words[1], words[-1])
             for choice in choices:
                 if choice.startswith(words[-1]):
                     yield Completion(choice, start_position=-len(words[-1]), display_meta='Skills')

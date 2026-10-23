@@ -712,6 +712,7 @@ def main(backend: Backend | None = None):
     file_changes = {}
     mcp_managers = {}
     from gemini_cli.client.skill_commands import Selection
+    from gemini_cli.client.skill_resources import choices as skill_resource_choices
     skill_selection = Selection(Path(CONFIG_DIR) / 'skills.json')
     def active_skill():
         return skill_selection.bind((backend_identity(api_client), chat_id, os.path.realpath(current_dir)))
@@ -731,6 +732,7 @@ def main(backend: Backend | None = None):
     completer = InputCompleter(lambda: current_dir, mode=lambda: api_client.mode,
                               mcp_choices=mcp_choices,
                               skill_choices=lambda: active_skill().choices(),
+                              skill_resources=lambda action, fragment: skill_resource_choices(active_skill(), action, fragment),
                               change_choices=lambda: list(active_changes().active_files()) if active_changes() else (),
                               attachment_choices=lambda: [
         (number, draft_input.describe(number, item)) for number, item in draft.items()])
@@ -938,7 +940,24 @@ def main(backend: Backend | None = None):
 
             if first_line.strip().split(" ", 1)[0] == '/skill':
                 from gemini_cli.client.skill_commands import command as skill_command
-                skill_command(first_line, active_skill(), console=console)
+                from gemini_cli.client.skill_resources import run as run_skill
+                from gemini_cli.client.paste import view_text
+                def run_selected_skill(selection, relative):
+                    state = TurnState()
+                    view = WorkView(console, state)
+                    view.spinner.text = 'Выполнение скрипта навыка...'
+                    def approve(label):
+                        console.print(Text(label + '\nВнешние действия скрипта не откатываются через /undo.'))
+                        try:
+                            return PromptSession(input=session.input, output=session.output).prompt(
+                                'Запустить просмотренный скрипт? (y/n): ').strip().lower() == 'y'
+                        except (EOFError, KeyboardInterrupt):
+                            return False
+                    return run_skill(selection, relative, current_dir, approve=approve,
+                                     cancelled=state.cancelled.is_set, on_process=view.set_process,
+                                     monitor=view.monitor, notify=lambda _: None)
+                skill_command(first_line, active_skill(), console=console, viewer=view_text,
+                              run_script=run_selected_skill)
                 continue
             if first_line.strip().split(" ", 1)[0] == "/mcp":
                 from gemini_cli.client.mcp_commands import command, prompt_secret

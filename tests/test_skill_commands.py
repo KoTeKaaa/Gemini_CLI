@@ -56,9 +56,22 @@ class SkillCommandsTest(unittest.TestCase):
         def choices(text):
             return [c.text for c in completer.get_completions(Document(text), None)]
         self.assertEqual(choices('/ski'), ['/skill'])
-        self.assertEqual(choices('/skill '), ['list', 'use', 'off'])
+        self.assertEqual(choices('/skill '), ['list', 'use', 'off', 'read', 'show', 'run', 'output'])
         self.assertEqual(choices('/skill use re'), ['review'])
         self.assertEqual(choices('/skill unknown '), [])
+
+    def test_script_output_can_be_opened_after_completion_without_sending(self):
+        from unittest.mock import Mock
+        self.selection.choose('review')
+        viewer = Mock()
+        command('/skill run scripts/check.py', self.selection, console=self.console,
+                run_script=lambda *_: json.dumps({'status': 'completed', 'exit_code': 0, 'stdout': 'REPORT'}))
+        self.assertNotIn('REPORT', self.output.getvalue())
+        self.assertNotIn('REPORT', str(self.selection.payload()))
+        command('/skill output', self.selection, console=self.console, viewer=viewer)
+        self.assertIn('REPORT', viewer.call_args.args[0])
+        self.selection.bind('another-chat')
+        self.assertFalse(self.selection.last_output)
 
     def test_payload_and_status_contain_only_selected_skill(self):
         import os

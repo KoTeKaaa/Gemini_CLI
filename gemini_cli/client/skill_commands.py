@@ -1,12 +1,16 @@
 """Выбор одного навыка пользователем, без автоматических триггеров и LLM."""
 import shlex
+import json
 
 from .input import result_panel, safe_label
 from ..integrations.skills import catalog
 from ..protocol.skills import validate_skill
 
 USAGE = ('/skill — каталог и активный навык\n/skill use имя — выбрать навык\n'
-         '/skill off — отключить навык\nПример: /skill use code-review\n'
+         '/skill off — отключить навык\n/skill read путь — добавить ресурс к контексту навыка\n'
+         '/skill show путь — только просмотреть файл\n/skill run scripts/файл — запустить после просмотра и подтверждения\n'
+         '/skill output — открыть последний вывод скрипта локально\n'
+         'Пример: /skill use code-review → /skill show scripts/check.py\n'
          'Каталоги задаются явно в приватном skills.json CLI.')
 
 
@@ -16,6 +20,7 @@ class Selection:
         self.scope = None
         self.skill = self.context = None
         self.resources, self.viewed, self.base_content = {}, {}, ''
+        self.last_output = ''
 
     def bind(self, scope):
         if scope != self.scope:
@@ -26,6 +31,7 @@ class Selection:
     def clear(self):
         self.skill = self.context = None
         self.resources, self.viewed, self.base_content = {}, {}, ''
+        self.last_output = ''
 
     def choices(self):
         try:
@@ -48,7 +54,7 @@ class Selection:
         return dict(self.context) if self.context else None
 
 
-def command(text, selection, *, console):
+def command(text, selection, *, console, viewer=None, run_script=None):
     try:
         parts = shlex.split(text)
         if parts in (['/skill'], ['/skill', 'list']):
@@ -61,10 +67,35 @@ def command(text, selection, *, console):
         elif parts == ['/skill', 'off']:
             selection.clear()
             console.print(result_panel('Навык отключён.', title='Skills'))
+        elif parts == ['/skill', 'output'] and viewer is not None:
+            viewer(selection.last_output or 'Вывода скрипта пока нет.')
         elif len(parts) == 3 and parts[:2] == ['/skill', 'use']:
             selection.choose(parts[2])
             console.print(result_panel(f'Выбран навык: {selection.skill.name}. Инструкции пользователя имеют приоритет.\n'
                                        'Текст навыка будет отправлен вместе со следующим сообщением.', title='Skills'))
+        elif len(parts) == 3 and parts[1] in {'show', 'read', 'run'}:
+            from .skill_resources import show, read
+            action, relative = parts[1:]
+            if action == 'show' and viewer is not None:
+                show(selection, relative, viewer)
+                message = 'Файл просмотрен локально; содержимое не добавлено к запросу.'
+            elif action == 'read':
+                read(selection, relative)
+                message = 'Ресурс добавлен к выбранному навыку для следующих сообщений.'
+            elif action == 'run' and run_script is not None:
+                result = run_script(selection, relative)
+                selection.last_output = str(result)[-131072:]
+                try:
+                    data = json.loads(result)
+                    selection.last_output = '\n'.join(str(data.get(key, '')) for key in ('error', 'stdout', 'stderr'))[-65536:]
+                    message = ('Скрипт завершён.' if data.get('status') == 'completed' and data.get('exit_code') == 0
+                               else 'Скрипт не завершён успешно: отмена, ошибка или конфликт. Выполните /skill show заново.')
+                    message += ' Вывод: /skill output (локально).'
+                except (ValueError, TypeError):
+                    message = 'Запуск скрипта отменён.'
+            else:
+                raise ValueError('Действие недоступно')
+            console.print(result_panel(message, title='Skills'))
         else:
             raise ValueError('Неверная команда')
     except (ValueError, OSError, KeyboardInterrupt):

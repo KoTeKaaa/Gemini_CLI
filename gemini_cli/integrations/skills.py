@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import unicodedata
 
 import yaml
 
@@ -18,7 +19,8 @@ NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 
 def checked_path(root: Path, relative: str) -> Path:
     parts = relative.replace('\\', '/').split('/')
-    if (not relative or any(p in {'', '.', '..'} or p.startswith('.') or ':' in p for p in parts)
+    if (not relative or any(unicodedata.category(c).startswith('C') for c in relative)
+            or any(p in {'', '.', '..'} or p.startswith('.') or ':' in p for p in parts)
             or Path(relative).is_absolute()):
         raise ValueError("Нужен относительный путь внутри навыка")
     path = root.joinpath(*parts)
