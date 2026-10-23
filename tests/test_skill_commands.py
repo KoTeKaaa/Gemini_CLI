@@ -93,6 +93,12 @@ class SkillCommandsTest(unittest.TestCase):
         from unittest.mock import patch
         with patch.dict(os.environ, {'HOME': str(self.root), 'USERPROFILE': str(self.root)}):
             import main
+        import logging
+        for handler in logging.getLogger().handlers[:]:
+            if (isinstance(handler, logging.FileHandler)
+                    and Path(handler.baseFilename).resolve().is_relative_to(self.root.resolve())):
+                self.addCleanup(handler.close)
+                self.addCleanup(logging.getLogger().removeHandler, handler)
         history = [{'role': 'user', 'content': 'task'}]
         self.assertNotIn('skill_context', main.build_stream_payload(history, None, 'test', True))
         self.selection.choose('review')
