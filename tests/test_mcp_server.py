@@ -47,3 +47,13 @@ class MCPServerTest(unittest.TestCase):
         from pydantic import ValidationError
         with self.assertRaises(ValidationError):
             self.server.StreamChatPayload(message='test', supported_tools=[tool_name('x', 'echo')])
+
+    def test_full_builtin_and_mcp_catalog_fits_shared_contract(self):
+        from gemini_cli.tools.definitions import CLIENT_NAMES
+        from gemini_cli.protocol.mcp import MAX_MCP_TOOLS, validate_tool_payload
+        rows = [{'name': tool_name('x', str(index)), 'description': 'echo',
+                 'parameters': {'type': 'object'}} for index in range(MAX_MCP_TOOLS)]
+        names = [*CLIENT_NAMES, *(row['name'] for row in rows)]
+        payload = {'supported_tools': names, 'mcp_tools': rows}
+        self.assertEqual(validate_tool_payload(payload), rows)
+        self.assertEqual(self.server.StreamChatPayload(**payload).supported_tools, names)

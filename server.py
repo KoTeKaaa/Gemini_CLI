@@ -28,7 +28,7 @@ from gemini_cli.server.admin.accounts import account_router
 from gemini_cli.server.admin.pages import page_router, PanelHeaders
 from gemini_cli.server.auth_limits import AUTH_LIMITS
 from gemini_cli.protocol.models import ModelName
-from gemini_cli.protocol.mcp import MCP_PROTOCOL, MCP_FEATURE, validate_tool_payload
+from gemini_cli.protocol.mcp import MCP_PROTOCOL, MCP_FEATURE, MAX_MCP_TOOLS, MAX_SUPPORTED_TOOLS, validate_tool_payload
 from gemini_cli.protocol.skills import SKILL_PROTOCOL, validate_skill
 from gemini_cli.protocol.limits import MAX_HISTORY_CONTENT_CHARS
 from gemini_cli.server.limits import BodyLimit, StreamJob, BoundedStreamingResponse as StreamingResponse
@@ -135,10 +135,10 @@ class StreamChatPayload(BaseModel):
     summary_boundary: Optional[UUID] = None
     current_dir: Optional[str] = None
     continue_after_tool: bool = False
-    supported_tools: Optional[List[str]] = Field(default=None, max_length=32)
+    supported_tools: Optional[List[str]] = Field(default=None, max_length=MAX_SUPPORTED_TOOLS)
     end_tool_turn: bool = False
 
-    mcp_tools: List[Dict[str, Any]] = Field(default_factory=list, max_length=16, repr=False)
+    mcp_tools: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_MCP_TOOLS, repr=False)
     skill_context: Optional[Dict[str, str]] = Field(default=None, repr=False)
 
     @model_validator(mode="after")

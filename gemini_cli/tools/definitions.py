@@ -195,3 +195,18 @@ def github_pr(action: str, base: str, title: str = "", body: str = "", server: s
 
 TOOLS["github_pr"] = github_pr
 CLIENT_NAMES = (*CLIENT_NAMES, "github_pr")
+
+
+def read_document(filepath: str, selection: str, mime: str = "") -> str:
+    """Read only an explicitly selected local document range after approval; bytes never sent to server.
+
+    PDF: pages=1-3; DOCX: paragraphs=2-5, sections=1 or tables=1;
+    CSV: cells=A1:C10&encoding=utf-8-sig&delimiter=%3B;
+    XLSX: sheet=Data&cells=A1:C10, or sheets=list. Never execute formulas/macros or OCR.
+    Preserve source/position, partial/truncated and unsupported statuses in the answer.
+    """
+    return "Чтение документа запрошено"
+
+
+TOOLS["read_document"] = read_document
+CLIENT_NAMES = (*CLIENT_NAMES, "read_document")

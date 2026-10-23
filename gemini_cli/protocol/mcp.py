@@ -3,10 +3,12 @@
 import hashlib
 import json
 import re
+from ..tools.definitions import TOOLS
 
 MCP_PROTOCOL = 'mcp-tools-v1'
 MCP_FEATURE = 'mcp'
 MAX_MCP_TOOLS = 16
+MAX_SUPPORTED_TOOLS = len(TOOLS) + MAX_MCP_TOOLS
 MCP_NAME = re.compile(r'mcp_[a-z][a-z0-9_]{0,23}_[0-9a-f]{16}\Z')
 SCHEMA_KEYS = {'type', 'description', 'properties', 'required', 'items', 'enum', 'additionalProperties'}
 
@@ -98,7 +100,7 @@ def validate_tool_payload(payload):
     dynamic = validate_declarations(declarations)
     names = payload.get('supported_tools')
     if names is not None:
-        if (not isinstance(names, list) or len(names) > 32 or any(not isinstance(v, str) for v in names) or
+        if (not isinstance(names, list) or len(names) > MAX_SUPPORTED_TOOLS or any(not isinstance(v, str) for v in names) or
                 len(set(names)) != len(names) or set(names) - set(TOOLS) != dynamic):
             raise ValueError('MCP: объявления должны соответствовать выбранным инструментам')
     elif dynamic:

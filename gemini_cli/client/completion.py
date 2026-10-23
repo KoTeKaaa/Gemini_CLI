@@ -6,7 +6,9 @@ from prompt_toolkit.completion import Completer, Completion
 from ..tools.local.workspace import resolve_safe_path, is_sensitive_read_path, plan_text_file
 
 COMMANDS = ('/help', '/model', '/chat', '/settings', '/term', '/paste',
-            '/attachments', '/show', '/edit', '/remove', '/cd', '/delete', '/clear', '/compact', '/fork', '/limits', '/diff', '/undo', '/mcp', '/skill', '/dev')
+            '/attachments', '/show', '/edit', '/remove', '/cd', '/delete', '/clear', '/compact', '/fork', '/limits', '/diff', '/undo', '/mcp', '/skill', '/dev', '/doc')
+DOCUMENT_RANGES = {'.pdf': ('pages=1', 'pages=1-3'), '.docx': ('paragraphs=1', 'sections=1', 'tables=1'),
+                   '.csv': ('cells=A1:C10',), '.xlsx': ('sheets=list', 'sheet=Лист1&cells=A1:C10')}
 MCP_ACTIONS = ('check', 'tools', 'enable', 'disable', 'login', 'logout')
 SKIP = {'node_modules', 'build', 'dist', 'venv', '__pycache__'}
 
@@ -37,7 +39,7 @@ class InputCompleter(Completer):
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         action, separator, fragment = text.partition(' ')
-        if action == '/dev' and separator:
+        if action in {'/dev', '/doc'} and separator:
             if 'help'.startswith(fragment):
                 yield Completion('help', start_position=-len(fragment), display_meta='Разработка')
             return
@@ -106,6 +108,12 @@ class InputCompleter(Completer):
         if not text.startswith('@') or '\n' in text:
             return
         fragment = text[1:]
+        path, separator, selected = fragment.partition('#')
+        if separator:
+            for choice in DOCUMENT_RANGES.get(os.path.splitext(path)[1].casefold(), ()):
+                if choice.startswith(selected):
+                    yield Completion('@' + path + '#' + choice, start_position=-len(text), display_meta='Диапазон документа')
+            return
         # Диапазон вводится после имени, список не читает файл для вычисления строк.
         if ':' in os.path.basename(fragment):
             return
@@ -125,10 +133,14 @@ class InputCompleter(Completer):
                         yield Completion('@' + relative + os.sep, start_position=-len(text))
                     elif entry.is_file(follow_symlinks=False):
                         try:
-                            expected = plan_text_file(self.root(), relative)
+                            extension = os.path.splitext(relative)[1].casefold()
+                            expected = plan_text_file(self.root(), relative,
+                                max_bytes=4 * 1024 * 1024 if extension in DOCUMENT_RANGES else 2 * 1024 * 1024)
                         except (ValueError, OSError):
                             continue
                         self.snapshots[(self.root(), relative)] = expected
-                        yield Completion('@' + relative, start_position=-len(text), display_meta='Файл целиком')
+                        ranges = DOCUMENT_RANGES.get(extension)
+                        yield Completion('@' + relative + ('#' + ranges[0] if ranges else ''),
+                                         start_position=-len(text), display_meta='Диапазон документа' if ranges else 'Файл целиком')
         except OSError:
             return

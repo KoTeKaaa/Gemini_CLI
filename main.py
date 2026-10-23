@@ -1,3 +1,15 @@
+import sys
+
+if __name__ == '__main__' and sys.argv[1:] == ['--version']:
+    from gemini_cli import __version__
+    print(f'Gemini CLI {__version__}')
+    raise SystemExit()
+
+if __name__ == '__main__' and sys.argv[1:] == ['--document-worker']:
+    from gemini_cli.integrations.documents.worker import main as document_worker
+    document_worker()
+    raise SystemExit()
+
 from gemini_cli.runtime.history import trim_history
 from gemini_cli.client.file_attachment import attach_file
 from gemini_cli.client.completion import InputCompleter
@@ -16,7 +28,6 @@ from prompt_toolkit.filters import is_done
 from gemini_cli.protocol.images import encode_images
 from gemini_cli.runtime.attachments import attachment_text, bound_image_history, restore_images, MARKER
 import os
-import sys
 import json
 import ipaddress
 import tempfile
@@ -57,6 +68,7 @@ from gemini_cli.tools.local.test_runner import run_tests
 from gemini_cli.tools.local.affected import affected_tests
 from gemini_cli.tools.local.git_tools import git_read
 from gemini_cli.tools.local.git_commit import git_commit
+from gemini_cli.tools.local.document import read_document
 from gemini_cli.tools.local.files import read_files, write_files, read_file_lines
 from gemini_cli.tools.local.search import find_files, search_text
 from gemini_cli.tools.local.edit import replace_in_file
@@ -582,6 +594,8 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
     cancelled = state.cancelled.is_set if state else lambda: False
     monitor = (lambda: WorkInput(state)) if state else nullcontext
     handlers = {
+        "read_document": lambda args, cwd: json.dumps(read_document(
+            args, cwd, approve=confirm_content_scope, cancelled=cancelled, monitor=monitor), ensure_ascii=False),
         "git_commit": lambda args, cwd: json.dumps(git_commit(
             args, cwd, approve=confirm_development_action, cancelled=cancelled, monitor=monitor), ensure_ascii=False),
         "git_read": lambda args, cwd: json.dumps(git_read(
@@ -925,6 +939,7 @@ def main(backend: Backend | None = None):
                 table.add_row("/mcp", "Подключения MCP; /mcp help — гайд для первого подключения")
                 table.add_row('/skill', 'Навыки; /skill help — гайд по созданию и использованию')
                 table.add_row('/dev help', 'Код, LSP, тесты, Git и PR; настройка и примеры')
+                table.add_row('/doc help', 'Диапазоны PDF/DOCX/CSV/XLSX; пример @report.pdf#pages=1-3')
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")
                 table.add_row("/chat", "Сменить или создать комнату диалога")
                 table.add_row("/clear", "Очистить временный чат и его черновик; постоянный чат сохраняется")
@@ -973,6 +988,12 @@ def main(backend: Backend | None = None):
                                                title="Подписка", error=True))
                 finally:
                     state.finish()
+                continue
+
+            if first_line.strip().split(" ", 1)[0] == '/doc':
+                from gemini_cli.client.document_help import command as document_command
+                from gemini_cli.client.paste import view_text
+                document_command(user_input, console=console, viewer=view_text)
                 continue
 
             if first_line.strip().split(" ", 1)[0] == '/dev':
