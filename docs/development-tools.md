@@ -1,5 +1,7 @@
 # Инструменты разработки
 
+[Русский](development-tools.md) · [English](en/development-tools.md)
+
 `python_symbols` строит ограниченную карту Python с путями и строками.
 Чтение требует подтверждения; синтаксические импорты не доказывают полноту зависимостей.
 Без language server доступны карта проекта, `find_files` и `search_text`.

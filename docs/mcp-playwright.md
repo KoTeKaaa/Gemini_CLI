@@ -1,5 +1,7 @@
 # Playwright MCP: Linux и Windows
 
+[Русский](mcp-playwright.md) · [English](en/mcp-playwright.md)
+
 Используется [официальный Playwright MCP](https://github.com/microsoft/playwright-mcp),
 закреплённая версия `@playwright/mcp@0.0.83`; Node.js 18+ (для новых установок
 предпочтителен поддерживаемый Node LTS), npm и совместимый браузер. Проверка
