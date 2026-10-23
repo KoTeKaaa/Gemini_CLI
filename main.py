@@ -934,6 +934,7 @@ def main(backend: Backend | None = None):
                 table.add_row("/mcp", "Подключения MCP; /mcp help — гайд для первого подключения")
                 table.add_row('/skill', 'Навыки; /skill help — гайд по созданию и использованию')
                 table.add_row('/dev help', 'Код, LSP, тесты, Git и PR; настройка и примеры')
+                table.add_row('/doc help', 'Диапазоны PDF/DOCX/CSV/XLSX; пример @report.pdf#pages=1-3')
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")
                 table.add_row("/chat", "Сменить или создать комнату диалога")
                 table.add_row("/clear", "Очистить временный чат и его черновик; постоянный чат сохраняется")
@@ -982,6 +983,12 @@ def main(backend: Backend | None = None):
                                                title="Подписка", error=True))
                 finally:
                     state.finish()
+                continue
+
+            if first_line.strip().split(" ", 1)[0] == '/doc':
+                from gemini_cli.client.document_help import command as document_command
+                from gemini_cli.client.paste import view_text
+                document_command(user_input, console=console, viewer=view_text)
                 continue
 
             if first_line.strip().split(" ", 1)[0] == '/dev':

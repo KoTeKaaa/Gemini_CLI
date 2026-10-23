@@ -122,5 +122,19 @@ def result(source: str, fragments: list[dict], *, partial=False, truncated=False
             break
         used += size
         rows.append(row)
-    return {'status': 'ok', 'source': source, 'fragments': rows, 'partial': partial or truncated,
-            'truncated': truncated, 'notes': notes or []}
+    output = {'status': 'ok', 'source': source, 'fragments': rows, 'partial': partial or truncated,
+              'truncated': truncated, 'notes': notes or []}
+    # Match the shared runner's JSON-string wire budget, including Unicode escapes.
+    while len(json.dumps(json.dumps(output, ensure_ascii=False)).encode('utf-8')) > 7800 and rows:
+        last = dict(rows[-1])
+        if isinstance(last.get('text'), str) and len(last['text']) > 200:
+            last['text'] = last['text'][:len(last['text']) // 2]
+        elif len(last.get('cells', [])) > 1:
+            last['cells'] = last['cells'][:len(last['cells']) // 2]
+        else:
+            rows.pop()
+            output.update(partial=True, truncated=True)
+            continue
+        rows[-1] = {**last, 'truncated': True}
+        output.update(partial=True, truncated=True)
+    return output
