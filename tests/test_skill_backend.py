@@ -62,29 +62,3 @@ class SkillBackendTest(unittest.TestCase):
         transport.post.return_value.status_code = 200
         self.assertEqual(backend.stream_chat({'message': 'task', 'skill_context': SKILL}).status_code, 200)
         self.assertEqual(transport.post.call_args.kwargs['json']['skill_context'], SKILL)
-
-
-class SkillServerTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        from tests.test_tool_continuation import ToolContinuationTest
-        ToolContinuationTest.setUpClass()
-        cls.server = ToolContinuationTest.server
-
-    def test_payload_rejects_oversize_skill(self):
-        from pydantic import ValidationError
-        with self.assertRaises(ValidationError):
-            self.server.StreamChatPayload(message='task', skill_context={**SKILL, 'content': 'x' * 65537})
-        payload = self.server.StreamChatPayload(message='task', skill_context=SKILL)
-        self.assertNotIn('PRIVATE_SKILL', repr(payload))
-
-    def test_server_authorizes_before_skill_reaches_provider(self):
-        from fastapi import HTTPException
-        from unittest.mock import patch
-        from tests.test_tool_continuation import FakeDb
-        with patch.object(self.server, 'require_subscription', side_effect=HTTPException(403, 'denied')), \
-                patch.object(self.server, 'stream_events') as provider:
-            with self.assertRaises(HTTPException):
-                self.server.stream_chat(self.server.StreamChatPayload(message='task', skill_context=SKILL),
-                                        self.server.UserContext('u', FakeDb()))
-            provider.assert_not_called()

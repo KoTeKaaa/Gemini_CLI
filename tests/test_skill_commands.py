@@ -73,6 +73,21 @@ class SkillCommandsTest(unittest.TestCase):
         self.selection.bind('another-chat')
         self.assertFalse(self.selection.last_output)
 
+    def test_resource_completions_round_trip_spaces_and_quotes(self):
+        import shlex
+        from gemini_cli.client.skill_resources import choices
+        self.selection.choose('review')
+        (self.path.parent / 'notes').mkdir()
+        for name in ('review notes.md', "author's notes.md"):
+            (self.path.parent / 'notes' / name).write_text('resource')
+        completer = InputCompleter(lambda: '.', skill_resources=lambda action, prefix: choices(self.selection, action, prefix))
+        for text in ('/skill read notes/rev', '/skill read "notes/rev', '/skill show notes/auth'):
+            result = list(completer.get_completions(Document(text), None))[0]
+            completed = text[:len(text) + result.start_position] + result.text
+            self.assertEqual(len(shlex.split(completed)), 3)
+            command(completed, self.selection, console=self.console, viewer=lambda _: None)
+        self.assertIn('resource', self.selection.payload()['content'])
+
     def test_payload_and_status_contain_only_selected_skill(self):
         import os
         from unittest.mock import patch

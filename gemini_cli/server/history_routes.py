@@ -94,7 +94,7 @@ def register_history_routes(app, *, get_user, provider, payload_model, authorize
             tools = provider_tools(payload.supported_tools, set(rights["features"]), dynamic)
             info = model_info(client, payload.model_name, ("server", id(client), user.user_id),
                               refresh=payload.refresh)
-            instruction = skill_instruction(AGENT_INSTRUCTION, payload.skill_context)
+            instruction = skill_instruction(AGENT_INSTRUCTION, getattr(payload, 'skill_context', None))
             usage = count_context(client, payload.model_name, contents, instruction, tools) if payload.refresh else None
             return estimate_context(contents, info, instruction, tools, measured_usage=usage)
 

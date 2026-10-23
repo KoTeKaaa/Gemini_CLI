@@ -1,6 +1,7 @@
 """Подсказки без чтения содержимого и без обхода workspace."""
 
 import os
+import shlex
 from prompt_toolkit.completion import Completer, Completion
 from ..tools.local.workspace import resolve_safe_path, is_sensitive_read_path, plan_text_file
 
@@ -39,11 +40,23 @@ class InputCompleter(Completer):
         if action == '/skill' and separator:
             if '\n' in text:
                 return
+            subaction, _, raw_path = fragment.partition(' ')
+            if ' ' in fragment and subaction in {'read', 'show', 'run'}:
+                prefix = raw_path
+                try:
+                    parsed = shlex.split(raw_path)
+                    if len(parsed) == 1:
+                        prefix = parsed[0]
+                except ValueError:
+                    if raw_path.startswith(('"', "'")):
+                        prefix = raw_path[1:]
+                for choice in self.skill_resources(subaction, prefix):
+                    if choice.startswith(prefix):
+                        yield Completion(shlex.quote(choice), start_position=-len(raw_path), display_meta='Skills')
+                return
             words = text.split() + ([''] if text[-1].isspace() else [])
             choices = ('list', 'use', 'off', 'read', 'show', 'run', 'output') if len(words) == 2 else (
                 sorted(self.skill_choices()) if len(words) == 3 and words[1] == 'use' else ())
-            if len(words) == 3 and words[1] in {'read', 'show', 'run'}:
-                choices = self.skill_resources(words[1], words[-1])
             for choice in choices:
                 if choice.startswith(words[-1]):
                     yield Completion(choice, start_position=-len(words[-1]), display_meta='Skills')
