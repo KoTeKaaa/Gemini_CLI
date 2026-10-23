@@ -51,7 +51,7 @@ class SkillsTest(unittest.TestCase):
         self.assertTrue(errors)
 
     def test_paths_and_links(self):
-        for path in ('../skills.json', '/etc/passwd', 'scripts/../../x', '.env', 'C:\\secret', 'x//y'):
+        for path in ('../skills.json', '/etc/passwd', 'scripts/../../x', '.env', 'C:\\secret', 'x//y', 'evil\x1b.py', 'a\u202eb.py'):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 read_file(self.skill, path)
         try:
@@ -67,3 +67,12 @@ class SkillsTest(unittest.TestCase):
         self.assertEqual(catalog(self.root / 'missing.json'), ({}, []))
         self.assertIn('review', catalog(self.config)[0])
         self.assertFalse(marker.exists())
+
+    def test_portable_documented_examples_validate(self):
+        examples = Path(__file__).resolve().parents[1] / 'docs' / 'skills-examples'
+        self.config.write_text(json.dumps({'version': 1, 'directories': [str(examples)]}))
+        found, errors = catalog(self.config)
+        self.assertEqual(set(found), {'task-plan', 'code-review'})
+        self.assertFalse(errors)
+        for skill in found.values():
+            self.assertTrue(skill.load())
