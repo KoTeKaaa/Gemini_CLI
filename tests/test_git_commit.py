@@ -6,6 +6,32 @@ from tests.test_git_tools import git, repository
 
 
 class GitCommitTests(unittest.TestCase):
+    def test_hooks_cannot_expand_selection_and_still_run(self):
+        with tempfile.TemporaryDirectory() as root:
+            repository(root)
+            Path(root, 'a.py').write_text('x=2\n')
+            Path(root, 'other.py').write_text('other=1\n')
+            hook = Path(root, '.git/hooks/pre-commit')
+            hook.write_text('#!/bin/sh\ngit add -- other.py\n'); hook.chmod(0o755)
+            args = {'action': 'prepare', 'files': ['a.py'], 'message': 'Change'}
+            token = git_commit(args, root, approve=lambda _: True)['data']['token']
+            result = git_commit({'action': 'commit', 'token': token}, root, approve=lambda _: True)
+            self.assertEqual(result['status'], 'error')
+            self.assertEqual(git(root, 'show', 'HEAD:a.py'), 'x=1\n')
+            self.assertIn('Reviewed selection changed', result['data']['stderr'])
+            hook.unlink()
+            ref = Path(root, '.git/hooks/reference-transaction')
+            ref.write_text('#!/bin/sh\ncat >/dev/null\necho "$1" >> hook-events\n'); ref.chmod(0o755)
+            post = Path(root, '.git/hooks/post-commit')
+            post.write_text('#!/bin/sh\ntouch committed\nsleep .2\n'); post.chmod(0o755)
+            token = git_commit(args, root, approve=lambda _: True)['data']['token']
+            result = git_commit({'action': 'commit', 'token': token}, root, approve=lambda _: True,
+                                cancelled=lambda: Path(root, 'committed').exists())
+            self.assertEqual(result['status'], 'ok')
+            self.assertTrue(result['data']['cancelled_after_start'])
+            self.assertEqual(git(root, 'show', ':a.py'), 'x=2\n')
+            self.assertIn('prepared', Path(root, 'hook-events').read_text())
+
     def test_only_selection_preserves_unrelated_staged_and_worktree(self):
         with tempfile.TemporaryDirectory() as root:
             repository(root)

@@ -1,6 +1,7 @@
 """LSP видит только сохранённые версии; ответы ограничены workspace."""
 import hashlib
 import os
+from contextlib import nullcontext
 from pathlib import Path
 from urllib.parse import urlsplit, unquote
 
@@ -30,8 +31,8 @@ def documents(root: str) -> dict:
     for relative, path in walk_files(root, budget):
         if not relative.endswith('.py') or path_has_links(path):
             continue
-        if len(found) >= 200:
-            raise ValueError("Проект превышает предел 200 Python-файлов")
+        if len(found) >= 400:
+            raise ValueError("Проект превышает предел 400 Python-файлов")
         expected = plan_text_file(root, relative, max_bytes=262144)
         text = read_text_snapshot(root, relative, expected, max_bytes=262144)
         total += len(text.encode('utf-8'))
@@ -94,21 +95,26 @@ def python_lsp(args: dict, root: str, *, approve, cancelled=lambda: False,
             raise ValueError("Несовпадение версии документа")
         line, character = args.get('line', 1), args.get('character', 0)
         lines = text.splitlines(keepends=True)
+        if text.endswith(('\n', '\r')) or not lines:
+            lines.append('')
         if (type(line) is not int or not 1 <= line <= len(lines) or type(character) is not int
                 or not 0 <= character <= len(lines[line - 1].rstrip('\r\n').encode('utf-16-le')) // 2):
             raise ValueError("Неверная позиция UTF-16")
         client = client_factory([server], root, cancelled=cancelled)
-        client.initialize()
-        client.open_document(Path(expected[0]), text)
+        with (monitor or nullcontext)():
+            client.initialize()
+            client.open_document(Path(expected[0]), text)
         params = {'textDocument': {'uri': Path(expected[0]).as_uri()},
                   'position': {'line': line - 1, 'character': character}}
         if action == 'references':
             params['context'] = {'includeDeclaration': True}
         if action in {'diagnostics', 'rename'}:
             from .lsp_edits import advanced
-            return advanced(client, action, params, args, root, docs, changes=changes,
-                            approve=confirm_write, cancelled=cancelled, monitor=monitor)
-        result = client.request('textDocument/' + action, params)
+            with (monitor or nullcontext)() if action == 'diagnostics' else nullcontext():
+                return advanced(client, action, params, args, root, docs, changes=changes,
+                                approve=confirm_write, cancelled=cancelled, monitor=monitor)
+        with (monitor or nullcontext)():
+            result = client.request('textDocument/' + action, params)
         validate_versions(root, docs)
         if cancelled():
             raise InterruptedError()

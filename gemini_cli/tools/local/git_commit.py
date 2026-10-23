@@ -10,6 +10,7 @@ from contextlib import nullcontext
 
 from .git_tools import Git, GitError, selected_paths
 from .changes import snapshot
+from .git_hooks import reviewed_hooks
 from ..results import failure, success
 
 _PLANS = OrderedDict()
@@ -27,7 +28,10 @@ def index_hash(git: Git) -> str:
 
 def identity(git: Git, paths: list[str]):
     head = git.run(['rev-parse', 'HEAD'])['stdout'].strip()
-    return head, index_hash(git), [snapshot(git.root, path) for path in paths]
+    snapshots = [snapshot(git.root, path) for path in paths]
+    if sum(len(item.data or b'') for item in snapshots) > 4 * 1024 * 1024:
+        raise ValueError('Выбранные файлы превышают 4 МиБ')
+    return head, index_hash(git), snapshots
 
 
 def prepare(args: dict, root: str, *, approve, cancelled=lambda: False, monitor=nullcontext):
@@ -97,8 +101,24 @@ def git_commit(args: dict, root: str, *, approve, cancelled=lambda: False, monit
                 git.run(['add', '--', *paths], env=env)
                 if identity(git, paths) != expected:
                     raise ValueError('Файлы изменились при подготовке index')
-                result = git.run(['commit', '-m', message], env=env, timeout=1500)
+                if cancelled():
+                    return failure('cancelled', 'Коммит отменён до запуска')
+                tree = git.run(['write-tree'], env=env)['stdout'].strip()
+                hooks = reviewed_hooks(git, directory, tree)
+                # Once commit begins, allow hooks (including human checkpoints)
+                # and index reconciliation to finish even if Esc stops the turn.
+                git.cancelled = lambda: False
+                commit_error = None
+                try:
+                    result = git.run(['-c', 'core.hooksPath=' + str(hooks), 'commit', '-m', message],
+                                     env=env, timeout=1500)
+                except GitError as error:
+                    commit_error = error
                 head = git.run(['rev-parse', 'HEAD'])['stdout'].strip()
+                if head == expected[0]:
+                    if commit_error is not None:
+                        raise commit_error
+                    raise ValueError('HEAD не изменился')
                 # Refresh only selected entries; retain every unrelated staged entry.
                 if index.exists():
                     shutil.copy2(index, alternate)
@@ -111,12 +131,16 @@ def git_commit(args: dict, root: str, *, approve, cancelled=lambda: False, monit
                     stream.flush()
                     os.fsync(stream.fileno())
                 os.replace(lock, index)
+                if commit_error is not None:
+                    return {'status': 'error', 'error': {'code': 'commit_created',
+                            'message': 'Коммит создан, но Git/hook завершился с ошибкой; повтор запрещён без проверки'},
+                            'data': {'commit': head, 'files': paths, **commit_error.data}}
         finally:
             if descriptor is not None:
                 os.close(descriptor)
             lock.unlink(missing_ok=True)
         return success({'commit': head, 'files': paths, 'output': result['stdout'],
-                        'stderr': result['stderr']})
+                        'stderr': result['stderr'], 'cancelled_after_start': cancelled()})
     except GitError as error:
         return {'status': 'error', 'error': {'code': 'git_error', 'message': 'Коммит не завершён; проверьте hook/output'},
                 'data': error.data}

@@ -68,6 +68,8 @@ def github_pr(args: dict, root: str, *, manager, approve, cancelled=lambda: Fals
         if len(existing) > 1:
             raise ValueError('Неоднозначный существующий PR')
         number = existing[0].get('number') if existing else None
+        if existing and (type(number) is not int or number < 1):
+            raise ValueError('Неверный номер существующего PR')
         if action == 'create' and number is not None:
             return success({'number': number, 'url': f'https://github.com/{owner}/{repo}/pull/{number}',
                             'existing': True})

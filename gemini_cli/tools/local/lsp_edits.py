@@ -4,7 +4,7 @@ from contextlib import nullcontext
 
 from .lsp_tools import uri_path, validate_versions
 from .write_set import write_set
-from ..results import failure, success
+from ..results import success
 
 
 def offset(text: str, position: dict) -> int:
@@ -22,7 +22,7 @@ def offset(text: str, position: dict) -> int:
     return sum(len(value) for value in lines[:line]) + len(prefix)
 
 
-def rename_files(edit: dict, root: str, docs: dict) -> list[dict]:
+def rename_files(edit: dict, root: str, docs: dict, *, versions=None) -> list[dict]:
     if not isinstance(edit, dict) or set(edit) - {'changes', 'documentChanges'}:
         raise ValueError('Неподдерживаемый WorkspaceEdit')
     if 'changes' in edit and 'documentChanges' in edit:
@@ -41,7 +41,8 @@ def rename_files(edit: dict, root: str, docs: dict) -> list[dict]:
             raise ValueError('File operations не поддерживаются')
         document = entry['textDocument']
         path = uri_path(document['uri'], root)
-        if path in seen or path not in docs or document.get('version') not in (None, 1):
+        version = 1 if versions is None else versions.get(document['uri'])
+        if path in seen or path not in docs or document.get('version') not in (None, version):
             raise ValueError('Повторный, неизвестный или изменённый документ')
         seen.add(path)
         text = docs[path][1]
@@ -77,8 +78,9 @@ def advanced(client, action, params, args, root, docs, *, changes, approve,
         if changes is None or approve is None:
             raise ValueError('Нет механизма записи')
         params['newName'] = name
-        edit = client.request('textDocument/rename', params)
-        files = rename_files(edit, root, docs)
+        with (monitor or nullcontext)():
+            edit = client.request('textDocument/rename', params)
+        files = rename_files(edit, root, docs, versions=client.documents)
         validate_versions(root, docs)
         def confirm(selected):
             validate_versions(root, docs)
@@ -86,7 +88,10 @@ def advanced(client, action, params, args, root, docs, *, changes, approve,
             validate_versions(root, docs)
             return accepted
         def preview(diff):
-            return approve([{'filepath': 'Предпросмотр rename (diff)', 'content': diff}])
+            validate_versions(root, docs)
+            accepted = approve([{'filepath': 'Предпросмотр rename (diff)', 'content': diff}])
+            validate_versions(root, docs)
+            return accepted
         result = write_set(files, changes, approve=confirm, confirm_diff=preview, cancelled=cancelled,
                            monitor=monitor or nullcontext)
         if isinstance(result, dict) or any(row.get('outcome') != 'applied' for row in result):

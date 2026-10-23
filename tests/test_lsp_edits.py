@@ -12,6 +12,25 @@ def edit(uri, version=1):
 
 
 class LSPEditTests(unittest.TestCase):
+    def test_project_version_changed_during_diff_approval_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            a, b = Path(root, 'a.py'), Path(root, 'b.py')
+            a.write_text('old=1\n'); b.write_text('x=2\n')
+            docs = documents(root)
+            class Client:
+                documents = {a.as_uri(): 1}
+                def request(self, *_): return edit(a.as_uri())
+            calls = []
+            def approve(files):
+                calls.append(files)
+                if len(calls) == 2:
+                    b.write_text('from a import old\n')
+                return True
+            result = advanced(Client(), 'rename', {}, {'new_name': 'new'}, root, docs,
+                              changes=ChangeSet(root), approve=approve)
+            self.assertEqual(result['status'], 'error')
+            self.assertEqual(a.read_text(), 'old=1\n')
+
     def test_multifile_rename_uses_write_set_and_detects_conflict(self):
         with tempfile.TemporaryDirectory() as root:
             a, b = Path(root, 'a.py'), Path(root, 'b.py')
@@ -20,6 +39,7 @@ class LSPEditTests(unittest.TestCase):
             proposal = edit(a.as_uri())
             proposal['documentChanges'] += edit(b.as_uri())['documentChanges']
             class Client:
+                documents = {a.as_uri(): 1, b.as_uri(): 1}
                 def request(self, *_): return proposal
             changes = ChangeSet(root)
             args = {'new_name': 'new'}

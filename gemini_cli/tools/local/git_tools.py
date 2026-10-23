@@ -36,7 +36,10 @@ class Git:
             raise ValueError('Workspace должен совпадать с корнем Git-репозитория')
 
     def run(self, args: list[str], *, env=None, timeout=120) -> dict:
-        variables = {**os.environ, 'GIT_LITERAL_PATHSPECS': '1', 'GIT_TERMINAL_PROMPT': '0',
+        inherited = {key: value for key, value in os.environ.items() if key not in {
+            'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_NAMESPACE',
+            'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES'}}
+        variables = {**inherited, 'GIT_LITERAL_PATHSPECS': '1', 'GIT_TERMINAL_PROMPT': '0',
                      'GIT_OPTIONAL_LOCKS': '0', 'GIT_PAGER': 'cat', **(env or {})}
         process = ManagedProcess(['git', '-c', 'core.quotepath=false', '-c', 'core.fsmonitor=false', *args],
                                  self.root, env=variables, limit=32768)
