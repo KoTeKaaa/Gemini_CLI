@@ -12,7 +12,7 @@ class GitCommitTests(unittest.TestCase):
             Path(root, 'a.py').write_text('x=2\n')
             Path(root, 'other.py').write_text('other=1\n')
             hook = Path(root, '.git/hooks/pre-commit')
-            hook.write_text('#!/bin/sh\ngit add -- other.py\n'); hook.chmod(0o755)
+            hook.write_text('#!/bin/sh\ngit add -- other.py\n', newline='\n'); hook.chmod(0o755)
             args = {'action': 'prepare', 'files': ['a.py'], 'message': 'Change'}
             token = git_commit(args, root, approve=lambda _: True)['data']['token']
             result = git_commit({'action': 'commit', 'token': token}, root, approve=lambda _: True)
@@ -21,9 +21,9 @@ class GitCommitTests(unittest.TestCase):
             self.assertIn('Reviewed selection changed', result['data']['stderr'])
             hook.unlink()
             ref = Path(root, '.git/hooks/reference-transaction')
-            ref.write_text('#!/bin/sh\ncat >/dev/null\necho "$1" >> hook-events\n'); ref.chmod(0o755)
+            ref.write_text('#!/bin/sh\ncat >/dev/null\necho "$1" >> hook-events\n', newline='\n'); ref.chmod(0o755)
             post = Path(root, '.git/hooks/post-commit')
-            post.write_text('#!/bin/sh\ntouch committed\nsleep .2\n'); post.chmod(0o755)
+            post.write_text('#!/bin/sh\ntouch committed\nsleep .2\n', newline='\n'); post.chmod(0o755)
             token = git_commit(args, root, approve=lambda _: True)['data']['token']
             result = git_commit({'action': 'commit', 'token': token}, root, approve=lambda _: True,
                                 cancelled=lambda: Path(root, 'committed').exists())
@@ -60,7 +60,7 @@ class GitCommitTests(unittest.TestCase):
             token = prepare(); file.write_text('x=3\n')
             self.assertEqual(git_commit({'action': 'commit', 'token': token}, root, approve=lambda _: True)['error']['code'], 'conflict')
             hook = Path(root, '.git/hooks/pre-commit')
-            hook.write_text('#!/bin/sh\necho fixture-hook-failed >&2\nexit 1\n'); hook.chmod(0o755)
+            hook.write_text('#!/bin/sh\necho fixture-hook-failed >&2\nexit 1\n', newline='\n'); hook.chmod(0o755)
             result = git_commit({'action': 'commit', 'token': prepare()}, root, approve=lambda _: True)
             self.assertEqual(result['error']['code'], 'git_error')
             self.assertIn('fixture-hook-failed', result['data']['stderr'])

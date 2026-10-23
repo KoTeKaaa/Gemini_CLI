@@ -12,7 +12,7 @@ def reviewed_hooks(git, directory: str, tree: str) -> Path:
         for hook in original.iterdir():
             if hook.is_file() and not hook.name.endswith('.sample') and os.access(hook, os.X_OK):
                 wrapper = target / hook.name
-                wrapper.write_text('#!/bin/sh\nexec ' + shlex.quote(str(hook)) + ' "$@"\n', encoding='utf-8')
+                wrapper.write_text('#!/bin/sh\nexec ' + shlex.quote(str(hook)) + ' "$@"\n', encoding='utf-8', newline='\n')
                 wrapper.chmod(0o755)
     reference = target / 'reference-transaction'
     previous = original / 'reference-transaction'
@@ -37,6 +37,6 @@ printf "%s\\n" "$updates" | while read -r old new ref; do
     esac
 done
 '''.replace('DELEGATE', delegate).replace('EXPECTED', shlex.quote(tree))
-    reference.write_text(script, encoding='utf-8')
+    reference.write_text(script, encoding='utf-8', newline='\n')
     reference.chmod(0o755)
     return target
