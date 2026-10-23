@@ -29,6 +29,7 @@ from gemini_cli.server.admin.pages import page_router, PanelHeaders
 from gemini_cli.server.auth_limits import AUTH_LIMITS
 from gemini_cli.protocol.models import ModelName
 from gemini_cli.protocol.mcp import MCP_PROTOCOL, MCP_FEATURE, validate_tool_payload
+from gemini_cli.protocol.skills import SKILL_PROTOCOL, validate_skill
 from gemini_cli.protocol.limits import MAX_HISTORY_CONTENT_CHARS
 from gemini_cli.server.limits import BodyLimit, StreamJob, BoundedStreamingResponse as StreamingResponse
 
@@ -138,10 +139,12 @@ class StreamChatPayload(BaseModel):
     end_tool_turn: bool = False
 
     mcp_tools: List[Dict[str, Any]] = Field(default_factory=list, max_length=16, repr=False)
+    skill_context: Optional[Dict[str, str]] = Field(default=None, repr=False)
 
     @model_validator(mode="after")
     def known_tools(self):
         validate_tool_payload({"supported_tools": self.supported_tools, "mcp_tools": self.mcp_tools})
+        validate_skill(self.skill_context)
         return self
 
 
@@ -343,7 +346,7 @@ def deployment_health():
 
 @app.get("/capabilities")
 def capabilities(user: UserContext = Depends(get_working_user)):
-    return {"images": IMAGE_PROTOCOL, "mcp": MCP_PROTOCOL}
+    return {"images": IMAGE_PROTOCOL, "mcp": MCP_PROTOCOL, "skills": SKILL_PROTOCOL}
 
 
 from gemini_cli.server.history_routes import register_history_routes
@@ -459,6 +462,7 @@ def stream_chat(
             for event in stream_events(client, model=payload.model_name, contents=full_contents,
                                        supported_tools=sorted(requested_tools), permitted_tools=permitted,
                                        mcp_tools=payload.mcp_tools,
+                                       skill_context=payload.skill_context,
                                        cancelled=job.cancelled.is_set):
                 if job.cancelled.is_set():
                     return

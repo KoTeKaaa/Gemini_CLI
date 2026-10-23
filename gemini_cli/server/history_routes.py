@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from .history_store import HistoryStore
 from .limits import SLOTS
 from ..backends.genai import AGENT_INSTRUCTION, to_gemini, stream_events
+from ..protocol.skills import skill_instruction
 from ..backends.model_info import model_info, count_context
 from ..protocol.images import validate_payload_images
 from ..protocol.mcp import MCP_FEATURE
@@ -93,8 +94,9 @@ def register_history_routes(app, *, get_user, provider, payload_model, authorize
             tools = provider_tools(payload.supported_tools, set(rights["features"]), dynamic)
             info = model_info(client, payload.model_name, ("server", id(client), user.user_id),
                               refresh=payload.refresh)
-            usage = count_context(client, payload.model_name, contents, AGENT_INSTRUCTION, tools) if payload.refresh else None
-            return estimate_context(contents, info, AGENT_INSTRUCTION, tools, measured_usage=usage)
+            instruction = skill_instruction(AGENT_INSTRUCTION, payload.skill_context)
+            usage = count_context(client, payload.model_name, contents, instruction, tools) if payload.refresh else None
+            return estimate_context(contents, info, instruction, tools, measured_usage=usage)
 
     @app.post("/chat/compact")
     def compact_chat(payload: CompactPayload, user=Depends(get_user)):

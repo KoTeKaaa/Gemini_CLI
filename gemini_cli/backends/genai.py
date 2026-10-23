@@ -9,6 +9,7 @@ from ..protocol.images import decode_images
 from ..runtime.attachments import missing_image_note
 from ..tools.definitions import TOOLS, LEGACY_NAMES, available_tools
 from ..protocol.limits import MAX_TOOL_CALLS, MAX_PROVIDER_WIRE_BYTES
+from ..protocol.skills import skill_instruction
 
 AGENT_INSTRUCTION = (
     "Ты — AI-ассистент разработчика с доступом к файловым инструментам и терминалу. "
@@ -66,7 +67,7 @@ def provider_tools(supported, permitted, mcp_tools=None):
 
 
 def stream_events(client, *, model: str, contents, supported_tools=None,
-                  permitted_tools=None, cancelled=lambda: False, mcp_tools=None):
+                  permitted_tools=None, cancelled=lambda: False, mcp_tools=None, skill_context=None):
     from google.genai import types
     permitted = set(TOOLS) if permitted_tools is None else set(permitted_tools)
     declared = permitted & set(LEGACY_NAMES if supported_tools is None else supported_tools)
@@ -79,7 +80,7 @@ def stream_events(client, *, model: str, contents, supported_tools=None,
         config = types.GenerateContentConfig(
             tools=provider_tools(supported_tools, permitted, mcp_tools), max_output_tokens=8192,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-            system_instruction=AGENT_INSTRUCTION)
+            system_instruction=skill_instruction(AGENT_INSTRUCTION, skill_context))
         response = client.models.generate_content_stream(model=model, contents=contents, config=config)
         for chunk in response:
             if cancelled():
