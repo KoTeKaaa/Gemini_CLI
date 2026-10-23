@@ -169,3 +169,16 @@ def git_read(action: str, files: List[str], staged: bool = False,
 
 TOOLS["git_read"] = git_read
 CLIENT_NAMES = (*CLIENT_NAMES, "git_read")
+
+
+def git_commit(action: str, files: List[str] = None, message: str = "", task: str = "", token: str = "") -> str:
+    """Prepare a selected file diff/message/task, then commit its one-use token after explicit approval.
+
+    action=prepare requires files/message. action=commit requires returned token.
+    Commit includes full selected files; unrelated staged/unstaged changes are preserved. Never publishes.
+    """
+    return "Подготовка коммита запрошена"
+
+
+TOOLS["git_commit"] = git_commit
+CLIENT_NAMES = (*CLIENT_NAMES, "git_commit")

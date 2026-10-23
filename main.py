@@ -56,6 +56,7 @@ from gemini_cli.tools.local.lsp_tools import python_lsp
 from gemini_cli.tools.local.test_runner import run_tests
 from gemini_cli.tools.local.affected import affected_tests
 from gemini_cli.tools.local.git_tools import git_read
+from gemini_cli.tools.local.git_commit import git_commit
 from gemini_cli.tools.local.files import read_files, write_files, read_file_lines
 from gemini_cli.tools.local.search import find_files, search_text
 from gemini_cli.tools.local.edit import replace_in_file
@@ -259,6 +260,12 @@ def confirm_development_write(files: list[dict]) -> bool:
     from gemini_cli.client.paste import view_text
     view_text("\n\n".join(f['filepath'] + "\n" + f['content'] for f in files))
     return confirm_content_scope("Применить просмотренные изменения разработки?")
+
+
+def confirm_development_action(text: str) -> bool:
+    from gemini_cli.client.paste import view_text
+    view_text(text)
+    return confirm_content_scope("Выполнить просмотренное действие разработки?")
 
 
 def confirm_command(command: str) -> bool:
@@ -575,6 +582,8 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
     cancelled = state.cancelled.is_set if state else lambda: False
     monitor = (lambda: WorkInput(state)) if state else nullcontext
     handlers = {
+        "git_commit": lambda args, cwd: json.dumps(git_commit(
+            args, cwd, approve=confirm_development_action, cancelled=cancelled, monitor=monitor), ensure_ascii=False),
         "git_read": lambda args, cwd: json.dumps(git_read(
             args, cwd, approve=confirm_content_scope, cancelled=cancelled, monitor=monitor), ensure_ascii=False),
         "affected_tests": lambda args, cwd: json.dumps(affected_tests(
