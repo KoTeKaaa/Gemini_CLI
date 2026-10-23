@@ -12,6 +12,8 @@ def parse(data: bytes, source: str, selection: dict) -> dict:
     if encoding not in {'utf-8-sig', 'utf-8', 'utf-16', 'cp1251'}:
         raise DocumentError('invalid_selection', 'Кодировка: utf-8-sig/utf-8/utf-16/cp1251')
     text = data.decode(encoding)
+    if '\x00' in text:
+        raise DocumentError('invalid_document', 'CSV содержит бинарные данные')
     delimiter = selection.get('delimiter')
     if delimiter is None:
         try: delimiter = csv.Sniffer().sniff(text[:4096], delimiters=',;\t|').delimiter

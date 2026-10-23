@@ -22,4 +22,5 @@ class DocumentCSVTests(unittest.TestCase):
         for cells in ('XFE1', 'A0', 'C3:A1', 'A1:XFD100'):
             self.assertEqual(extract(b'a', 'a.csv', {'cells': cells})['error']['code'], 'invalid_selection')
         self.assertEqual(extract(b'', 'a.csv', {'cells': 'A1'})['status'], 'error')
+        self.assertEqual(extract(b'\x00binary', 'a.csv', {'cells': 'A1'})['error']['code'], 'invalid_document')
         self.assertTrue(extract(b'x' * 30000, 'a.csv', {'cells': 'A1'})['truncated'])
