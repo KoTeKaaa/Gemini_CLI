@@ -1,0 +1,23 @@
+name: Idea / Предложение
+description: Describe a task you would like to make easier / Какую задачу хочется упростить
+title: "[Idea] "
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: Your task / Ваша задача
+      description: What are you trying to do, and what gets in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Desired behavior / Как хотелось бы
+      description: A concrete example helps. Russian and English are both welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives / Другие варианты
+      description: Optional. Do not include private configuration or data.
