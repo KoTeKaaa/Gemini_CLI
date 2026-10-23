@@ -31,5 +31,5 @@ def parse(data: bytes, source: str, selection: dict) -> dict:
     if start_row > visited:
         raise DocumentError('invalid_selection', 'Диапазон начинается после конца CSV')
     return result(source, fragments, partial=visited < end_row,
-                  notes=['Кодировка: ' + encoding, 'Столбцы: ' + ', '.join(column_name(c) for c in range(start_col, end_col + 1)),
+                  notes=['Кодировка: ' + encoding,
                          'Заголовки включаются только если выбран их ряд. Формулы CSV остаются буквальным текстом'])

@@ -7,7 +7,7 @@ import zipfile
 MAX_BYTES = 4 * 1024 * 1024
 MAX_EXPANDED = 16 * 1024 * 1024
 MAX_MEMBER = 4 * 1024 * 1024
-MAX_OUTPUT = 20000
+MAX_OUTPUT = 6000
 MIMES = {'.pdf': 'application/pdf', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
          '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.csv': 'text/csv'}
 
@@ -100,6 +100,25 @@ def result(source: str, fragments: list[dict], *, partial=False, truncated=False
         size = len(json.dumps(row, ensure_ascii=False).encode('utf-8'))
         if used + size > MAX_OUTPUT:
             truncated = True
+            remaining = MAX_OUTPUT - used - 300
+            if remaining > 500:
+                clipped = dict(row)
+                if 'text' in clipped:
+                    clipped['text'] = clipped['text'].encode('utf-8')[:remaining].decode('utf-8', errors='ignore')
+                elif 'cells' in clipped:
+                    clipped['cells'] = []
+                    for value in row['cells']:
+                        if isinstance(value, dict):
+                            value = {k: v.encode('utf-8')[:800].decode('utf-8', errors='ignore')
+                                     if isinstance(v, str) else v for k, v in value.items()}
+                        elif isinstance(value, str):
+                            value = value.encode('utf-8')[:800].decode('utf-8', errors='ignore')
+                        candidate = {**clipped, 'cells': [*clipped['cells'], value], 'truncated': True}
+                        if len(json.dumps(candidate, ensure_ascii=False).encode('utf-8')) > remaining: break
+                        clipped = candidate
+                clipped['truncated'] = True
+                if len(json.dumps(clipped, ensure_ascii=False).encode('utf-8')) <= MAX_OUTPUT - used:
+                    rows.append(clipped)
             break
         used += size
         rows.append(row)

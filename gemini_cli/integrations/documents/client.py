@@ -14,7 +14,7 @@ from .boundary import MAX_BYTES
 
 def extract_document(data: bytes, source: str, selection: dict, *, cancelled=lambda: False,
                      monitor=nullcontext, timeout=10, mime='') -> dict:
-    if len(data) > MAX_BYTES or len(source) > 500 or len(json.dumps(selection)) > 2000:
+    if len(data) > MAX_BYTES or len(source.encode('utf-8')) > 500 or len(json.dumps(selection)) > 2000:
         return failure('limit', 'Превышен предел запроса документа')
     if cancelled():
         return failure('cancelled', 'Чтение документа отменено')
