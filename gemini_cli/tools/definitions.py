@@ -108,3 +108,90 @@ def replace_in_file(filepath: str, old_text: str, new_text: str) -> str:
 
 TOOLS["replace_in_file"] = replace_in_file
 CLIENT_NAMES = (*CLIENT_NAMES, "replace_in_file")
+
+
+def python_symbols(query: str = "") -> str:
+    """Read a bounded Python project map of AST definitions/imports after approval; filter names by query."""
+    return "Карта Python запрошена"
+
+
+TOOLS["python_symbols"] = python_symbols
+CLIENT_NAMES = (*CLIENT_NAMES, "python_symbols")
+
+
+def python_lsp(action: str, filepath: str, line: int = 1, character: int = 0,
+               expected_sha256: str = "", new_name: str = "") -> str:
+    """Query trusted local Python LSP: definition/references/diagnostics/rename. Saved files only.
+
+    line is 1-based, character is 0-based UTF-16. Optional expected_sha256 detects unsaved versions.
+    rename requires new_name and a separate file/diff approval. Server configured by user.
+    """
+    return "LSP запрошен"
+
+
+TOOLS["python_lsp"] = python_lsp
+CLIENT_NAMES = (*CLIENT_NAMES, "python_lsp")
+
+
+def run_tests(modules: List[str], timeout: int = 120) -> str:
+    """Run explicitly selected unittest modules after approval. Empty modules discovers tests/.
+
+    Return structured counts, process exit status and bounded logs; only completed exit 0 can pass.
+    """
+    return "Запуск unittest запрошен"
+
+
+TOOLS["run_tests"] = run_tests
+CLIENT_NAMES = (*CLIENT_NAMES, "run_tests")
+
+
+def affected_tests(files: List[str]) -> str:
+    """Suggest unittest modules from explicitly selected changed paths and transitive Python imports.
+
+    Suggestions are incomplete; configuration/dynamic dependencies require broader checks.
+    Never silently skip unknown affected checks or claim full coverage from this graph.
+    """
+    return "Подбор проверок запрошен"
+
+
+TOOLS["affected_tests"] = affected_tests
+CLIENT_NAMES = (*CLIENT_NAMES, "affected_tests")
+
+
+def git_read(action: str, files: List[str], staged: bool = False,
+             start_line: int = 1, end_line: int = 100) -> str:
+    """Read bounded Git status/diff/log/blame for explicitly selected relative files in workspace root.
+
+    Does not alter index or branch. Diff defaults to unstaged; staged=True reads the index diff.
+    """
+    return "Чтение Git запрошено"
+
+
+TOOLS["git_read"] = git_read
+CLIENT_NAMES = (*CLIENT_NAMES, "git_read")
+
+
+def git_commit(action: str, files: List[str] = None, message: str = "", task: str = "", token: str = "") -> str:
+    """Prepare a selected file diff/message/task, then commit its one-use token after explicit approval.
+
+    action=prepare requires files/message. action=commit requires returned token.
+    Commit includes full selected files; unrelated staged/unstaged changes are preserved. Never publishes.
+    """
+    return "Подготовка коммита запрошена"
+
+
+TOOLS["git_commit"] = git_commit
+CLIENT_NAMES = (*CLIENT_NAMES, "git_commit")
+
+
+def github_pr(action: str, base: str, title: str = "", body: str = "", server: str = "github") -> str:
+    """Use explicitly enabled personal GitHub MCP to create/update a PR or read checks for current branch.
+
+    Explicit publication only; create returns existing matching PR to avoid duplicates. No push/merge.
+    Requires origin on github.com, published feature branch, selected MCP PR tools and per-call approval.
+    """
+    return "Работа с PR запрошена"
+
+
+TOOLS["github_pr"] = github_pr
+CLIENT_NAMES = (*CLIENT_NAMES, "github_pr")

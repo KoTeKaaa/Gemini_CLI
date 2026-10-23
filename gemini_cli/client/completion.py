@@ -6,7 +6,7 @@ from prompt_toolkit.completion import Completer, Completion
 from ..tools.local.workspace import resolve_safe_path, is_sensitive_read_path, plan_text_file
 
 COMMANDS = ('/help', '/model', '/chat', '/settings', '/term', '/paste',
-            '/attachments', '/show', '/edit', '/remove', '/cd', '/delete', '/clear', '/compact', '/fork', '/limits', '/diff', '/undo', '/mcp', '/skill')
+            '/attachments', '/show', '/edit', '/remove', '/cd', '/delete', '/clear', '/compact', '/fork', '/limits', '/diff', '/undo', '/mcp', '/skill', '/dev')
 MCP_ACTIONS = ('check', 'tools', 'enable', 'disable', 'login', 'logout')
 SKIP = {'node_modules', 'build', 'dist', 'venv', '__pycache__'}
 
@@ -37,6 +37,10 @@ class InputCompleter(Completer):
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         action, separator, fragment = text.partition(' ')
+        if action == '/dev' and separator:
+            if 'help'.startswith(fragment):
+                yield Completion('help', start_position=-len(fragment), display_meta='Разработка')
+            return
         if action == '/skill' and separator:
             if '\n' in text:
                 return

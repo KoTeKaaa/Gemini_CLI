@@ -19,7 +19,8 @@ class WalkBudget:
 
 
 def walk_files(root: str, budget: WalkBudget):
-    stack = [os.path.realpath(root)]
+    root = os.path.realpath(root)
+    stack = [root]
     while stack:
         directory = stack.pop()
         try:

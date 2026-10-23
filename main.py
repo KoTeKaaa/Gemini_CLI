@@ -51,6 +51,12 @@ from datetime import datetime
 
 from gemini_cli.client.tool_runner import execute_tool_calls as run_tool_calls
 from gemini_cli.tools.local.command import execute_command
+from gemini_cli.tools.local.symbols import project_map
+from gemini_cli.tools.local.lsp_tools import python_lsp
+from gemini_cli.tools.local.test_runner import run_tests
+from gemini_cli.tools.local.affected import affected_tests
+from gemini_cli.tools.local.git_tools import git_read
+from gemini_cli.tools.local.git_commit import git_commit
 from gemini_cli.tools.local.files import read_files, write_files, read_file_lines
 from gemini_cli.tools.local.search import find_files, search_text
 from gemini_cli.tools.local.edit import replace_in_file
@@ -248,6 +254,18 @@ def handle_write_files(args: dict, current_dir: str, *, changes=None, cancelled=
     return write_files(args, current_dir, approve=confirm_file_write,
                        notify=lambda text: console.print(Text(safe_label(text))), logger=logger, changes=changes,
                        cancelled=cancelled, monitor=monitor)
+
+
+def confirm_development_write(files: list[dict]) -> bool:
+    from gemini_cli.client.paste import view_text
+    view_text("\n\n".join(f['filepath'] + "\n" + f['content'] for f in files))
+    return confirm_content_scope("Применить просмотренные изменения разработки?")
+
+
+def confirm_development_action(text: str) -> bool:
+    from gemini_cli.client.paste import view_text
+    view_text(text)
+    return confirm_content_scope("Выполнить просмотренное действие разработки?")
 
 
 def confirm_command(command: str) -> bool:
@@ -564,6 +582,20 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
     cancelled = state.cancelled.is_set if state else lambda: False
     monitor = (lambda: WorkInput(state)) if state else nullcontext
     handlers = {
+        "git_commit": lambda args, cwd: json.dumps(git_commit(
+            args, cwd, approve=confirm_development_action, cancelled=cancelled, monitor=monitor), ensure_ascii=False),
+        "git_read": lambda args, cwd: json.dumps(git_read(
+            args, cwd, approve=confirm_content_scope, cancelled=cancelled, monitor=monitor), ensure_ascii=False),
+        "affected_tests": lambda args, cwd: json.dumps(affected_tests(
+            args, cwd, approve=confirm_content_scope), ensure_ascii=False),
+        "run_tests": lambda args, cwd: json.dumps(run_tests(
+            args, cwd, approve=confirm_content_scope, cancelled=cancelled, monitor=monitor,
+            on_process=getattr(getattr(state, "view", None), "set_process", None)), ensure_ascii=False),
+        "python_lsp": lambda args, cwd: json.dumps(python_lsp(
+            args, cwd, approve=confirm_content_scope, cancelled=cancelled, changes=changes,
+            confirm_write=confirm_development_write, monitor=monitor), ensure_ascii=False),
+        "python_symbols": lambda args, cwd: json.dumps(project_map(
+            cwd, approve=confirm_content_scope, query=args.get("query", "")), ensure_ascii=False),
         "read_local_files": handle_read_files,
         "write_local_files": lambda args, cwd: handle_write_files(args, cwd, changes=changes,
                                                                  cancelled=cancelled, monitor=monitor),
@@ -597,16 +629,20 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
         handlers["read_url"] = lambda args, _cwd: web_handler("read", args)
     if mcp is not None:
         from gemini_cli.client.mcp_commands import approve_call
+        def approve(server, original, values):
+            return approve_call(console, server, original, values)
+        def invoke(operation):
+            with (state.view.monitor() if state is not None and hasattr(state, "view") else monitor()):
+                return operation()
         def mcp_handler(name, args):
-            def approve(server, original, values):
-                return approve_call(console, server, original, values)
-            def invoke(operation):
-                with (state.view.monitor() if state is not None and hasattr(state, "view") else monitor()):
-                    return operation()
             return mcp.call(name, args, approve=approve, cancelled=cancelled, invoke=invoke)
         for declaration in mcp.declarations():
             name = declaration["name"]
             handlers[name] = lambda args, _cwd, name=name: mcp_handler(name, args)
+        from gemini_cli.integrations.github_pr import github_pr
+        handlers['github_pr'] = lambda args, cwd: json.dumps(github_pr(
+            args, cwd, manager=mcp, approve=approve, cancelled=cancelled,
+            invoke=invoke, monitor=monitor), ensure_ascii=False)
     run_tool_calls(tool_calls, history, current_dir, handlers=handlers, logger=logger, state=state)
 
 
@@ -888,6 +924,7 @@ def main(backend: Backend | None = None):
                 table.add_row("/model", "Сменить ИИ модель")
                 table.add_row("/mcp", "Подключения MCP; /mcp help — гайд для первого подключения")
                 table.add_row('/skill', 'Навыки; /skill help — гайд по созданию и использованию')
+                table.add_row('/dev help', 'Код, LSP, тесты, Git и PR; настройка и примеры')
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")
                 table.add_row("/chat", "Сменить или создать комнату диалога")
                 table.add_row("/clear", "Очистить временный чат и его черновик; постоянный чат сохраняется")
@@ -936,6 +973,12 @@ def main(backend: Backend | None = None):
                                                title="Подписка", error=True))
                 finally:
                     state.finish()
+                continue
+
+            if first_line.strip().split(" ", 1)[0] == '/dev':
+                from gemini_cli.client.development_help import command as development_command
+                from gemini_cli.client.paste import view_text
+                development_command(user_input, console=console, viewer=view_text)
                 continue
 
             if first_line.strip().split(" ", 1)[0] == '/skill':

@@ -33,6 +33,13 @@ jobs:
         run: python -B -m unittest tests.test_quota_view tests.test_status_pty -q
       - name: Check portable skills
         run: python -B -m unittest tests.test_skills tests.test_skill_backend tests.test_skill_commands tests.test_skill_resources tests.test_skill_pty tests.test_integration_help -q
+      - name: Check development tools
+        run: python -B -m unittest tests.test_symbols tests.test_lsp tests.test_lsp_tools tests.test_lsp_edits tests.test_structured_tests tests.test_affected tests.test_git_tools tests.test_git_commit tests.test_github_pr tests.test_development_help tests.test_development_pty -q
+      - name: Check real Python language server
+        run: |
+          python -m venv "$RUNNER_TEMP/pylsp"
+          "$RUNNER_TEMP/pylsp/bin/python" -m pip install -r client/requirements-lsp.txt
+          GEMINI_TEST_PYLSP="$RUNNER_TEMP/pylsp/bin/pylsp" python -B -m unittest tests.test_lsp_live -q
       - name: Check file changes and undo
         run: python -B -m unittest tests.test_changes tests.test_change_history tests.test_checkpoints tests.test_write_set tests.test_hunks tests.test_change_view tests.test_undo tests.test_changes_pty tests.test_input_completion -q
       - uses: actions/upload-artifact@v7
@@ -92,6 +99,17 @@ jobs:
       - name: Check portable skills
         shell: pwsh
         run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_skills tests.test_skill_backend tests.test_skill_commands tests.test_skill_resources tests.test_skill_pty tests.test_integration_help -q
+      - name: Check development tools
+        shell: pwsh
+        run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_symbols tests.test_lsp tests.test_lsp_tools tests.test_lsp_edits tests.test_structured_tests tests.test_affected tests.test_git_tools tests.test_git_commit tests.test_github_pr tests.test_development_help tests.test_development_pty -q
+      - name: Check real Python language server
+        shell: pwsh
+        run: |
+          python -m venv "$env:RUNNER_TEMP/pylsp"
+          & "$env:RUNNER_TEMP/pylsp/Scripts/python.exe" -m pip install -r client/requirements-lsp.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:GEMINI_TEST_PYLSP = "$env:RUNNER_TEMP/pylsp/Scripts/pylsp.exe"
+          ./.venv-win/Scripts/python.exe -B -m unittest tests.test_lsp_live -q
       - name: Check file changes and undo
         shell: pwsh
         run: ./.venv-win/Scripts/python.exe -B -m unittest tests.test_changes tests.test_change_history tests.test_checkpoints tests.test_write_set tests.test_hunks tests.test_change_view tests.test_undo tests.test_changes_pty tests.test_input_completion -q
