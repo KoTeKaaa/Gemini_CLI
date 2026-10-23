@@ -1,5 +1,7 @@
 # Миграция подписок
 
+[Русский](subscription-migration.md) · [English](en/subscription-migration.md)
+
 Сначала примените миграции `supabase/migrations` в отдельном preview-проекте.
 Проверьте `supabase/tests/account_subscriptions.sql` через SQL Editor или psql
 с административным соединением: сценарий двух пользователей откатывает fixtures.

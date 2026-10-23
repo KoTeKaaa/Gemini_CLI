@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#142b3b"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#background)"/>
+  <rect x="72" y="76" width="44" height="5" rx="2" fill="#48d7cd"/>
+  <g font-family="sans-serif">
+    <text x="72" y="126" font-size="19" letter-spacing="3" fill="#8da6ba">YOUR PROJECT, IN THE TERMINAL</text>
+    <text x="68" y="235" font-size="80" font-weight="700" fill="#f3f7fa">Gemini CLI</text>
+    <text x="72" y="301" font-size="29" fill="#d6e4ee">Code, files and conversations.</text>
+    <text x="72" y="348" font-size="24" fill="#a3b9c9">Personal keys or your own server.</text>
+    <rect x="72" y="405" width="172" height="48" rx="12" fill="#20384a"/>
+    <text x="96" y="437" font-size="20" fill="#e1edf4">Local / Remote</text>
+    <rect x="260" y="405" width="168" height="48" rx="12" fill="#20384a"/>
+    <text x="286" y="437" font-size="20" fill="#e1edf4">MCP &amp; Skills</text>
+    <rect x="444" y="405" width="167" height="48" rx="12" fill="#20384a"/>
+    <text x="468" y="437" font-size="20" fill="#e1edf4">Python &amp; Git</text>
+    <text x="72" y="561" font-size="19" fill="#91a9bb">Independent project · Linux &amp; Windows</text>
+  </g>
+  <rect x="768" y="170" width="440" height="310" rx="18" fill="#0c1725" stroke="#344c60" stroke-width="2"/>
+  <circle cx="798" cy="201" r="6" fill="#4d718e"/>
+  <circle cx="820" cy="201" r="6" fill="#4d718e"/>
+  <circle cx="842" cy="201" r="6" fill="#48d7cd"/>
+  <path d="M768 224H1208" stroke="#283f52"/>
+  <g font-family="monospace" font-size="27">
+    <text x="800" y="278" fill="#48d7cd">$ gemini-cli</text>
+    <text x="800" y="335" fill="#e1edf4">/diff   /undo</text>
+    <text x="800" y="387" fill="#a7c2da">/mcp    /skill</text>
+    <text x="800" y="439" fill="#a7c2da">/doc    /term</text>
+  </g>
+</svg>

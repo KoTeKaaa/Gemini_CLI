@@ -1,5 +1,7 @@
 # GitHub MCP: Linux и Windows
 
+[Русский](mcp-github.md) · [English](en/mcp-github.md)
+
 Используется [официальный GitHub MCP](https://github.com/github/github-mcp-server).
 Для удалённого Streamable HTTP не нужны Node/Docker. Нужны интернет, актуальный
 CLI с MCP-зависимостями и персональный GitHub bearer. Подключение не отменяет
