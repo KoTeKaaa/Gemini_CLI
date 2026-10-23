@@ -5,6 +5,18 @@ from pathlib import Path
 
 
 class PackageImportTest(unittest.TestCase):
+    def test_version_without_dependencies_or_profile_writes(self):
+        import tempfile
+        from gemini_cli import __version__
+        with tempfile.TemporaryDirectory() as temporary:
+            entrypoint = Path(__file__).resolve().parents[1] / 'main.py'
+            result = subprocess.run([sys.executable, '-S', str(entrypoint), '--version'],
+                cwd=temporary, env={'HOME': temporary, 'USERPROFILE': temporary},
+                capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), f'Gemini CLI {__version__}')
+            self.assertEqual(list(Path(temporary).iterdir()), [])
+
     def test_import_without_environment_or_third_party_dependencies(self):
         project_dir = Path(__file__).resolve().parents[1]
         script = """

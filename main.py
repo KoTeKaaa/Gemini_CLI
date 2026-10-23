@@ -1,5 +1,10 @@
 import sys
 
+if __name__ == '__main__' and sys.argv[1:] == ['--version']:
+    from gemini_cli import __version__
+    print(f'Gemini CLI {__version__}')
+    raise SystemExit()
+
 if __name__ == '__main__' and sys.argv[1:] == ['--document-worker']:
     from gemini_cli.integrations.documents.worker import main as document_worker
     document_worker()
