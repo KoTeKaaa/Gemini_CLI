@@ -5,7 +5,7 @@ from prompt_toolkit.completion import Completer, Completion
 from ..tools.local.workspace import resolve_safe_path, is_sensitive_read_path, plan_text_file
 
 COMMANDS = ('/help', '/model', '/chat', '/settings', '/term', '/paste',
-            '/attachments', '/show', '/edit', '/remove', '/cd', '/delete', '/clear', '/compact', '/fork', '/limits', '/diff', '/undo', '/mcp')
+            '/attachments', '/show', '/edit', '/remove', '/cd', '/delete', '/clear', '/compact', '/fork', '/limits', '/diff', '/undo', '/mcp', '/skill')
 MCP_ACTIONS = ('check', 'tools', 'enable', 'disable', 'login', 'logout')
 SKIP = {'node_modules', 'build', 'dist', 'venv', '__pycache__'}
 
@@ -23,17 +23,28 @@ def allowed_path(root: str, relative: str) -> str | None:
 
 
 class InputCompleter(Completer):
-    def __init__(self, root, attachment_choices=lambda: (), mode=lambda: "remote", change_choices=lambda: (), mcp_choices=lambda: ()):
+    def __init__(self, root, attachment_choices=lambda: (), mode=lambda: "remote", change_choices=lambda: (), mcp_choices=lambda: (), skill_choices=lambda: ()):
         self.root = root
         self.attachment_choices = attachment_choices
         self.mode = mode
         self.change_choices = change_choices
         self.mcp_choices = mcp_choices
+        self.skill_choices = skill_choices
         self.snapshots = {}
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         action, separator, fragment = text.partition(' ')
+        if action == '/skill' and separator:
+            if '\n' in text:
+                return
+            words = text.split() + ([''] if text[-1].isspace() else [])
+            choices = ('list', 'use', 'off') if len(words) == 2 else (
+                sorted(self.skill_choices()) if len(words) == 3 and words[1] == 'use' else ())
+            for choice in choices:
+                if choice.startswith(words[-1]):
+                    yield Completion(choice, start_position=-len(words[-1]), display_meta='Skills')
+            return
         if action == '/mcp' and separator:
             if '\n' in text:
                 return
