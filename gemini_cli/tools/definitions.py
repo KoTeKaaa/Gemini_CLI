@@ -156,3 +156,16 @@ def affected_tests(files: List[str]) -> str:
 
 TOOLS["affected_tests"] = affected_tests
 CLIENT_NAMES = (*CLIENT_NAMES, "affected_tests")
+
+
+def git_read(action: str, files: List[str], staged: bool = False,
+             start_line: int = 1, end_line: int = 100) -> str:
+    """Read bounded Git status/diff/log/blame for explicitly selected relative files in workspace root.
+
+    Does not alter index or branch. Diff defaults to unstaged; staged=True reads the index diff.
+    """
+    return "Чтение Git запрошено"
+
+
+TOOLS["git_read"] = git_read
+CLIENT_NAMES = (*CLIENT_NAMES, "git_read")

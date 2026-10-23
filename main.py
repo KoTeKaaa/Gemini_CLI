@@ -55,6 +55,7 @@ from gemini_cli.tools.local.symbols import project_map
 from gemini_cli.tools.local.lsp_tools import python_lsp
 from gemini_cli.tools.local.test_runner import run_tests
 from gemini_cli.tools.local.affected import affected_tests
+from gemini_cli.tools.local.git_tools import git_read
 from gemini_cli.tools.local.files import read_files, write_files, read_file_lines
 from gemini_cli.tools.local.search import find_files, search_text
 from gemini_cli.tools.local.edit import replace_in_file
@@ -574,6 +575,8 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
     cancelled = state.cancelled.is_set if state else lambda: False
     monitor = (lambda: WorkInput(state)) if state else nullcontext
     handlers = {
+        "git_read": lambda args, cwd: json.dumps(git_read(
+            args, cwd, approve=confirm_content_scope, cancelled=cancelled, monitor=monitor), ensure_ascii=False),
         "affected_tests": lambda args, cwd: json.dumps(affected_tests(
             args, cwd, approve=confirm_content_scope), ensure_ascii=False),
         "run_tests": lambda args, cwd: json.dumps(run_tests(
