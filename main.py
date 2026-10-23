@@ -1,3 +1,10 @@
+import sys
+
+if __name__ == '__main__' and sys.argv[1:] == ['--document-worker']:
+    from gemini_cli.integrations.documents.worker import main as document_worker
+    document_worker()
+    raise SystemExit()
+
 from gemini_cli.runtime.history import trim_history
 from gemini_cli.client.file_attachment import attach_file
 from gemini_cli.client.completion import InputCompleter
@@ -16,7 +23,6 @@ from prompt_toolkit.filters import is_done
 from gemini_cli.protocol.images import encode_images
 from gemini_cli.runtime.attachments import attachment_text, bound_image_history, restore_images, MARKER
 import os
-import sys
 import json
 import ipaddress
 import tempfile
