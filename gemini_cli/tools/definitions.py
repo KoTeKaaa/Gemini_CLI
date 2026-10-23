@@ -143,3 +143,16 @@ def run_tests(modules: List[str], timeout: int = 120) -> str:
 
 TOOLS["run_tests"] = run_tests
 CLIENT_NAMES = (*CLIENT_NAMES, "run_tests")
+
+
+def affected_tests(files: List[str]) -> str:
+    """Suggest unittest modules from explicitly selected changed paths and transitive Python imports.
+
+    Suggestions are incomplete; configuration/dynamic dependencies require broader checks.
+    Never silently skip unknown affected checks or claim full coverage from this graph.
+    """
+    return "Подбор проверок запрошен"
+
+
+TOOLS["affected_tests"] = affected_tests
+CLIENT_NAMES = (*CLIENT_NAMES, "affected_tests")
