@@ -41,6 +41,26 @@ class WindowsJob:
             raise ctypes.WinError(ctypes.get_last_error())
         return code.value
 
+    def limit_memory(self, size: int) -> None:
+        class Basic(ctypes.Structure):
+            _fields_ = [('process_time', ctypes.c_int64), ('job_time', ctypes.c_int64),
+                        ('flags', wintypes.DWORD), ('minimum', ctypes.c_size_t),
+                        ('maximum', ctypes.c_size_t), ('active', wintypes.DWORD),
+                        ('affinity', ctypes.c_size_t), ('priority', wintypes.DWORD),
+                        ('scheduling', wintypes.DWORD)]
+        class Extended(ctypes.Structure):
+            _fields_ = [('basic', Basic), ('io', ctypes.c_uint64 * 6),
+                        ('process_memory', ctypes.c_size_t), ('job_memory', ctypes.c_size_t),
+                        ('peak_process', ctypes.c_size_t), ('peak_job', ctypes.c_size_t)]
+        info = Extended()
+        info.basic.flags = 0x100  # JOB_OBJECT_LIMIT_PROCESS_MEMORY
+        info.process_memory = size
+        api = self.api
+        api.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        api.SetInformationJobObject.restype = wintypes.BOOL
+        if not api.SetInformationJobObject(self.handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+
     def stop(self):
         if not self.handle or self.stopped:
             return

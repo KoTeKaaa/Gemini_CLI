@@ -14,6 +14,7 @@ class BlockServer(importlib.abc.MetaPathFinder):
         if fullname.split('.')[0] in {'main','server','fastapi','supabase','uvicorn'}:
             raise AssertionError('Server dependency: '+fullname)
 sys.meta_path.insert(0, BlockServer())
+from gemini_cli.integrations.mcp.manager import Manager
 from gemini_cli.backends.remote import RemoteBackend
 http=Mock(); http.get.return_value.status_code=503
 assert RemoteBackend('https://example.com', transport=http).get_chats() is None

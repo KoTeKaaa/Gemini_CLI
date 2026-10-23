@@ -10,10 +10,16 @@ TEXT_LIMIT = 24000
 
 def attach_file(draft, selection: str, root: str, *, snapshots: dict, approve) -> int | None:
     raw = selection.removeprefix('@')
+    document_path, _, document_selection = raw.partition('#')
+    if Path(document_path).suffix.casefold() in {'.pdf', '.docx', '.xlsx', '.csv'}:
+        from ..tools.local.document import attach_document
+        return attach_document(draft, document_path, document_selection, root, snapshots=snapshots, approve=approve)
     match = re.fullmatch(r'(.+):(\d+)(?:-(\d+))?', raw)
     if not match and re.search(r'(\[[:\d-]+\]|\s+\d+-\d+)$', raw):
         raise ValueError('Диапазон указывается без скобок и пробела: @file:1-20')
     relative = match[1] if match else raw
+    if Path(relative).suffix.casefold() in {'.pdf', '.docx', '.xlsx', '.csv'}:
+        raise ValueError('Документ требует #диапазон: @file.pdf#pages=1-3; /doc help')
     start, end = (int(match[2]), int(match[3] or match[2])) if match else (None, None)
     if start is not None and not 1 <= start <= end:
         raise ValueError('Диапазон строк начинается с 1 и не может быть обратным')

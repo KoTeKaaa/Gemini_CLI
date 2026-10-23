@@ -62,6 +62,7 @@ class RuntimePayloadTest(unittest.TestCase):
         install_runtime(repository, self.destination)
         self.assertTrue((self.destination / "gemini_cli/backends/model_info.py").is_file())
         self.assertFalse((self.destination / "gemini_cli/client").exists())
+        self.assertFalse((self.destination / "gemini_cli/integrations").exists())
         self.assertFalse((self.destination / "gemini_cli/backends/remote.py").exists())
         smoke = """
 import pathlib

@@ -8,6 +8,7 @@ from ..protocol.attachments import ImageAttachment, validate_batch
 @dataclass
 class Draft:
     text: str = ''
+    retry_pending: bool = field(default=False, repr=False)
     _items: dict[int, ImageAttachment | tuple[str, str] | PasteBlock] = field(default_factory=dict, repr=False)
     _next_number: int = 1
 
@@ -92,5 +93,6 @@ class Draft:
 
     def clear(self) -> None:
         self.text = ''
+        self.retry_pending = False
         self._items.clear()
         self._next_number = 1

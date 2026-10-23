@@ -1,0 +1,2 @@
+# Optional external Python language server; installed in a separate environment.
+python-lsp-server[rope,pyflakes]==1.15.0

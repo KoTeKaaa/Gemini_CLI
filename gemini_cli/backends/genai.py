@@ -9,6 +9,7 @@ from ..protocol.images import decode_images
 from ..runtime.attachments import missing_image_note
 from ..tools.definitions import TOOLS, LEGACY_NAMES, available_tools
 from ..protocol.limits import MAX_TOOL_CALLS, MAX_PROVIDER_WIRE_BYTES
+from ..protocol.skills import skill_instruction
 
 AGENT_INSTRUCTION = (
     "Ты — AI-ассистент разработчика с доступом к файловым инструментам и терминалу. "
@@ -19,6 +20,32 @@ AGENT_INSTRUCTION = (
 )
 
 
+class StreamProtocolError(ValueError):
+    """Нарушение локального контракта ответа с безопасным статическим текстом."""
+
+
+def provider_error_message(error: Exception) -> str:
+    if isinstance(error, StreamProtocolError):
+        return str(error)
+    code = getattr(error, "code", None)
+    if not isinstance(code, int):
+        code = getattr(getattr(error, "response", None), "status_code", None)
+    if code == 429 or getattr(error, "status", None) == "RESOURCE_EXHAUSTED":
+        return "Лимит Gemini исчерпан (HTTP 429). Повторите позже или выберите другую модель через /model."
+    if code in (401, 403):
+        return f"Gemini отказал в доступе (HTTP {code}). Проверьте ключ и права выбранной модели в /settings."
+    if code == 404:
+        return "Модель или ресурс Gemini недоступны (HTTP 404). Проверьте выбранную модель через /model."
+    if code == 400:
+        return "Gemini отклонил запрос (HTTP 400): проверьте совместимость модели, истории и инструментов."
+    if isinstance(code, int) and 500 <= code <= 599:
+        return f"Временная ошибка сервиса Gemini (HTTP {code}). Повторите позже; выполненные действия не повторяются автоматически."
+    if code == 408 or isinstance(error, (TimeoutError, ConnectionError)) or type(error).__name__ in {
+            "TimeoutException", "ReadTimeout", "ConnectTimeout", "ConnectError"}:
+        return "Соединение с Gemini прервано или истекло время ожидания. Ответ не получен; проверьте сеть."
+    return "Не удалось получить ответ Gemini: код причины не передан (ошибка SDK или неизвестный ответ провайдера)."
+
+
 def create_provider(api_key: str):
     from google import genai
     from google.genai import types
@@ -26,20 +53,34 @@ def create_provider(api_key: str):
         timeout=45000, retry_options=types.HttpRetryOptions(attempts=1)))
 
 
+def provider_tools(supported, permitted, mcp_tools=None):
+    from google.genai import types
+    from ..protocol.mcp import validate_declarations
+    dynamic = mcp_tools or []
+    validate_declarations(dynamic)
+    functions = available_tools(supported, permitted)
+    declarations = [types.FunctionDeclaration.from_callable_with_api_option(
+        callable=function, api_option="GEMINI_API") for function in functions]
+    declarations.extend(types.FunctionDeclaration(name=row["name"], description=row["description"],
+                        parameters_json_schema=row["parameters"]) for row in dynamic)
+    return [types.Tool(function_declarations=declarations)] if declarations else []
+
+
 def stream_events(client, *, model: str, contents, supported_tools=None,
-                  permitted_tools=None, cancelled=lambda: False):
+                  permitted_tools=None, cancelled=lambda: False, mcp_tools=None, skill_context=None):
     from google.genai import types
     permitted = set(TOOLS) if permitted_tools is None else set(permitted_tools)
     declared = permitted & set(LEGACY_NAMES if supported_tools is None else supported_tools)
+    declared |= {row["name"] for row in (mcp_tools or [])}
     response = None
     calls, text_size = [], 0
     try:
         if cancelled():
             return
         config = types.GenerateContentConfig(
-            tools=available_tools(supported_tools, permitted), max_output_tokens=8192,
+            tools=provider_tools(supported_tools, permitted, mcp_tools), max_output_tokens=8192,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-            system_instruction=AGENT_INSTRUCTION)
+            system_instruction=skill_instruction(AGENT_INSTRUCTION, skill_context))
         response = client.models.generate_content_stream(model=model, contents=contents, config=config)
         for chunk in response:
             if cancelled():
@@ -55,7 +96,7 @@ def stream_events(client, *, model: str, contents, supported_tools=None,
                                 "signature": base64.b64encode(signature).decode() if signature else None}).encode())
                              for call, signature in new_calls)
             if len(calls) > MAX_TOOL_CALLS or text_size > MAX_PROVIDER_WIRE_BYTES:
-                raise ValueError("Too many calls")
+                raise StreamProtocolError("Ответ Gemini превысил предел количества или размера вызовов инструментов.")
             texts = [part.text for part in parts if getattr(part, "text", None)
                      and not getattr(part, "thought", False)]
             if not parts and getattr(chunk, "text", None):
@@ -63,7 +104,7 @@ def stream_events(client, *, model: str, contents, supported_tools=None,
             for text in texts:
                 text_size += len(json.dumps({"type": "text", "content": text}).encode())
                 if text_size > MAX_PROVIDER_WIRE_BYTES:
-                    raise ValueError("Response too large")
+                    raise StreamProtocolError("Ответ Gemini превысил допустимый размер.")
                 yield {"type": "text", "content": text}
             usage = getattr(chunk, "usage_metadata", None)
             if usage:
@@ -73,15 +114,12 @@ def stream_events(client, *, model: str, contents, supported_tools=None,
             if cancelled():
                 return
             if call.name not in declared:
-                raise ValueError("Undeclared call")
+                raise StreamProtocolError("Gemini запросил инструмент, который не был разрешён в этом запросе.")
             yield {"type": "tool_call", "name": call.name, "args": call.args or {},
                    "call_id": getattr(call, "id", None),
                    "thought_signature": base64.b64encode(signature).decode("ascii") if signature else None}
     except Exception as error:
-        message = ("Лимит провайдера исчерпан. Попробуйте другую разрешённую модель."
-                   if "429" in str(error) or "ResourceExhausted" in str(error)
-                   else "Провайдер временно не смог обработать запрос")
-        yield {"type": "error", "content": message}
+        yield {"type": "error", "content": provider_error_message(error)}
     finally:
         close = getattr(response, "close", None)
         if close:

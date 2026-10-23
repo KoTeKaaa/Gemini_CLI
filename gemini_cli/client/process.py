@@ -39,7 +39,7 @@ class ProcessLog:
 
 
 class ManagedProcess:
-    def __init__(self, command, cwd, *, pty=False, env=None, limit=65536):
+    def __init__(self, command, cwd, *, pty=False, env=None, limit=65536, memory_limit=None):
         self.stdout, self.stderr = ProcessLog(limit), ProcessLog(limit)
         self.master = None
         self._closed = False
@@ -67,9 +67,13 @@ class ManagedProcess:
                 from .process_windows import WindowsJob
                 try:
                     self.job = WindowsJob(self.process.pid)
+                    if memory_limit is not None:
+                        self.job.limit_memory(memory_limit)
                 except BaseException:
                     self.process.kill()
                     self.process.wait()
+                    if hasattr(self, 'job'):
+                        self.job.close()
                     raise
             self._reader(self.process.stdout, self.stdout)
             self._reader(self.process.stderr, self.stderr)

@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+from runpy import run_path
 import subprocess
 import sys
 import tempfile
@@ -10,6 +11,12 @@ import tempfile
 
 def check(executable: Path) -> None:
     executable = executable.resolve(strict=True)
+    version_module = Path(__file__).resolve().parents[1] / 'gemini_cli' / '__init__.py'
+    expected_version = run_path(str(version_module))['__version__']
+    version = subprocess.run([str(executable), '--version'], capture_output=True,
+                             encoding='utf-8', timeout=45)
+    if version.returncode or version.stdout.strip() != f'Gemini CLI {expected_version}':
+        raise RuntimeError('Standalone executable reports an unexpected version')
     with tempfile.TemporaryDirectory(prefix="gemini-smoke-") as temporary:
         config = Path(temporary) / ".gemini_cli"
         config.mkdir()

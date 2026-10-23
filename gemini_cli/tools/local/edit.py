@@ -3,9 +3,9 @@
 from dataclasses import dataclass
 import difflib
 import os
+from contextlib import nullcontext
 
 from .workspace import plan_text_file, read_text_snapshot
-from .files import atomic_write_text
 from ..results import failure, success
 
 
@@ -43,24 +43,38 @@ def prepare_replacement(args: dict, current_dir: str, *, approve) -> Replacement
     return Replacement(root, path, expected, original, updated, diff)
 
 
-def apply_replacement(plan: Replacement) -> None:
-    def validate():
-        if read_text_snapshot(plan.root, plan.filepath, plan.expected) != plan.original:
-            raise ValueError("Файл изменился после предпросмотра")
-    validate()
-    atomic_write_text(plan.expected[0], plan.updated, newline="", validate=validate)
-
-
-def replace_in_file(args: dict, current_dir: str, *, approve, confirm_diff) -> dict:
+def replace_in_file(args: dict, current_dir: str, *, approve, confirm_diff, changes=None,
+                    cancelled=lambda: False, select=None, monitor=nullcontext) -> dict:
+    item = None
     try:
         plan = prepare_replacement(args, current_dir, approve=approve)
-        if not confirm_diff(plan.diff):
+        from .changes import ChangeSet
+        changes = changes or ChangeSet(current_dir)
+        item = changes.propose(plan.filepath, plan.updated)
+        if item.before.data != plan.original.encode("utf-8") or item.before.identity != plan.expected[1]:
+            raise ValueError("Файл изменился после предпросмотра")
+        if select is not None:
+            select(changes, [item])
+            if item.status == "skipped":
+                return failure("denied", "Замена не выбрана пользователем")
+        elif not confirm_diff(plan.diff):
+            item.status = "denied"
             return failure("denied", "Замена отклонена пользователем")
-        apply_replacement(plan)
+        if cancelled():
+            item.status = "skipped"
+            return failure("cancelled", "Ход отменён")
+        with monitor():
+            changes.write(item, cancelled=cancelled)
         return success({"filepath": plan.filepath, "changed": True})
     except (EOFError, KeyboardInterrupt):
+        if item is not None:
+            item.status = "denied"
         return failure("denied", "Замена прервана пользователем")
     except ValueError as error:
+        if item is not None:
+            item.status = "failed"
         return failure("not_applied", str(error))
     except OSError:
+        if item is not None:
+            item.status = "failed"
         return failure("write_failed", "Не удалось применить замену; проверьте файл")

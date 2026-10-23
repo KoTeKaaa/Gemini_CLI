@@ -5,7 +5,7 @@ server {
 
     ssl_certificate @CERT_FILE@;
     ssl_certificate_key @KEY_FILE@;
-    client_max_body_size 512k;
+    client_max_body_size 8m;
 
     location ~ ^/(admin|activate|activation|account|panel-static)(/|$) {
         return 404;

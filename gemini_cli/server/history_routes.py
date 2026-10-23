@@ -10,8 +10,10 @@ from pydantic import BaseModel, Field
 from .history_store import HistoryStore
 from .limits import SLOTS
 from ..backends.genai import AGENT_INSTRUCTION, to_gemini, stream_events
+from ..protocol.skills import skill_instruction
 from ..backends.model_info import model_info, count_context
 from ..protocol.images import validate_payload_images
+from ..protocol.mcp import MCP_FEATURE
 from ..runtime.context import select_context
 from ..runtime.context_info import estimate_context
 from ..runtime.compaction import run_compaction, completed_boundaries
@@ -85,14 +87,16 @@ def register_history_routes(app, *, get_user, provider, payload_model, authorize
             validate_payload_images(payload.model_dump())
             contents = to_gemini(selected(payload, user))
             client = provider()
-            from google.genai import types
-            functions = available_tools(payload.supported_tools, set(rights["features"]))
-            tools = ([types.Tool(function_declarations=[types.FunctionDeclaration.from_callable_with_api_option(
-                callable=function, api_option="GEMINI_API") for function in functions])] if functions else [])
+            from ..backends.genai import provider_tools
+            dynamic = getattr(payload, "mcp_tools", [])
+            if dynamic:
+                authorize(user, model=payload.model_name, features={MCP_FEATURE})
+            tools = provider_tools(payload.supported_tools, set(rights["features"]), dynamic)
             info = model_info(client, payload.model_name, ("server", id(client), user.user_id),
                               refresh=payload.refresh)
-            usage = count_context(client, payload.model_name, contents, AGENT_INSTRUCTION, tools) if payload.refresh else None
-            return estimate_context(contents, info, AGENT_INSTRUCTION, tools, measured_usage=usage)
+            instruction = skill_instruction(AGENT_INSTRUCTION, getattr(payload, 'skill_context', None))
+            usage = count_context(client, payload.model_name, contents, instruction, tools) if payload.refresh else None
+            return estimate_context(contents, info, instruction, tools, measured_usage=usage)
 
     @app.post("/chat/compact")
     def compact_chat(payload: CompactPayload, user=Depends(get_user)):

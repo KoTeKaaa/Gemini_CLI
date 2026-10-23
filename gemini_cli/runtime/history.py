@@ -4,7 +4,7 @@ import json
 from ..protocol.limits import MAX_TOOL_RESULT_WIRE_BYTES
 
 REDACTED_READ_RESULT = '{"status":"redacted","message":"Результат чтения файлов не сохраняется"}'
-PRIVATE_TOOLS = {"search_text", "read_file_lines", "replace_in_file"}
+PRIVATE_TOOLS = {"search_text", "read_file_lines", "replace_in_file", "read_document", "git_read", "git_commit"}
 SAFE_ARGUMENTS = {"filepath", "start_line", "end_line", "path"}
 
 
@@ -26,6 +26,8 @@ def bounded_tool_result(content: str, max_bytes=MAX_TOOL_RESULT_WIRE_BYTES) -> s
 
 def persistent_tool_message(role: str, name: str | None, content: str,
                             args: dict | None) -> tuple[str, dict | None]:
+    if isinstance(name, str) and name.startswith("mcp_") and role in {"model", "tool"}:
+        return '{"status":"redacted","message":"Содержимое MCP не сохраняется"}', {} if args is not None else None
     if name in PRIVATE_TOOLS and role in {"model", "tool"}:
         args = {key: value for key, value in (args or {}).items()
                 if key in SAFE_ARGUMENTS and isinstance(value, (str, int))}

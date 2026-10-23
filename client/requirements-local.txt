@@ -2,3 +2,5 @@
 google-genai==2.27.0
 keyring==25.7.0
 trafilatura==2.3.1
+
+-r requirements-mcp.txt

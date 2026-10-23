@@ -1,3 +1,15 @@
+import sys
+
+if __name__ == '__main__' and sys.argv[1:] == ['--version']:
+    from gemini_cli import __version__
+    print(f'Gemini CLI {__version__}')
+    raise SystemExit()
+
+if __name__ == '__main__' and sys.argv[1:] == ['--document-worker']:
+    from gemini_cli.integrations.documents.worker import main as document_worker
+    document_worker()
+    raise SystemExit()
+
 from gemini_cli.runtime.history import trim_history
 from gemini_cli.client.file_attachment import attach_file
 from gemini_cli.client.completion import InputCompleter
@@ -8,13 +20,18 @@ from gemini_cli.client.chat_buffers import ChatBuffers, filter_chats
 from gemini_cli.client.shell import launch_shell
 from gemini_cli.client.work_input import WorkInput
 from gemini_cli.client.work_view import WorkView
+from gemini_cli.client.change_view import handle_change_command
+from gemini_cli.client.quota_view import PromptStatus, status_line, limits_text, value
+from prompt_toolkit.layout import ConditionalContainer, Window
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.filters import is_done
 from gemini_cli.protocol.images import encode_images
 from gemini_cli.runtime.attachments import attachment_text, bound_image_history, restore_images, MARKER
 import os
-import sys
 import json
 import ipaddress
 import tempfile
+from contextlib import nullcontext
 from uuid import uuid4
 from pathlib import Path
 from typing import Optional, Dict, List, Any
@@ -45,9 +62,18 @@ from datetime import datetime
 
 from gemini_cli.client.tool_runner import execute_tool_calls as run_tool_calls
 from gemini_cli.tools.local.command import execute_command
+from gemini_cli.tools.local.symbols import project_map
+from gemini_cli.tools.local.lsp_tools import python_lsp
+from gemini_cli.tools.local.test_runner import run_tests
+from gemini_cli.tools.local.affected import affected_tests
+from gemini_cli.tools.local.git_tools import git_read
+from gemini_cli.tools.local.git_commit import git_commit
+from gemini_cli.tools.local.document import read_document
 from gemini_cli.tools.local.files import read_files, write_files, read_file_lines
 from gemini_cli.tools.local.search import find_files, search_text
 from gemini_cli.tools.local.edit import replace_in_file
+from gemini_cli.tools.local.changes import ChangeSet, ChangeHistory
+from gemini_cli.tools.local.checkpoints import CheckpointStore
 from gemini_cli.tools.definitions import CLIENT_NAMES
 from gemini_cli.client.web_tools import ToolTurn
 from gemini_cli.client.terminal import configure_output
@@ -79,6 +105,9 @@ logger = logging.getLogger("gemini_cli")
 
 my_style = Style.from_dict({
     "": "ansibrightgreen",
+    "status-line": "noinherit fg:#9ca3af bg:default",
+    "status-rule": "noinherit fg:#4b5563 bg:default",
+    "prompt": "noinherit fg:#60a5fa bg:default",
 })
 
 bindings = KeyBindings()
@@ -200,10 +229,10 @@ def confirm_file_read(readable: list[tuple[str, str]]) -> bool:
         return False
 
 
-def confirm_replacement(diff: str) -> bool:
-    console.print(Text(diff))
+def confirm_replacement(path: str) -> bool:
+    console.print(result_panel(f"Изменить файл: {safe_label(path)}", title="Запись файла"))
     try:
-        return input("Применить показанный diff? (y/n): ").strip().lower() == "y"
+        return input("Применить замену? (y/n): ").strip().lower() == "y"
     except (EOFError, KeyboardInterrupt):
         return False
 
@@ -218,14 +247,9 @@ def confirm_file_write(files: list[dict]) -> bool:
     table.add_column("Размер (символов)", style="magenta")
 
     for f in files:
-        table.add_row(f.get("filepath", "unknown"), str(len(f.get("content", ""))))
+        table.add_row(Text(safe_label(f.get("filepath", "unknown"))), str(len(f.get("content", ""))))
 
     console.print(table)
-
-    for f in files:
-        filepath = f.get("filepath", "unknown")
-        content = f.get("content", "")
-        console.print(Panel(content, title=f"📝 Предпросмотр: {filepath}", border_style="blue", expand=True))
 
     console.print("")
     confirm = input("Разрешить создание/модификацию этих файлов? (y/n): ").strip().lower()
@@ -237,9 +261,23 @@ def confirm_file_write(files: list[dict]) -> bool:
     return True
 
 
-def handle_write_files(args: dict, current_dir: str) -> str:
+def handle_write_files(args: dict, current_dir: str, *, changes=None, cancelled=lambda: False,
+                       monitor=nullcontext) -> str:
     return write_files(args, current_dir, approve=confirm_file_write,
-                       notify=console.print, logger=logger)
+                       notify=lambda text: console.print(Text(safe_label(text))), logger=logger, changes=changes,
+                       cancelled=cancelled, monitor=monitor)
+
+
+def confirm_development_write(files: list[dict]) -> bool:
+    from gemini_cli.client.paste import view_text
+    view_text("\n\n".join(f['filepath'] + "\n" + f['content'] for f in files))
+    return confirm_content_scope("Применить просмотренные изменения разработки?")
+
+
+def confirm_development_action(text: str) -> bool:
+    from gemini_cli.client.paste import view_text
+    view_text(text)
+    return confirm_content_scope("Выполнить просмотренное действие разработки?")
 
 
 def confirm_command(command: str) -> bool:
@@ -308,6 +346,7 @@ def show_chat_menu(client: Backend, current_id=None, recent_ids=(), query="") ->
     db_chats = client.get_chats()
     if db_chats is None:
         return None
+    client.chat_titles = {chat["id"]: chat["title"] for chat in db_chats}
     while True:
         values = [("temporary", "Войти во временный чат"),
                   ("new", "+ Создать новую комнату диалога"),
@@ -329,6 +368,7 @@ def show_chat_menu(client: Backend, current_id=None, recent_ids=(), query="") ->
             title = input("Введите название нового чата: ").strip() or "Новый диалог"
             new_chat = client.create_chat(title)
             if new_chat:
+                client.chat_titles[new_chat["id"]] = new_chat.get("title", title)
                 return new_chat["id"], False
             console.print(result_panel("Не удалось создать чат.", title="Чаты", error=True))
             return None
@@ -368,6 +408,20 @@ def context_payload(history, chat_id, model, summary=None):
     if summary:
         payload.update(summary=summary.get("summary"),
                        summary_boundary=summary.get("boundary_id"))
+    return payload
+
+
+def status_context_payload(history, chat_id, model, summary=None, *, mcp=None, skill=None):
+    payload = context_payload(history, chat_id, model, summary)
+    # Use the actual next-turn policy, including history/wire thresholds,
+    # without transmitting a hypothetical message or the unsent draft.
+    preview = build_stream_payload([*history, {"role": "user", "content": ""}],
+                                   chat_id, model, chat_id is None, summary=summary, mcp=mcp, skill=skill)
+    payload["supported_tools"] = preview["supported_tools"]
+    if preview.get("mcp_tools"):
+        payload["mcp_tools"] = preview["mcp_tools"]
+    if preview.get('skill_context'):
+        payload['skill_context'] = preview['skill_context']
     return payload
 
 
@@ -480,7 +534,7 @@ def show_model_selection_menu(current_model: str) -> str:
 
 def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
                          model_name: str, is_temporary: bool, turn: ToolTurn | None = None,
-                         *, end_tool_turn: bool = False, summary=None) -> Dict[str, Any]:
+                         *, end_tool_turn: bool = False, summary=None, mcp=None, skill=None) -> Dict[str, Any]:
     history = context_wire_history(history, summary, strict=is_temporary)
     if not is_temporary and len(history) > 1000:
         if history[-1].get("role") == "tool":
@@ -511,25 +565,61 @@ def build_stream_payload(history: List[Dict[str, Any]], chat_id: Optional[str],
         payload["images"] = history[-1]["images"]
     if summary:
         payload.update(summary=summary.get("summary"), summary_boundary=summary.get("boundary_id"))
+    if skill is not None:
+        from gemini_cli.protocol.skills import validate_skill
+        validate_skill(skill)
+        payload['skill_context'] = dict(skill)
     text_payload = {key: value for key, value in payload.items() if key != "images"}
     if "history" in text_payload:
         text_payload["history"] = [{key: value for key, value in row.items() if key != "images"}
                                    for row in text_payload["history"]]
     if len(history) > TOOLS_HISTORY_THRESHOLD or len(json.dumps(text_payload).encode()) > TOOLS_WIRE_THRESHOLD:
         payload["supported_tools"] = []
+    if mcp is not None and payload["supported_tools"]:
+        declarations = mcp.declarations()
+        if declarations:
+            payload["mcp_tools"] = declarations
+            payload["supported_tools"].extend(row["name"] for row in declarations)
     return payload
 
 
 def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str, Any]],
-                       current_dir: str, *, turn: ToolTurn | None = None, api_client: Backend | None = None, state=None) -> None:
+                       current_dir: str, *, turn: ToolTurn | None = None, api_client: Backend | None = None, state=None, mcp=None) -> None:
+    changes = getattr(state, "changes", None)
+    if changes is None:
+        changes = ChangeSet(current_dir, getattr(state, "turn_id", ""),
+                            store=CheckpointStore(Path(CONFIG_DIR) / "checkpoints"))
+        if state is not None:
+            state.changes = changes
+    cancelled = state.cancelled.is_set if state else lambda: False
+    monitor = (lambda: WorkInput(state)) if state else nullcontext
     handlers = {
+        "read_document": lambda args, cwd: json.dumps(read_document(
+            args, cwd, approve=confirm_content_scope, cancelled=cancelled, monitor=monitor), ensure_ascii=False),
+        "git_commit": lambda args, cwd: json.dumps(git_commit(
+            args, cwd, approve=confirm_development_action, cancelled=cancelled, monitor=monitor), ensure_ascii=False),
+        "git_read": lambda args, cwd: json.dumps(git_read(
+            args, cwd, approve=confirm_content_scope, cancelled=cancelled, monitor=monitor), ensure_ascii=False),
+        "affected_tests": lambda args, cwd: json.dumps(affected_tests(
+            args, cwd, approve=confirm_content_scope), ensure_ascii=False),
+        "run_tests": lambda args, cwd: json.dumps(run_tests(
+            args, cwd, approve=confirm_content_scope, cancelled=cancelled, monitor=monitor,
+            on_process=getattr(getattr(state, "view", None), "set_process", None)), ensure_ascii=False),
+        "python_lsp": lambda args, cwd: json.dumps(python_lsp(
+            args, cwd, approve=confirm_content_scope, cancelled=cancelled, changes=changes,
+            confirm_write=confirm_development_write, monitor=monitor), ensure_ascii=False),
+        "python_symbols": lambda args, cwd: json.dumps(project_map(
+            cwd, approve=confirm_content_scope, query=args.get("query", "")), ensure_ascii=False),
         "read_local_files": handle_read_files,
-        "write_local_files": handle_write_files,
+        "write_local_files": lambda args, cwd: handle_write_files(args, cwd, changes=changes,
+                                                                 cancelled=cancelled, monitor=monitor),
         "execute_command": (handle_execute_command if state is None else
                             lambda args, cwd: handle_execute_command(args, cwd, state=state)),
         "find_files": lambda args, cwd: json.dumps(find_files(args, cwd), ensure_ascii=False),
         "replace_in_file": lambda args, cwd: json.dumps(replace_in_file(
-            args, cwd, approve=confirm_content_scope, confirm_diff=confirm_replacement), ensure_ascii=False),
+            args, cwd, approve=confirm_content_scope,
+            confirm_diff=lambda _: confirm_replacement(args.get("filepath", "")),
+            changes=changes, cancelled=cancelled, monitor=monitor), ensure_ascii=False),
         "read_file_lines": lambda args, cwd: json.dumps(read_file_lines(args, cwd, approve=confirm_content_scope),
                                                          ensure_ascii=False),
         "search_text": lambda args, cwd: json.dumps(search_text(args, cwd, approve=confirm_content_scope),
@@ -551,6 +641,22 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
             return result
         handlers["web_search"] = lambda args, _cwd: web_handler("search", args)
         handlers["read_url"] = lambda args, _cwd: web_handler("read", args)
+    if mcp is not None:
+        from gemini_cli.client.mcp_commands import approve_call
+        def approve(server, original, values):
+            return approve_call(console, server, original, values)
+        def invoke(operation):
+            with (state.view.monitor() if state is not None and hasattr(state, "view") else monitor()):
+                return operation()
+        def mcp_handler(name, args):
+            return mcp.call(name, args, approve=approve, cancelled=cancelled, invoke=invoke)
+        for declaration in mcp.declarations():
+            name = declaration["name"]
+            handlers[name] = lambda args, _cwd, name=name: mcp_handler(name, args)
+        from gemini_cli.integrations.github_pr import github_pr
+        handlers['github_pr'] = lambda args, cwd: json.dumps(github_pr(
+            args, cwd, manager=mcp, approve=approve, cancelled=cancelled,
+            invoke=invoke, monitor=monitor), ensure_ascii=False)
     run_tool_calls(tool_calls, history, current_dir, handlers=handlers, logger=logger, state=state)
 
 
@@ -653,7 +759,32 @@ def main(backend: Backend | None = None):
 
     draft = Draft()
     draft_input = DraftInput(draft)
-    completer = InputCompleter(lambda: current_dir, attachment_choices=lambda: [
+    file_changes = {}
+    mcp_managers = {}
+    from gemini_cli.client.skill_commands import Selection
+    from gemini_cli.client.skill_resources import choices as skill_resource_choices
+    skill_selection = Selection(Path(CONFIG_DIR) / 'skills.json')
+    def active_skill():
+        return skill_selection.bind((backend_identity(api_client), chat_id, os.path.realpath(current_dir)))
+    def active_mcp():
+        from gemini_cli.integrations.mcp.manager import Manager
+        identity = backend_identity(api_client)
+        if identity not in mcp_managers:
+            mcp_managers[identity] = Manager(Path(CONFIG_DIR), identity)
+        return mcp_managers[identity]
+    def active_changes():
+        return file_changes.get((backend_identity(api_client), chat_id, os.path.realpath(current_dir)))
+    def mcp_choices():
+        try:
+            return tuple(active_mcp().connections)
+        except (ValueError, OSError):
+            return ()
+    completer = InputCompleter(lambda: current_dir, mode=lambda: api_client.mode,
+                              mcp_choices=mcp_choices,
+                              skill_choices=lambda: active_skill().choices(),
+                              skill_resources=lambda action, fragment: skill_resource_choices(active_skill(), action, fragment),
+                              change_choices=lambda: list(active_changes().active_files()) if active_changes() else (),
+                              attachment_choices=lambda: [
         (number, draft_input.describe(number, item)) for number, item in draft.items()])
     session = PromptSession(completer=completer, complete_while_typing=True,
                             key_bindings=merge_key_bindings([bindings, draft_input.bindings]),
@@ -662,6 +793,33 @@ def main(backend: Backend | None = None):
     temporary_history: List[Dict[str, str]] = []
     buffers, states, summary = ChatBuffers(), {}, None
     auto_attempts = {}
+    prompt_status = PromptStatus()
+    def input_status():
+        info = prompt_status.context
+        tokens, limit = info.get("input_tokens"), info.get("input_token_limit")
+        text = session.default_buffer.text
+        # Only a local estimate of the unsent draft; no clipboard bytes or
+        # unconfirmed text is transmitted by the status display.
+        if draft.images or tokens is None:
+            context = "—"
+        else:
+            try:
+                draft_text = draft.message(text)
+                tokens += (len(draft_text) + 3) // 4
+                context = "≈" + (f"{100 * tokens / limit:.0f}%" if limit else value(tokens) + "/—")
+            except ValueError:
+                context = "—"
+        titles = getattr(api_client, "chat_titles", {})
+        title = "Временный" if is_temporary else (titles.get(chat_id, "Чат") if isinstance(titles, dict) else "Чат")
+        width = session.app.output.get_size().columns
+        selected = active_skill().skill
+        skill_label = ('skill ' + selected.name[:max(1, min(24, width // 3))] + ' · ') if selected else ''
+        line = skill_label + status_line(current_dir, current_model, api_client.mode, title, context,
+                                        prompt_status.data, max(0, width - len(skill_label)))
+        return [("class:status-rule", "─" * max(0, width) + "\n"),
+                ("class:status-line", line)]
+    session.layout.container.children.insert(0, ConditionalContainer(
+        Window(FormattedTextControl(input_status), height=2), filter=~is_done))
     buffers.visit(backend_identity(api_client), chat_id)
     if not is_temporary:
         try:
@@ -715,17 +873,28 @@ def main(backend: Backend | None = None):
                 if not api_client.login():
                     break
             draft_input.take_notice()
-            dir_name = os.path.basename(current_dir) or current_dir
-            prompt_text = f" {dir_name} › "
-            user_input = session.prompt(HTML(
-                f"<ansiblue>[{api_client.mode} · {current_model}]</ansiblue>"
-                f"<ansigray>{prompt_text}</ansigray>"
-            ), default=draft.text)
+            try:
+                status_payload = status_context_payload(temporary_history, chat_id, current_model, summary,
+                                                        mcp=active_mcp(), skill=active_skill().payload())
+                from hashlib import sha256
+                status_key = (backend_identity(api_client), current_model, chat_id,
+                              sha256(json.dumps(status_payload, sort_keys=True).encode()).digest())
+                prompt_status.update(api_client, status_key, current_model, status_payload, session.app.invalidate)
+            except ValueError:
+                prompt_status.context = {}
+            user_input = session.prompt(HTML('<style class="prompt"> › </style>'), default=draft.text)
 
             if not user_input.strip():
+                draft.text = ""
+                draft.retry_pending = False
                 continue
 
             first_line = user_input.strip().split("\n")[0]
+            if draft.retry_pending and (first_line.startswith("/") or user_input.startswith("@")):
+                # The user replaced the composer with a local action. Do not
+                # restore the old failed request after the action completes.
+                draft.text = ""
+                draft.retry_pending = False
             if first_line.lower() in ["выход", "exit", "quit", "q", "й"]:
                 console.print("[bold red]Рад был помочь![/bold red]")
                 break
@@ -753,6 +922,8 @@ def main(backend: Backend | None = None):
                 table.add_column("Описание", style="white")
 
                 table.add_row("/show 1, /edit 1", "Просмотр вложения #1 (изображение — в приложении ОС); изменение текста")
+                if api_client.mode == "remote":
+                    table.add_row("/limits [refresh]", "Бюджет подписки сервиса; пример: /limits refresh")
                 table.add_row("Ctrl+V, /paste", "Прикрепить скриншот из буфера")
                 table.add_row("@file", "Добавить файл целиком в черновик; отправка отдельным сообщением")
                 table.add_row("@file:1-20", "Прикрепить строки с 1 по 20 включительно (без скобок)")
@@ -762,7 +933,13 @@ def main(backend: Backend | None = None):
                 table.add_row("/show, /edit", "Без номера: выбрать единственное вложение или показать список")
                 table.add_row("/remove", "Показать номера для выбора; без номера ничего не удаляет")
                 table.add_row("/help", "Показать эту справку")
+                table.add_row("/diff [путь]", "Список правок чата или diff файла; пример: /diff src/file.py")
+                table.add_row("/undo [путь]", "Список правок или откат файла; пример: /undo src/file.py")
                 table.add_row("/model", "Сменить ИИ модель")
+                table.add_row("/mcp", "Подключения MCP; /mcp help — гайд для первого подключения")
+                table.add_row('/skill', 'Навыки; /skill help — гайд по созданию и использованию')
+                table.add_row('/dev help', 'Код, LSP, тесты, Git и PR; настройка и примеры')
+                table.add_row('/doc help', 'Диапазоны PDF/DOCX/CSV/XLSX; пример @report.pdf#pages=1-3')
                 table.add_row("/settings", "Local/Remote, сервер и личные ключи")
                 table.add_row("/chat", "Сменить или создать комнату диалога")
                 table.add_row("/clear", "Очистить временный чат и его черновик; постоянный чат сохраняется")
@@ -775,6 +952,9 @@ def main(backend: Backend | None = None):
                 table.add_row("exit, quit, q", "Выход из приложения")
 
                 console.print(Panel(table, title="[bold green]Справка[/bold green]", expand=False))
+                continue
+
+            if handle_change_command(user_input, active_changes(), console):
                 continue
 
             if first_line.split()[0] == "/term":
@@ -790,6 +970,67 @@ def main(backend: Backend | None = None):
                     console.print(result_panel(str(exc), title="Терминал", error=True))
                 continue
 
+            if first_line.split()[0] == "/limits" and api_client.mode == "remote":
+                if user_input.strip() not in {"/limits", "/limits refresh"}:
+                    console.print(result_panel("Использование: /limits или /limits refresh. Пример: /limits refresh.",
+                                               title="Подписка", error=True))
+                    continue
+                state = TurnState()
+                state.view = WorkView(console, state)
+                try:
+                    with state.view.monitor():
+                        data = run_cancellable(lambda: api_client.limits(current_model,
+                                               refresh=user_input.strip().endswith(" refresh")), state)
+                    prompt_status.data = data
+                    console.print(result_panel(limits_text(data), title="Подписка"))
+                except Exception:
+                    console.print(result_panel("Бюджет подписки недоступен. Пример: /limits refresh.",
+                                               title="Подписка", error=True))
+                finally:
+                    state.finish()
+                continue
+
+            if first_line.strip().split(" ", 1)[0] == '/doc':
+                from gemini_cli.client.document_help import command as document_command
+                from gemini_cli.client.paste import view_text
+                document_command(user_input, console=console, viewer=view_text)
+                continue
+
+            if first_line.strip().split(" ", 1)[0] == '/dev':
+                from gemini_cli.client.development_help import command as development_command
+                from gemini_cli.client.paste import view_text
+                development_command(user_input, console=console, viewer=view_text)
+                continue
+
+            if first_line.strip().split(" ", 1)[0] == '/skill':
+                from gemini_cli.client.skill_commands import command as skill_command
+                from gemini_cli.client.skill_resources import run as run_skill
+                from gemini_cli.client.paste import view_text
+                def run_selected_skill(selection, relative):
+                    state = TurnState()
+                    view = WorkView(console, state)
+                    view.spinner.text = 'Выполнение скрипта навыка...'
+                    def approve(label):
+                        console.print(Text(label + '\nВнешние действия скрипта не откатываются через /undo.'))
+                        try:
+                            return PromptSession(input=session.input, output=session.output).prompt(
+                                'Запустить просмотренный скрипт? (y/n): ').strip().lower() == 'y'
+                        except (EOFError, KeyboardInterrupt):
+                            return False
+                    return run_skill(selection, relative, current_dir, approve=approve,
+                                     cancelled=state.cancelled.is_set, on_process=view.set_process,
+                                     monitor=view.monitor, notify=lambda _: None)
+                skill_command(first_line, active_skill(), console=console, viewer=view_text,
+                              run_script=run_selected_skill)
+                continue
+            if first_line.strip().split(" ", 1)[0] == "/mcp":
+                from gemini_cli.client.mcp_commands import command, prompt_secret
+                try:
+                    command(first_line, manager_factory=active_mcp, console=console,
+                            read_secret=lambda label: prompt_secret(label, input=session.input, output=session.output))
+                except ValueError:
+                    console.print(result_panel("MCP: неверный приватный mcp.json", title="MCP", error=True))
+                continue
             if first_line.strip() == "/settings":
                 if settings is None:
                     console.print("Настройки недоступны для внедрённого backend")
@@ -873,6 +1114,7 @@ def main(backend: Backend | None = None):
                     console.print(result_panel("/clear доступна без аргументов только во временном чате.", title="Контекст", error=True))
                 else:
                     apply_buffer(buffers.clear_temporary(backend_identity(api_client)))
+                    active_skill().clear()
                     console.print(result_panel("Временный контекст и черновик очищены.", title="Контекст"))
                 continue
 
@@ -934,7 +1176,8 @@ def main(backend: Backend | None = None):
                 console.print(Text(str(error)))
                 continue
             try:
-                preview = build_stream_payload(temporary_history + [row], chat_id, current_model, is_temporary, summary=summary)
+                preview = build_stream_payload(temporary_history + [row], chat_id, current_model, is_temporary,
+                                               summary=summary, mcp=active_mcp(), skill=active_skill().payload())
             except ValueError as error:
                 console.print(result_panel(str(error), title="Контекст", error=True))
                 continue
@@ -964,6 +1207,15 @@ def main(backend: Backend | None = None):
                     pass  # Unavailable provider metadata must not invent model limits.
             state = TurnState()
             row.update(id=str(uuid4()), turn_id=state.turn_id, status="running")
+            changes_key = (backend_identity(api_client), chat_id, os.path.realpath(current_dir))
+            if changes_key not in file_changes:
+                if len(file_changes) >= 8:
+                    console.print(result_panel("Журнал хранит до 8 чатов/папок; самый старый журнал освобождён.", title="Файловые правки"))
+                    file_changes.pop(next(iter(file_changes)))
+                file_changes[changes_key] = ChangeHistory(current_dir,
+                    store=CheckpointStore(Path(CONFIG_DIR) / "checkpoints"))
+            journal = file_changes[changes_key]
+            state.changes = journal.begin_turn(state.turn_id)
             console.print("\n[bold cyan]Gemini:[/bold cyan]")
             temporary_history.append(row)
             bound_image_history(temporary_history)
@@ -976,7 +1228,8 @@ def main(backend: Backend | None = None):
                 ending = tool_rounds > 12
                 try:
                     payload = build_stream_payload(temporary_history, chat_id, current_model, is_temporary, turn,
-                                                   end_tool_turn=ending, summary=summary)
+                                                   end_tool_turn=ending, summary=summary, mcp=active_mcp(),
+                                                   skill=active_skill().payload())
                 except ValueError as error:
                     console.print(result_panel(str(error), title="Контекст", error=True))
                     break
@@ -990,10 +1243,15 @@ def main(backend: Backend | None = None):
                 except InterruptedError:
                     break
                 except Exception:
-                    console.print(Text("Соединение прервано. Черновик сохранён; повторите отправку."))
+                    notice = ("Черновик сохранён; повторите отправку." if draft.text or draft.items()
+                              else "Запрос остаётся в истории; уже выполненные действия не повторяются автоматически.")
+                    console.print(Text("Соединение прервано. " + notice))
                     break
 
                 if response.status_code == 200:
+                    # Once the backend accepts the turn, it is sent history,
+                    # not an unsent draft (even if a later tool continuation fails).
+                    draft.clear()
                     full_response, tool_calls_received = display_stream_response(
                         response, has_pending_tool, state)
 
@@ -1005,7 +1263,7 @@ def main(backend: Backend | None = None):
                             temporary_history.append({"role": "model", "content": full_response, "id": str(uuid4()),
                                                   "turn_id": state.turn_id, "status": "running"})
                         execute_tool_calls(tool_calls_received, temporary_history, current_dir,
-                                           turn=turn, api_client=api_client, state=state)
+                                           turn=turn, api_client=api_client, state=state, mcp=active_mcp())
                         if state.cancelled.is_set():
                             break
                         console.print("[dim]Передаю результаты выполнения обратно на сервер...[/dim]")
@@ -1015,7 +1273,6 @@ def main(backend: Backend | None = None):
                         console.rule(style="dim #4285F4")
                         temporary_history.append({"role": "model", "content": full_response, "id": str(uuid4()),
                                                   "turn_id": state.turn_id, "status": "running"})
-                        draft.clear()
                         state.finish()
                         break
 
@@ -1034,12 +1291,20 @@ def main(backend: Backend | None = None):
 
             if state.cancelled.is_set():
                 row["status"] = "cancelled"
-                console.print(Text("Ход отменён. Выполненные действия и расход квоты не откатываются. Черновик сохранён."))
+                notice = ("Черновик сохранён." if draft.text or draft.items()
+                          else "Отправленный запрос остаётся в истории.")
+                console.print(Text("Ход отменён. Выполненные действия и расход квоты не откатываются. " + notice))
             else:
                 state.finish("failed")
+            if state.status != "completed" and draft.text:
+                draft.retry_pending = True
             for event in temporary_history:
                 if event.get("turn_id") == state.turn_id:
                     event["status"] = state.status
+            if state.changes.entries:
+                console.print(result_panel(state.changes.summary() + "\n/diff — список · /diff путь — просмотр · /undo путь — откат файла", title="Файловые правки"))
+            if journal.trim():
+                console.print(result_panel("Старые ходы освобождены: журнал ограничен 32 ходами с правками и 64 МиБ.", title="Файловые правки"))
             remember()
 
         except KeyboardInterrupt:
@@ -1051,6 +1316,8 @@ def main(backend: Backend | None = None):
             break
 
 
+    for manager in mcp_managers.values():
+        manager.close()
     preview_warning = draft_input.close()
     if preview_warning:
         console.print(Text(preview_warning))

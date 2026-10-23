@@ -142,10 +142,10 @@ class FileSandboxTest(unittest.TestCase):
         ]
         with patch.object(self.client.console, "print"), patch("builtins.input", return_value="y"):
             result = json.loads(self.client.handle_write_files({"files": files}, str(self.base)))
-        self.assertEqual([item["status"] for item in result[:2]], ["Успешно записан"] * 2)
-        self.assertEqual([item["status"] for item in result[2:]], ["Заблокировано песочницей"] * 3)
+        self.assertEqual(result[0]["status"], "Успешно записан")
+        self.assertTrue(all("Ошибка" in item["status"] for item in result[1:]))
         self.assertEqual((self.base / "new.txt").read_text(encoding="utf-8"), "new")
-        self.assertEqual((self.base / "inside.txt").read_text(encoding="utf-8"), "changed")
+        self.assertEqual((self.base / "inside.txt").read_text(encoding="utf-8"), "inside")
         self.assertEqual((self.sibling / "outside.txt").read_text(encoding="utf-8"), "outside")
         self.assertFalse((self.sibling / "new.txt").exists())
 
@@ -198,8 +198,8 @@ class FileSandboxTest(unittest.TestCase):
         write.assert_not_called()
         self.assertIn("отклонена пользователем", result["error"])
         self.assertEqual((self.base / "inside.txt").read_text(), "inside")
-        self.assertTrue(any(getattr(call.args[0], "renderable", None) == "replacement"
-                            for call in printed.call_args_list if call.args))
+        self.assertFalse(any(getattr(call.args[0], "renderable", None) == "replacement"
+                             for call in printed.call_args_list if call.args))
 
     @unittest.skipUnless(os.name == "posix", "POSIX permission bits")
     def test_write_preserves_existing_permissions(self):

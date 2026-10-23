@@ -27,7 +27,7 @@ def expand_blocks(text: str, blocks: list[PasteBlock]) -> str:
     return re.sub('|'.join(re.escape(token) for token in mapping), lambda match: mapping[match[0]], text)
 
 
-def view_text(text: str) -> None:
+def view_text(text: str, *, title='Вставка: Esc — закрыть') -> None:
     from prompt_toolkit.application import Application
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.layout import Layout
@@ -38,7 +38,7 @@ def view_text(text: str) -> None:
     def close(event):
         event.app.exit()
     area = TextArea(text=text, read_only=True, scrollbar=True, wrap_lines=True)
-    Application(layout=Layout(Frame(area, title='Вставка: Esc — закрыть')),
+    Application(layout=Layout(Frame(area, title=title)),
                 key_bindings=bindings, full_screen=True).run()
 
 

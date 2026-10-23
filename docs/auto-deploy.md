@@ -36,7 +36,7 @@ sudo python3 deploy/enable_autodeploy.py --repository OWNER/REPOSITORY
 он не заменяется автоматически вместе с runtime. Перед слиянием выпуска повторите
 `enable_autodeploy.py --repository OWNER/REPOSITORY` из проверенной актуальной копии.
 Установщик использует deploy-lock и сохраняет текущий API и `server.env`.
-Это требуется для S4: упаковщик должен включать `backends/model_info.py`.
+Bundle должен включать все модули, которые нужны обновлённому серверу.
 
 ## Выкладка и откат
 

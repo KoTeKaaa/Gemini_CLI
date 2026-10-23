@@ -1,11 +1,15 @@
 """Подсказки без чтения содержимого и без обхода workspace."""
 
 import os
+import shlex
 from prompt_toolkit.completion import Completer, Completion
 from ..tools.local.workspace import resolve_safe_path, is_sensitive_read_path, plan_text_file
 
 COMMANDS = ('/help', '/model', '/chat', '/settings', '/term', '/paste',
-            '/attachments', '/show', '/edit', '/remove', '/cd', '/delete', '/clear', '/compact', '/fork')
+            '/attachments', '/show', '/edit', '/remove', '/cd', '/delete', '/clear', '/compact', '/fork', '/limits', '/diff', '/undo', '/mcp', '/skill', '/dev', '/doc')
+DOCUMENT_RANGES = {'.pdf': ('pages=1', 'pages=1-3'), '.docx': ('paragraphs=1', 'sections=1', 'tables=1'),
+                   '.csv': ('cells=A1:C10',), '.xlsx': ('sheets=list', 'sheet=Лист1&cells=A1:C10')}
+MCP_ACTIONS = ('check', 'tools', 'enable', 'disable', 'login', 'logout')
 SKIP = {'node_modules', 'build', 'dist', 'venv', '__pycache__'}
 
 
@@ -22,14 +26,73 @@ def allowed_path(root: str, relative: str) -> str | None:
 
 
 class InputCompleter(Completer):
-    def __init__(self, root, attachment_choices=lambda: ()):
+    def __init__(self, root, attachment_choices=lambda: (), mode=lambda: "remote", change_choices=lambda: (), mcp_choices=lambda: (), skill_choices=lambda: (), skill_resources=lambda _action, _fragment: ()):
         self.root = root
         self.attachment_choices = attachment_choices
+        self.mode = mode
+        self.change_choices = change_choices
+        self.mcp_choices = mcp_choices
+        self.skill_choices = skill_choices
+        self.skill_resources = skill_resources
         self.snapshots = {}
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         action, separator, fragment = text.partition(' ')
+        if action in {'/dev', '/doc'} and separator:
+            if 'help'.startswith(fragment):
+                yield Completion('help', start_position=-len(fragment), display_meta='Разработка')
+            return
+        if action == '/skill' and separator:
+            if '\n' in text:
+                return
+            subaction, _, raw_path = fragment.partition(' ')
+            if ' ' in fragment and subaction in {'read', 'show', 'run'}:
+                prefix = raw_path
+                try:
+                    parsed = shlex.split(raw_path)
+                    if len(parsed) == 1:
+                        prefix = parsed[0]
+                except ValueError:
+                    if raw_path.startswith(('"', "'")):
+                        prefix = raw_path[1:]
+                for choice in self.skill_resources(subaction, prefix):
+                    if choice.startswith(prefix):
+                        yield Completion(shlex.quote(choice), start_position=-len(raw_path), display_meta='Skills')
+                return
+            words = text.split() + ([''] if text[-1].isspace() else [])
+            choices = ('list', 'use', 'off', 'read', 'show', 'run', 'output', 'help') if len(words) == 2 else (
+                sorted(self.skill_choices()) if len(words) == 3 and words[1] == 'use' else ())
+            for choice in choices:
+                if choice.startswith(words[-1]):
+                    yield Completion(choice, start_position=-len(words[-1]), display_meta='Skills')
+            return
+        if action == '/mcp' and separator:
+            if '\n' in text:
+                return
+            words = text.split()
+            if text[-1].isspace():
+                words.append('')
+            choices = ()
+            if len(words) == 2:
+                choices = (*MCP_ACTIONS, 'help')
+            elif len(words) == 3 and words[1] in MCP_ACTIONS:
+                choices = sorted(self.mcp_choices())
+            elif len(words) == 4 and words[1] == 'login' and words[2] in self.mcp_choices():
+                choices = ('memory', 'keyring')
+            for choice in choices:
+                if choice.casefold().startswith(words[-1].casefold()):
+                    yield Completion(choice, start_position=-len(words[-1]), display_meta='MCP')
+            return
+        if action in {'/diff', '/undo'} and separator:
+            for path in self.change_choices():
+                relative = os.path.relpath(path, os.path.realpath(self.root()))
+                candidate, prefix = relative, fragment
+                if os.name == "nt":
+                    candidate, prefix = candidate.replace('\\', '/'), prefix.replace('\\', '/')
+                if candidate.casefold().startswith(prefix.casefold()):
+                    yield Completion(relative, start_position=-len(fragment), display_meta='Правки текущего чата')
+            return
         if action in {'/remove', '/show', '/edit'} and separator:
             for number, description in self.attachment_choices():
                 if str(number).startswith(fragment.removeprefix('#')):
@@ -37,12 +100,20 @@ class InputCompleter(Completer):
             return
         if text.startswith('/') and ' ' not in text:
             for command in COMMANDS:
+                if command == '/limits' and self.mode() != 'remote':
+                    continue
                 if command.startswith(text):
                     yield Completion(command, start_position=-len(text))
             return
         if not text.startswith('@') or '\n' in text:
             return
         fragment = text[1:]
+        path, separator, selected = fragment.partition('#')
+        if separator:
+            for choice in DOCUMENT_RANGES.get(os.path.splitext(path)[1].casefold(), ()):
+                if choice.startswith(selected):
+                    yield Completion('@' + path + '#' + choice, start_position=-len(text), display_meta='Диапазон документа')
+            return
         # Диапазон вводится после имени, список не читает файл для вычисления строк.
         if ':' in os.path.basename(fragment):
             return
@@ -62,10 +133,14 @@ class InputCompleter(Completer):
                         yield Completion('@' + relative + os.sep, start_position=-len(text))
                     elif entry.is_file(follow_symlinks=False):
                         try:
-                            expected = plan_text_file(self.root(), relative)
+                            extension = os.path.splitext(relative)[1].casefold()
+                            expected = plan_text_file(self.root(), relative,
+                                max_bytes=4 * 1024 * 1024 if extension in DOCUMENT_RANGES else 2 * 1024 * 1024)
                         except (ValueError, OSError):
                             continue
                         self.snapshots[(self.root(), relative)] = expected
-                        yield Completion('@' + relative, start_position=-len(text), display_meta='Файл целиком')
+                        ranges = DOCUMENT_RANGES.get(extension)
+                        yield Completion('@' + relative + ('#' + ranges[0] if ranges else ''),
+                                         start_position=-len(text), display_meta='Диапазон документа' if ranges else 'Файл целиком')
         except OSError:
             return

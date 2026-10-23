@@ -10,7 +10,7 @@ from uuid import UUID
 import secrets
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi import FastAPI, HTTPException, Header, Depends, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from supabase.lib.client_options import SyncClientOptions
@@ -28,6 +28,8 @@ from gemini_cli.server.admin.accounts import account_router
 from gemini_cli.server.admin.pages import page_router, PanelHeaders
 from gemini_cli.server.auth_limits import AUTH_LIMITS
 from gemini_cli.protocol.models import ModelName
+from gemini_cli.protocol.mcp import MCP_PROTOCOL, MCP_FEATURE, MAX_MCP_TOOLS, MAX_SUPPORTED_TOOLS, validate_tool_payload
+from gemini_cli.protocol.skills import SKILL_PROTOCOL, validate_skill
 from gemini_cli.protocol.limits import MAX_HISTORY_CONTENT_CHARS
 from gemini_cli.server.limits import BodyLimit, StreamJob, BoundedStreamingResponse as StreamingResponse
 
@@ -89,6 +91,9 @@ def get_current_user(authorization: Optional[str] = Header(None), request: Reque
 
 
 get_working_user = working_user_dependency(get_current_user)
+from gemini_cli.server.quota_routes import create_quota_router
+
+app.include_router(create_quota_router(get_current_user))
 app.include_router(create_web_router(get_working_user, api_key=os.getenv("TAVILY_API_KEY"),
                                     authorize=require_subscription, reserve=reserve_request))
 
@@ -130,15 +135,17 @@ class StreamChatPayload(BaseModel):
     summary_boundary: Optional[UUID] = None
     current_dir: Optional[str] = None
     continue_after_tool: bool = False
-    supported_tools: Optional[List[str]] = Field(default=None, max_length=32)
+    supported_tools: Optional[List[str]] = Field(default=None, max_length=MAX_SUPPORTED_TOOLS)
     end_tool_turn: bool = False
 
-    @field_validator("supported_tools")
-    @classmethod
-    def known_tools(cls, value):
-        if value is not None and (len(set(value)) != len(value) or not set(value) <= set(TOOLS)):
-            raise ValueError("Неизвестные или повторяющиеся инструменты")
-        return value
+    mcp_tools: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_MCP_TOOLS, repr=False)
+    skill_context: Optional[Dict[str, str]] = Field(default=None, repr=False)
+
+    @model_validator(mode="after")
+    def known_tools(self):
+        validate_tool_payload({"supported_tools": self.supported_tools, "mcp_tools": self.mcp_tools})
+        validate_skill(self.skill_context)
+        return self
 
 
 class LoginPayload(BaseModel):
@@ -339,7 +346,7 @@ def deployment_health():
 
 @app.get("/capabilities")
 def capabilities(user: UserContext = Depends(get_working_user)):
-    return {"images": IMAGE_PROTOCOL}
+    return {"images": IMAGE_PROTOCOL, "mcp": MCP_PROTOCOL, "skills": SKILL_PROTOCOL}
 
 
 from gemini_cli.server.history_routes import register_history_routes
@@ -359,7 +366,10 @@ def stream_chat(
         raise HTTPException(400, "Некорректные изображения") from None
     requested_tools = set(payload.supported_tools if payload.supported_tools is not None else LEGACY_NAMES)
     rights = require_subscription(user, model=payload.model_name)
-    requested_tools &= set(rights["features"])
+    if payload.mcp_tools:
+        require_subscription(user, model=payload.model_name, features={MCP_FEATURE})
+    requested_tools = (requested_tools & set(rights["features"])) | {row["name"] for row in payload.mcp_tools}
+    requested_features = (requested_tools & set(TOOLS)) | ({MCP_FEATURE} if payload.mcp_tools else set())
     if payload.end_tool_turn and not payload.continue_after_tool:
         raise HTTPException(status_code=400, detail="Завершение допустимо только после результата инструмента")
     if payload.continue_after_tool:
@@ -415,10 +425,10 @@ def stream_chat(
         try:
             if job.cancelled.is_set():
                 return
-            require_subscription(user, model=payload.model_name, features=requested_tools)
+            require_subscription(user, model=payload.model_name, features=requested_features)
             if not payload.end_tool_turn:
                 reserve_request(user, operation="gemini", request_id=payload.request_id,
-                                model=payload.model_name, features=requested_tools)
+                                model=payload.model_name, features=requested_features)
                 acquired = True
             if payload.chat_id and not payload.continue_after_tool:
                 save("user", payload.message)
@@ -451,6 +461,8 @@ def stream_chat(
             permitted = set(TOOLS) - ({"web_search"} if not os.getenv("TAVILY_API_KEY") else set())
             for event in stream_events(client, model=payload.model_name, contents=full_contents,
                                        supported_tools=sorted(requested_tools), permitted_tools=permitted,
+                                       mcp_tools=payload.mcp_tools,
+                                       skill_context=payload.skill_context,
                                        cancelled=job.cancelled.is_set):
                 if job.cancelled.is_set():
                     return

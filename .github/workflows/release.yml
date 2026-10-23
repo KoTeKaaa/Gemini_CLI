@@ -23,6 +23,8 @@ jobs:
         run: .venv/bin/python -B -m unittest tests.test_context_selection tests.test_context_info tests.test_compaction tests.test_chat_buffers tests.test_local_chats tests.test_local_chats_v2 tests.test_local_chat_state tests.test_local_fork tests.test_local_summary_cancel tests.test_local_recovery_backend tests.test_local_history_apis tests.test_ui_context tests.test_stream_display tests.test_profiles -q
       - name: Check standalone executable startup
         run: python client/check_executable.py dist/gemini-cli
+      - name: Check packaged document parsers
+        run: python client/check_documents.py dist/gemini-cli
       - uses: actions/upload-artifact@v7
         with:
           name: gemini-cli-linux-x64
@@ -59,6 +61,9 @@ jobs:
       - name: Check standalone executable startup
         shell: pwsh
         run: python client/check_executable.py dist/gemini-cli.exe
+      - name: Check packaged document parsers
+        shell: pwsh
+        run: python client/check_documents.py dist/gemini-cli.exe
       - uses: actions/upload-artifact@v7
         with:
           name: gemini-cli-windows-x64
