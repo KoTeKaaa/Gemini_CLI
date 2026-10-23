@@ -84,3 +84,24 @@ hunks отдельно не выбираются. HEAD, index и файлы пр
 Hooks выполняются обычно; их ошибки/вывод не скрываются. Инструмент не делает push.
 При остановке hook или Sphinx завершите проверку в предоставленном им интерфейсе;
 не запускайте повторный коммит, пока исходный процесс работает.
+
+## Pull request через GitHub MCP
+
+Настройте персональное подключение по [гайду GitHub](mcp-github.md).
+В приватном `mcp.json` явно выберите `list_pull_requests`, `create_pull_request`,
+`update_pull_request`, `pull_request_read`. Для создания/обновления нужны права
+**Pull requests: Read and write** только выбранного репозитория; для checks —
+**Checks: Read**, для статуса — **Commit statuses: Read**. Contents write не нужен:
+инструмент не делает push. GitHub MCP должен разрешать запись; read-only endpoint
+для создания PR не подходит. Права и стоимость проверяйте у GitHub.
+
+После `/mcp login github memory` и `/mcp enable github` явно попросите создать PR:
+`github_pr action=create base=dev title="Fix parser" body="Что исправлено и чем проверено"`.
+Ветка должна быть опубликована отдельно по вашей команде; origin — репозиторий
+на github.com. Перед каждым MCP-вызовом проверяйте показанные аргументы.
+Создаётся draft PR; повторное create возвращает уже открытый PR той же ветки/base.
+`action=update` меняет title/body, `action=checks` возвращает checks и combined status.
+Неизвестные/неполные checks не означают PASS. Ошибка 401/403, неполный список,
+неизвестный ответ или сетевой сбой не запускают скрытый повтор записи.
+Если публикация оборвалась, сначала проверьте удалённый PR.
+Автоматических push, merge и расширения прав нет.

@@ -182,3 +182,16 @@ def git_commit(action: str, files: List[str] = None, message: str = "", task: st
 
 TOOLS["git_commit"] = git_commit
 CLIENT_NAMES = (*CLIENT_NAMES, "git_commit")
+
+
+def github_pr(action: str, base: str, title: str = "", body: str = "", server: str = "github") -> str:
+    """Use explicitly enabled personal GitHub MCP to create/update a PR or read checks for current branch.
+
+    Explicit publication only; create returns existing matching PR to avoid duplicates. No push/merge.
+    Requires origin on github.com, published feature branch, selected MCP PR tools and per-call approval.
+    """
+    return "Работа с PR запрошена"
+
+
+TOOLS["github_pr"] = github_pr
+CLIENT_NAMES = (*CLIENT_NAMES, "github_pr")

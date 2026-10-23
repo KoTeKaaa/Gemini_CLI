@@ -629,16 +629,20 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
         handlers["read_url"] = lambda args, _cwd: web_handler("read", args)
     if mcp is not None:
         from gemini_cli.client.mcp_commands import approve_call
+        def approve(server, original, values):
+            return approve_call(console, server, original, values)
+        def invoke(operation):
+            with (state.view.monitor() if state is not None and hasattr(state, "view") else monitor()):
+                return operation()
         def mcp_handler(name, args):
-            def approve(server, original, values):
-                return approve_call(console, server, original, values)
-            def invoke(operation):
-                with (state.view.monitor() if state is not None and hasattr(state, "view") else monitor()):
-                    return operation()
             return mcp.call(name, args, approve=approve, cancelled=cancelled, invoke=invoke)
         for declaration in mcp.declarations():
             name = declaration["name"]
             handlers[name] = lambda args, _cwd, name=name: mcp_handler(name, args)
+        from gemini_cli.integrations.github_pr import github_pr
+        handlers['github_pr'] = lambda args, cwd: json.dumps(github_pr(
+            args, cwd, manager=mcp, approve=approve, cancelled=cancelled,
+            invoke=invoke, monitor=monitor), ensure_ascii=False)
     run_tool_calls(tool_calls, history, current_dir, handlers=handlers, logger=logger, state=state)
 
 
