@@ -4,7 +4,7 @@ import json
 from ..protocol.limits import MAX_TOOL_RESULT_WIRE_BYTES
 
 REDACTED_READ_RESULT = '{"status":"redacted","message":"Результат чтения файлов не сохраняется"}'
-PRIVATE_TOOLS = {"search_text", "read_file_lines", "replace_in_file", "read_document"}
+PRIVATE_TOOLS = {"search_text", "read_file_lines", "replace_in_file", "read_document", "git_read", "git_commit"}
 SAFE_ARGUMENTS = {"filepath", "start_line", "end_line", "path"}
 
 

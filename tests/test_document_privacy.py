@@ -19,3 +19,16 @@ class DocumentPrivacyTests(unittest.TestCase):
         persisted = persistent_history_rows(history)
         self.assertNotIn('PRIVATE', json.dumps(persisted))
         self.assertIn('PRIVATE_EXTRACTED', str(history))
+
+    def test_git_source_and_commit_plan_stay_out_of_permanent_history(self):
+        for name in ('git_read', 'git_commit'):
+            with self.subTest(name=name):
+                history = [{'role': 'user', 'content': 'review'},
+                           {'role': 'model', 'name': name, 'content': 'PRIVATE_CALL',
+                            'args': {'operation': 'prepare', 'message': 'PRIVATE_MESSAGE',
+                                     'task': 'PRIVATE_TASK', 'token': 'PRIVATE_TOKEN'}},
+                           {'role': 'tool', 'name': name, 'content': '+PRIVATE_SOURCE'}]
+                persisted = persistent_history_rows(history)
+                self.assertNotIn('PRIVATE', json.dumps(persisted))
+                self.assertIn('PRIVATE_SOURCE', str(history))
+                self.assertNotIn('PRIVATE', json.dumps(persistent_history_rows(persisted)))
