@@ -117,3 +117,17 @@ def python_symbols(query: str = "") -> str:
 
 TOOLS["python_symbols"] = python_symbols
 CLIENT_NAMES = (*CLIENT_NAMES, "python_symbols")
+
+
+def python_lsp(action: str, filepath: str, line: int = 1, character: int = 0,
+               expected_sha256: str = "", new_name: str = "") -> str:
+    """Query trusted local Python LSP: definition/references/diagnostics/rename. Saved files only.
+
+    line is 1-based, character is 0-based UTF-16. Optional expected_sha256 detects unsaved versions.
+    rename requires new_name and a separate file/diff approval. Server configured by user.
+    """
+    return "LSP запрошен"
+
+
+TOOLS["python_lsp"] = python_lsp
+CLIENT_NAMES = (*CLIENT_NAMES, "python_lsp")
