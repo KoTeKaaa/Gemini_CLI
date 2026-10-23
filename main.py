@@ -252,6 +252,12 @@ def handle_write_files(args: dict, current_dir: str, *, changes=None, cancelled=
                        cancelled=cancelled, monitor=monitor)
 
 
+def confirm_development_write(files: list[dict]) -> bool:
+    from gemini_cli.client.paste import view_text
+    view_text("\n\n".join(f['filepath'] + "\n" + f['content'] for f in files))
+    return confirm_content_scope("Применить просмотренные изменения разработки?")
+
+
 def confirm_command(command: str) -> bool:
     console.print(Panel(f"[bold white]{command}[/bold white]", title="⚙️ ИИ запрашивает выполнение команды терминала",
                         border_style="yellow"))
@@ -568,7 +574,7 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
     handlers = {
         "python_lsp": lambda args, cwd: json.dumps(python_lsp(
             args, cwd, approve=confirm_content_scope, cancelled=cancelled, changes=changes,
-            confirm_write=confirm_file_write, monitor=monitor), ensure_ascii=False),
+            confirm_write=confirm_development_write, monitor=monitor), ensure_ascii=False),
         "python_symbols": lambda args, cwd: json.dumps(project_map(
             cwd, approve=confirm_content_scope, query=args.get("query", "")), ensure_ascii=False),
         "read_local_files": handle_read_files,
