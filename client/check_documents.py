@@ -55,6 +55,9 @@ def check(executable: Path):
             request = json.dumps({'source': source, 'bytes': base64.b64encode(data).decode(), 'selection': selection})
             response = subprocess.run([str(executable), '--document-worker'], input=request + '\n',
                 cwd=temporary, env=environment, capture_output=True, text=True, encoding='utf-8', timeout=30)
+            if response.returncode or not response.stdout:
+                raise RuntimeError(f'Packaged worker failed for {source}: exit={response.returncode}, '
+                                   f'stderr={response.stderr[:2000]}')
             value = json.loads(response.stdout)
             if response.returncode or value.get('status') != 'ok' or token not in str(value):
                 raise RuntimeError(f'Packaged document extraction failed for {source}: {value}')

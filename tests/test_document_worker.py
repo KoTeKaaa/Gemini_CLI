@@ -2,6 +2,8 @@ import unittest
 import os
 from pathlib import Path
 import sys
+import subprocess
+import json
 from gemini_cli.client.process import ManagedProcess
 from unittest.mock import patch
 from gemini_cli.integrations.documents.client import extract_document
@@ -9,6 +11,14 @@ from gemini_cli.integrations.documents.worker import extract
 
 
 class DocumentWorkerTests(unittest.TestCase):
+    def test_worker_protocol_is_utf8_with_non_utf8_console(self):
+        result = subprocess.run([sys.executable, '-B', '-m',
+            'gemini_cli.integrations.documents.worker'], input=b'{}\n',
+            capture_output=True, env={**os.environ, 'PYTHONIOENCODING': 'ascii'}, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['error']['code'], 'invalid_request')
+        self.assertIn('Неверный', result.stdout.decode('utf-8'))
+
     @unittest.skipUnless(os.name == 'nt', 'Windows Job memory limit')
     def test_windows_job_enforces_memory_limit(self):
         process = ManagedProcess([sys.executable, '-c',

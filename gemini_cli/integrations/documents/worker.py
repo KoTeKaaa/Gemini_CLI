@@ -43,8 +43,8 @@ def main() -> None:
         response = extract(data, request['source'], request['selection'], request.get('mime', ''))
     except Exception:
         response = {'status': 'error', 'error': {'code': 'invalid_request', 'message': 'Неверный запрос парсера'}}
-    sys.stdout.write(json.dumps(response, ensure_ascii=False))
-    sys.stdout.flush()
+    sys.stdout.buffer.write(json.dumps(response, ensure_ascii=False).encode('utf-8'))
+    sys.stdout.buffer.flush()
 
 
 if __name__ == '__main__':
