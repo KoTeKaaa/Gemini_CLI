@@ -108,3 +108,12 @@ def replace_in_file(filepath: str, old_text: str, new_text: str) -> str:
 
 TOOLS["replace_in_file"] = replace_in_file
 CLIENT_NAMES = (*CLIENT_NAMES, "replace_in_file")
+
+
+def python_symbols(query: str = "") -> str:
+    """Read a bounded Python project map of AST definitions/imports after approval; filter names by query."""
+    return "Карта Python запрошена"
+
+
+TOOLS["python_symbols"] = python_symbols
+CLIENT_NAMES = (*CLIENT_NAMES, "python_symbols")

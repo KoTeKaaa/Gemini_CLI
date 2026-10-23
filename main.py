@@ -51,6 +51,7 @@ from datetime import datetime
 
 from gemini_cli.client.tool_runner import execute_tool_calls as run_tool_calls
 from gemini_cli.tools.local.command import execute_command
+from gemini_cli.tools.local.symbols import project_map
 from gemini_cli.tools.local.files import read_files, write_files, read_file_lines
 from gemini_cli.tools.local.search import find_files, search_text
 from gemini_cli.tools.local.edit import replace_in_file
@@ -564,6 +565,8 @@ def execute_tool_calls(tool_calls: List[Dict[str, Any]], history: List[Dict[str,
     cancelled = state.cancelled.is_set if state else lambda: False
     monitor = (lambda: WorkInput(state)) if state else nullcontext
     handlers = {
+        "python_symbols": lambda args, cwd: json.dumps(project_map(
+            cwd, approve=confirm_content_scope, query=args.get("query", "")), ensure_ascii=False),
         "read_local_files": handle_read_files,
         "write_local_files": lambda args, cwd: handle_write_files(args, cwd, changes=changes,
                                                                  cancelled=cancelled, monitor=monitor),
